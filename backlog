@@ -14,6 +14,10 @@
         - move set reconciliation standins (merge_XYZ) in handlers.go
           to an own implementation of this service (for comparisons)
         - Avoids transferring all accusations
+    - Refactor external gossip to delta updates / append-and-drain buffer
+        - Replace single overwriting byte slice (SetExternalGossipContent) with a thread-safe append queue or buffered channel
+        - collectGossipContent drains accumulated deltas on gossip rounds to avoid message drops and races between ticks
+        - Support delta-based updates rather than full database snapshots to integrate cleanly with set reconciliation
 
 - Code overhaul
     - Detach visualizer component from rest of system
