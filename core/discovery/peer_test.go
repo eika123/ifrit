@@ -753,18 +753,18 @@ func (suite *PeerTestSuite) TestInfo() {
 	assert.NotZero(suite.T(), len(accs), "Returned accusations was empty.")
 }
 
-func (suite *PeerTestSuite) TestIncrementPing() {
+func (suite *PeerTestSuite) TestIncrementPingCount() {
 	prevPing := suite.p.nPing
 
-	suite.p.IncrementPing()
+	suite.p.IncrementPingCount()
 
 	assert.Equal(suite.T(), suite.p.nPing, prevPing+1, "Num ping was not incremented.")
 }
 
-func (suite *PeerTestSuite) TestResetPing() {
+func (suite *PeerTestSuite) TestResetPingCount() {
 	suite.p.nPing = 10
 
-	suite.p.ResetPing()
+	suite.p.ResetPingCount()
 
 	assert.Zero(suite.T(), suite.p.nPing, "Num ping was not reset.")
 }

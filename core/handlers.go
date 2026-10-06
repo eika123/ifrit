@@ -55,7 +55,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		observed = true
 	}
 
-	if neighbours := n.view.ShouldBeNeighbour(remoteId); neighbours {
+	if n.view.ShouldBeNeighbour(remoteId) {
 		if err := n.evalCertificate(cert); err != nil {
 			log.Error(err.Error())
 			return nil, err
@@ -128,7 +128,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 
 func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, error) {
 	var errMsg string
-	var replyContent []byte 
+	var replyContent []byte
 
 	_, err := n.validateCtx(ctx)
 	if err != nil {
@@ -150,7 +150,7 @@ func (n *Node) Stream(srv pb.Gossip_StreamServer) error {
 	reply := make(chan []byte)
 	defer close(input)
 
-	if handler := n.getStreamHandler(); handler != nil {		
+	if handler := n.getStreamHandler(); handler != nil {
 		go n.runStreamHandler(handler, input, reply)
 		go n.replyStream(reply, srv)
 		ctx := srv.Context()
@@ -172,7 +172,7 @@ func (n *Node) Stream(srv pb.Gossip_StreamServer) error {
 				continue
 			}
 
-			input <-req.GetContent()
+			input <- req.GetContent()
 		}
 	}
 
@@ -285,6 +285,7 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 			continue
 		}
 
+		// Adds a valid certificate to the full view if valid and not already present.
 		err = n.evalCertificate(cert)
 		if err != nil {
 			log.Debug(err.Error())
@@ -292,6 +293,17 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 	}
 }
 
+// evalAccusation validates and processes an incoming gossip accusation against peer p.
+//
+// Behavior:
+//  1. Verifies the accusation's ECDSA signature using the accuser's public key.
+//  2. If the accusation targets the local node (self):
+//     - Validates that the accuser is our legitimate ring predecessor.
+//     - Checks if a rebuttal is needed (current epoch match) and triggers an immediate rebuttal broadcast.
+//  3. If the accusation targets a remote peer:
+//     - If already recorded, ensures the suspicion timer is active.
+//     - If new, verifies that the target note epoch matches, the ring is not disabled, and the accuser is the valid predecessor.
+//     - Stores the accusation on the peer and starts a suspicion removal timer if the peer is live.
 func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) error {
 	sign := a.GetSignature()
 	if sign == nil {
@@ -310,6 +322,9 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) 
 		return err
 	}
 
+	// If the node is handling an incoming accusation about itself,
+	// check if the accuser is the legitimate predecessor in the ring, that the
+	// accusation has a valid signature and if it should be rebutted
 	if n.self.Id == p.Id {
 		if isPrev := n.view.ValidAccuser(n.self, accuserPeer, ringNum); !isPrev {
 			return errInvalidAccuser
@@ -337,6 +352,9 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) 
 		return errAccAlreadyExists
 	}
 
+	// The notes are collected before the accusations, so we check if the
+	// accusation matches our most recent note (by epoch).
+	// This is an implementation artifact since notes are not piggybacked on accusations in Ifrit.
 	if note := p.Note(); note != nil && note.Equal(epoch) {
 		if disabled := note.IsRingDisabled(ringNum, n.view.NumRings()); disabled {
 			return errDisabledRing
@@ -366,7 +384,7 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) 
 	return nil
 }
 
-func (n *Node) evalNote(newNote *pb.Note) error {
+func (node *Node) evalNote(newNote *pb.Note) error {
 	epoch := newNote.GetEpoch()
 	mask := newNote.GetMask()
 
@@ -378,18 +396,19 @@ func (n *Node) evalNote(newNote *pb.Note) error {
 	r := sign.GetR()
 	s := sign.GetS()
 
-	p := n.view.Peer(string(newNote.GetId()))
-	if p == nil {
+	// Get the peer this note is about.
+	peer := node.view.Peer(string(newNote.GetId()))
+	if peer == nil {
 		return errNoPeer
 	}
 
-	note := p.Note()
+	note := peer.Note()
 
 	if note != nil && !note.IsMoreRecent(epoch) {
 		return errOldNote
 	}
 
-	if valid := n.view.ValidMask(mask); !valid {
+	if valid := node.view.ValidMask(mask); !valid {
 		return errInvalidMask
 	}
 
@@ -399,56 +418,57 @@ func (n *Node) evalNote(newNote *pb.Note) error {
 		return err
 	}
 
-	accusations := p.AllAccusations()
+	accusations := peer.AllAccusations()
 	// Not accused, only need to check if newnote is more recent
-	if numAccs := len(accusations); numAccs == 0 {
+	if len(accusations) == 0 {
 		// Want to store the most recent note
 		if note == nil || note.IsMoreRecent(epoch) {
-			if valid := n.cs.Verify(bytes, r, s, p.PublicKey()); !valid {
+			if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
 				return errInvalidSignature
 			}
 
-			p.AddNote(mask, epoch, r, s)
+			peer.AddNote(mask, epoch, r, s)
 
-			if alive := n.view.IsAlive(p.Id); !alive {
-				n.view.AddLive(p)
+			if alive := node.view.IsAlive(peer.Id); !alive {
+				node.view.AddLive(peer)
 			}
 		}
 	} else {
-		if valid := n.cs.Verify(bytes, r, s, p.PublicKey()); !valid {
+		if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
 			return errInvalidSignature
 		}
 
 		// Peer is accused, need to check if this note invalidates any accusations.
-		for _, a := range accusations {
-			if a.IsMoreRecent(epoch) {
-				p.RemoveAccusation(a)
+		for _, acc := range accusations {
+			if acc.IsMoreRecent(epoch) {
+				peer.RemoveAccusation(acc)
 			}
 		}
 
 		if note == nil || note.IsMoreRecent(epoch) {
-			p.AddNote(mask, epoch, r, s)
+			peer.AddNote(mask, epoch, r, s)
 		}
 
 		// All accusations has to be invalidated before we add peer back to full view.
-		if accused := p.IsAccused(); !accused {
-			p.ResetPing()
+		if !peer.IsAccused() {
+			peer.ResetPingCount()
 
-			if exists := n.view.HasTimer(p.Id); exists {
-				n.view.DeleteTimeout(p.Id)
+			if exists := node.view.HasTimer(peer.Id); exists {
+				node.view.DeleteTimeout(peer.Id)
 			}
 
-			if alive := n.view.IsAlive(p.Id); !alive {
-				n.view.AddLive(p)
+			if alive := node.view.IsAlive(peer.Id); !alive {
+				node.view.AddLive(peer)
 			}
 
-			log.Debug("Rebuttal received", "epoch", epoch, "addr", p.Addr)
+			log.Debug("Rebuttal received", "epoch", epoch, "addr", peer.Addr)
 		}
 	}
-
 	return nil
 }
 
+// Adds the certificate to the full view if the certificate is valid and the
+// peer is not already in the full view.
 func (n *Node) evalCertificate(cert *x509.Certificate) error {
 	if cert == nil {
 		return errNilCert

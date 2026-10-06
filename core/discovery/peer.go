@@ -43,13 +43,18 @@ type Peer struct {
 	note      *Note
 
 	accuseMutex sync.RWMutex
+
+	// maps ring number to an accusation
 	accusations map[uint32]*Accusation
 
 	Id        string
 	cert      *x509.Certificate
 	publicKey *ecdsa.PublicKey
 
-	nPing      uint32
+	// Number of unswered pings sent to this peer.
+	// A high value can move this peer from live to dead status.
+	nPing uint32
+
 	nPingMutex sync.RWMutex
 }
 
@@ -125,6 +130,8 @@ func (p *Peer) PublicKey() *ecdsa.PublicKey {
 	return p.publicKey
 }
 
+// Used when a peer believes another peer is untrustworthy based on ping results.
+// This function creates an accusation, signs it and adds it to the peer that created it.
 func (p *Peer) CreateAccusation(accused *Note, self *Peer, ringNum uint32, sign signer) error {
 	p.accuseMutex.Lock()
 	defer p.accuseMutex.Unlock()
@@ -173,6 +180,7 @@ func (p *Peer) CreateAccusation(accused *Note, self *Peer, ringNum uint32, sign 
 	return nil
 }
 
+// Add a signed accusation from another peer.
 func (p *Peer) AddAccusation(accused, accuser string, epoch uint64, ringNum uint32, r, s []byte) error {
 	p.accuseMutex.Lock()
 	defer p.accuseMutex.Unlock()
@@ -355,14 +363,15 @@ func (p *Peer) Info() (*pb.Certificate, *pb.Note, []*pb.Accusation) {
 	return c, n, a
 }
 
-func (p *Peer) IncrementPing() {
+func (p *Peer) IncrementPingCount() {
 	p.nPingMutex.Lock()
 	defer p.nPingMutex.Unlock()
 
 	p.nPing++
 }
 
-func (p *Peer) ResetPing() {
+// Resets the count of unsuccessful pings to 0
+func (p *Peer) ResetPingCount() {
 	p.nPingMutex.Lock()
 	defer p.nPingMutex.Unlock()
 
