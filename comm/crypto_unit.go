@@ -91,7 +91,8 @@ func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
 	}
 
 	if config.CaAddr != "" {
-		addr := fmt.Sprintf("http://%s/certificateRequest", config.CaAddr)
+		caAddr := strings.TrimPrefix(strings.TrimPrefix(config.CaAddr, "http://"), "https://")
+		addr := fmt.Sprintf("http://%s/certificateRequest", caAddr)
 		certs, err = sendCertRequest(priv, addr, config.Identity, config.DNSNames)
 		if err != nil {
 			return nil, err
@@ -523,7 +524,7 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 		NotBefore:             time.Now().AddDate(-10, 0, 0),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		ExtraExtensions:       []pkix.Extension{ext},
-		PublicKey:             priv.PublicKey,
+		PublicKey:             &priv.PublicKey,
 		IPAddresses:           []net.IP{ip},
 		IsCA:                  true,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth,
@@ -532,7 +533,7 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 			x509.KeyUsageCertSign,
 	}
 
-	signedCert, err := x509.CreateCertificate(rand.Reader, newCert,	newCert, priv.Public(), priv)
+	signedCert, err := x509.CreateCertificate(rand.Reader, newCert, newCert, &priv.PublicKey, priv)
 	if err != nil {
 		return nil, err
 	}
