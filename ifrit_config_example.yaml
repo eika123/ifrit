@@ -1,0 +1,21 @@
+# Ifrit Client Configuration File
+
+# Address of the trusted Certificate Authority (CA) daemon
+ca_addr: "localhost:8321"
+
+# Protocol timing intervals (in seconds)
+gossip_interval: 10
+monitor_interval: 10
+view_update_interval: 10
+
+# Crash detection & pinging settings
+ping_limit: 3
+pings_per_interval: 3
+removal_timeout: 60
+
+# Performance and transport settings
+max_concurrent_messages: 5
+use_compression: true
+
+# Visualizer update interval (in seconds)
+viz_update_interval: 10
