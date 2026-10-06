@@ -47,7 +47,7 @@ func (fd *failureDetector) probe(dest *discovery.Peer) error {
 
 	pong, err := fd.ps.Ping(dest.PingAddr, msg)
 	if err != nil {
-		dest.IncrementPing()
+		dest.IncrementPingCount()
 		if dest.NumPing() >= fd.maxFailedPings {
 			return errDead
 		}
@@ -69,7 +69,7 @@ func (fd *failureDetector) probe(dest *discovery.Peer) error {
 		}
 	}
 
-	dest.ResetPing()
+	dest.ResetPingCount()
 
 	return nil
 }
