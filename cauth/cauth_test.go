@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit/protobuf"
+	gossip "github.com/joonnna/ifrit/protobuf"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -61,6 +61,20 @@ func TestTLSconnection(t *testing.T) {
 		fmt.Println(err)
 		return
 	}
+
+	// addr := "127.0.0.1:8345"
+	// c1, privKey1 := genCert("127.0.0.1")
+	// c2, privKey2 := genCert("127.0.0.1")
+
+	// signed_c1 := signCert(c1, cert, priv)
+	// signed_c2 := signCert(c2, cert, priv)
+
+	// test_stub1 := &stub{}
+	// test_stub2 := &stub{}
+
+	// go test_stub1.startServing(signed_c1, cert, privKey1, addr)
+
+	// test_stub2.startPinging(signed_c2, cert, privKey2, addr)
 
 	addr := "127.0.0.1:8345"
 	c1, p1 := genCert("127.0.0.1")
@@ -113,8 +127,6 @@ func (s *stub) startServing(c, caCert *x509.Certificate, priv *rsa.PrivateKey, a
 		return
 	}
 
-	return
-
 }
 
 func (s *stub) Spread(ctx context.Context, msg *gossip.State) (*gossip.StateResponse, error) {
@@ -123,6 +135,10 @@ func (s *stub) Spread(ctx context.Context, msg *gossip.State) (*gossip.StateResp
 
 func (s *stub) Messenger(ctx context.Context, msg *gossip.Msg) (*gossip.MsgResponse, error) {
 	return &gossip.MsgResponse{Content: []byte("this is a test message")}, nil
+}
+
+func (s *stub) Stream(stream gossip.Gossip_StreamServer) error {
+	return nil
 }
 
 func (s *stub) startPinging(c, caCert *x509.Certificate, priv *rsa.PrivateKey, addr string) {
