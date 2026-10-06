@@ -8,6 +8,13 @@
     - Remove recording feature (?)
     - Add support for periodic membership update
 
+
+- Architecture
+    - Provide a pluggable set reconciliation servce
+        - move set reconciliation standins (merge_XYZ) in handlers.go
+          to an own implementation of this service (for comparisons)
+        - Avoids transferring all accusations
+
 - Code overhaul
     - Detach visualizer component from rest of system
     - Cleanup errors
@@ -18,7 +25,6 @@
     - Log more
     - Context loggers (log15 context loggers)
     - Change ID's in protobuf to strings?
-    - Avoid transferring all accusations
     - stream interceptor for neighbour/validation?
     - Rework old tests according to the new test setup
     - Rework protobuf messages to contain serialized messages and raw signatures, so we dont need to marshal them again at the receiver.
@@ -26,6 +32,10 @@
     - Intefaces for msg/gossip handlers in client? more go-idomatic?
     - Signatures rework, SignAble interface?
     - Should create a nicer interface for streaming? 
+
+    - fix channel hack in launcher.go function startApplication, i.e with callback function that is returned?
+    - likely the concerns of regular ifrit nodes and the CA should be more separated in the bootstrapping launcher.
+
 
 - Testing overhaul
     - Re-write all tests after code overhaul
