@@ -3,6 +3,7 @@ package ifrit
 import (
 	"crypto/x509/pkix"
 	"errors"
+
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core"
@@ -39,7 +40,7 @@ var (
 	errNoHostname  = errors.New("Config does not contain hostname")
 )
 
-//Creates and returns a new ifrit client instance.
+// Creates and returns a new ifrit client instance.
 func NewClient(config *Config) (*Client, error) {
 	var cu *comm.CryptoUnit
 
@@ -66,16 +67,16 @@ func NewClient(config *Config) (*Client, error) {
 
 	pk := pkix.Name{
 		Locality: []string{tcpAddr, udpAddr},
-	}	
+	}
 
 	caAddr := viper.GetString("ca_addr")
 
 	if config.New {
 		cu, err = comm.NewCu(&comm.CryptoUnitConfig{
 			Identity: pk,
-			CaAddr: caAddr,
+			CaAddr:   caAddr,
 			DNSNames: []string{config.Hostname},
-			Path: config.CryptoUnitPath,
+			Path:     config.CryptoUnitPath,
 		})
 		if err != nil {
 			return nil, err
@@ -87,7 +88,7 @@ func NewClient(config *Config) (*Client, error) {
 		}
 	}
 
-	c, err := comm.NewComm(cu.Certificate(), cu.CaCertificate(), cu.Priv(), l)
+	commService, err := comm.NewComm(cu.Certificate(), cu.CaCertificate(), cu.Priv(), l)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +98,7 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, err
 	}
 
-	n, err := core.NewNode(c, udpServer, cu, cu)
+	n, err := core.NewNode(commService, udpServer, cu, cu)
 	if err != nil {
 		return nil, err
 	}
