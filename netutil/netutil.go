@@ -87,11 +87,12 @@ func GetListener(hostname string, portnum int) (net.Listener, string, error) {
 		addr[0] = hostname
 	}
 
-	fullAddr := fmt.Sprintf("%s:%d", addr[0], portnum)
-
 	for {
 		l, err = net.Listen("tcp4", fmt.Sprintf(":%d", portnum))
 		if err == nil {
+			// Extract the actual assigned port
+			tcpAddr := l.Addr().(*net.TCPAddr)
+			fullAddr := fmt.Sprintf("%s:%d", addr[0], tcpAddr.Port)
 			return l, fullAddr, nil
 		} else {
 			log.Error(err.Error())
@@ -105,7 +106,7 @@ func GetListener(hostname string, portnum int) (net.Listener, string, error) {
 		}
 	}
 
-	return l, fullAddr, errFoundNoPort
+	return l, "", errFoundNoPort
 }
 
 //Hacky AF
@@ -175,7 +176,9 @@ func ListenUdp(hostname string, portnum int) (*net.UDPConn, string, error) {
 		return nil, "", err
 	}
 
-	fullAddr := fmt.Sprintf("%s:%d", addr[0], portnum)
+	// Extract the actual assigned port
+	actualUdpAddr := conn.LocalAddr().(*net.UDPAddr)
+	fullAddr := fmt.Sprintf("%s:%d", addr[0], actualUdpAddr.Port)
 
 	return conn, fullAddr, nil
 }

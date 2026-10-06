@@ -1,0 +1,34 @@
+services:
+  ca:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: ifrit-ca
+    command: ["ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad"]
+    ports:
+      - "8321:8321"
+    networks:
+      - ifrit-net
+    volumes:
+      - ca-data:/data/ifrit-cad
+  gossip-node:
+    build:
+      context: .
+      dockerfile: Containerfile
+    command: ["gossip-node"]
+    depends_on:
+      - ca
+    deploy:
+      replicas: ${NODES:-3}
+    environment:
+      - IFRIT_CONFIG=/app/ifrit_config.yaml
+    volumes:
+      - ./_examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
+    networks:
+      - ifrit-net
+networks:
+  ifrit-net:
+    driver: bridge
+volumes:
+  ca-data:
+

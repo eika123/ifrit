@@ -30,7 +30,7 @@ func (a Accusation) Equal(accused, accuser string, ringNum uint32, epoch uint64)
 	return a.accused == accused && a.accuser == accuser && a.ringNum == ringNum && a.epoch == epoch
 }
 
-// check if argument other is more recent (larger) than a.epoch
+// check if the argument 'other' is more recent (larger) than a.epoch
 func (a Accusation) IsMoreRecent(other uint64) bool {
 	return a.epoch < other
 }
