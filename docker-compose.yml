@@ -2,7 +2,7 @@ services:
   ca:
     build:
       context: .
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     container_name: ifrit-ca
     command: ["ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad"]
     ports:
@@ -14,7 +14,7 @@ services:
   gossip-node:
     build:
       context: .
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     command: ["gossip-node"]
     depends_on:
       - ca
