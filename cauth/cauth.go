@@ -164,11 +164,17 @@ func (c *Ca) SavePrivateKey() error {
 		return errNoKeyFilepath
 	}
 
+	// check if path folder exists or create it
+	if err := os.MkdirAll(c.path, 0755); err != nil {
+		log.Error("failed to create certs path.", "path", c.path, "error", err.Error())
+		return err
+	}
+
 	p := filepath.Join(c.path, c.keyFilePath)
 
 	f, err := os.Create(p)
 	if err != nil {
-		log.Error(err.Error())
+		log.Error("failed to create private key file.", "path", p, "error", err.Error())
 		return err
 	}
 
@@ -383,9 +389,9 @@ func (c *Ca) certificateSigning(w http.ResponseWriter, r *http.Request) {
 		ExtraExtensions: []pkix.Extension{ext},
 		PublicKey:       reqCert.PublicKey,
 		IPAddresses:     []net.IP{ipAddr.IP},
-		DNSNames:    reqCert.DNSNames,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		DNSNames:        reqCert.DNSNames,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 	}
 
 	signedCert, err := x509.CreateCertificate(rand.Reader, newCert, g.groupCert, reqCert.PublicKey, c.privKey)
