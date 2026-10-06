@@ -31,6 +31,7 @@ func (n *Note) Equal(epoch uint64) bool {
 	return n.epoch == epoch
 }
 
+// check if argument other is newer (larger) than n.epoch
 func (n *Note) IsMoreRecent(other uint64) bool {
 	return n.epoch < other
 }
