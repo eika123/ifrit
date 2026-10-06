@@ -24,7 +24,7 @@ var (
 
 func main() {
 	var logfile string
-	var h log.Handler
+	var logHandler log.Handler
 
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -32,17 +32,17 @@ func main() {
 	args.StringVar(&logfile, "logfile", "", "Log to file.")
 	args.Parse(os.Args[1:])
 
-	r := log.Root()
+	rootLogger := log.Root()
 
 	if logfile != "" {
-		h = log.CallerFileHandler(log.Must.FileHandler(logfile, log.LogfmtFormat()))
+		logHandler = log.CallerFileHandler(log.Must.FileHandler(logfile, log.LogfmtFormat()))
 	} else {
-		h = log.StreamHandler(os.Stdout, log.LogfmtFormat())
+		logHandler = log.StreamHandler(os.Stdout, log.LogfmtFormat())
 	}
 
-	r.SetHandler(h)
+	rootLogger.SetHandler(logHandler)
 
-	c, err := ifrit.NewClient(&ifrit.Config{
+	clientIfrit, err := ifrit.NewClient(&ifrit.Config{
 		New:            true,
 		Hostname:       "127.0.1.1",
 		TCPPort:        2000,
@@ -53,16 +53,16 @@ func main() {
 		panic(err)
 	}
 
-	c.RegisterMsgHandler(msgHandler)
-	go c.Start()
+	clientIfrit.RegisterMsgHandler(msgHandler)
+	go clientIfrit.Start()
 
 	for {
-		if len(c.Members()) == 0 {
+		if len(clientIfrit.Members()) == 0 {
 			continue
 		}
 
-		addr := c.Members()[0]
-		ch := c.SendTo(addr, []byte("HellO!"))
+		addr := clientIfrit.Members()[0]
+		ch := clientIfrit.SendTo(addr, []byte("HellO!"))
 
 		time.Sleep(3 * time.Second)
 		select {
@@ -79,15 +79,15 @@ func main() {
 	signal.Notify(channel, os.Interrupt, syscall.SIGTERM)
 	<-channel
 
-	if err := c.SavePrivateKey(); err != nil {
+	if err := clientIfrit.SavePrivateKey(); err != nil {
 		panic(err)
 	}
 
-	if err := c.SaveCertificate(); err != nil {
+	if err := clientIfrit.SaveCertificate(); err != nil {
 		panic(err)
 	}
 
-	c.Stop()
+	clientIfrit.Stop()
 }
 
 func msgHandler(data []byte) ([]byte, error) {
