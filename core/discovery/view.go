@@ -5,14 +5,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"math/bits"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/protobuf"
 	pb "github.com/joonnna/ifrit/protobuf"
+	proto "github.com/joonnna/ifrit/protobuf"
 	"github.com/spf13/viper"
 )
 
@@ -60,10 +60,26 @@ type connectionManager interface {
 	CloseConn(addr string)
 }
 
+// Should return a signature consisting of two components.
+// For ecdsa (Elliptic Curve Digital Signature Algorithm) this is r and s.
+// For ecdsa with elliptic curves using a generator G, a nonce k is chosen and a point (x, y) is generated as kG.
+//
+// Example for ECDSA:
+// The value of r is the x-coordinate of (x, y) modulo n (where n is the order of the curve).
+// The value of s binds the hash of the data to the nonce, the private key, the nonce and r.
+// Together, (r, s) mathematically prove that whoever produced the signature possesses the corresponding private key for that message hash, without revealing the private key.
 type signer interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
+// NewView initializes and returns a new View instance, configuring the local peer,
+// multi-ring overlay topology, timeout settings, and signing an initial local note (epoch 1).
+//
+// Prerequisites / Expected Services:
+//   - Requires initialized and valid certificate manager / certificates (cert).
+//   - Requires a cryptoService / signer capable of signing protobuf Notes.
+//   - Requires a connectionManager / commService to manage connection lifecycles.
+//   - Viper configuration must be loaded (keys: "dead_timeout", "view_update_interval").
 func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer) (*View, error) {
 	var i, mask uint32
 
@@ -118,6 +134,13 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 	return v, nil
 }
 
+// Start begins the periodic timeout checking routine, which monitors accused peers
+// and evicts them from the live view and rings when their suspicion timeout expires.
+//
+// Prerequisites / Expected Services:
+//   - Typically spawned as a background goroutine during node startup (e.g. Node.Start).
+//   - The connectionManager must be active to handle connection closures on evicted peers.
+//   - Accusations must be continuously populated into View by gossip / failure detection services.
 func (v *View) Start() {
 	for {
 		select {
@@ -130,18 +153,34 @@ func (v *View) Start() {
 	}
 }
 
+// Stop signals the timeout checker loop started in Start to terminate.
+//
+// Prerequisites / Expected Services:
+//   - Called during node teardown (e.g. Node.Stop). Start must have been called, or exitChan will simply close.
 func (v *View) Stop() {
 	close(v.exitChan)
 }
 
+// NumRings returns the total number of rings configured in the view topology.
+//
+// Prerequisites / Expected Services:
+//   - View must be initialized via NewView.
 func (v *View) NumRings() uint32 {
 	return v.rings.numRings
 }
 
+// Self returns the local node's Peer representation.
+//
+// Prerequisites / Expected Services:
+//   - View must be initialized via NewView with valid local peer certificate and identity.
 func (v *View) Self() *Peer {
 	return v.self
 }
 
+// Peer returns the Peer with the given ID from the full view map, or nil if not present.
+//
+// Prerequisites / Expected Services:
+//   - Peers must have been registered into the full view (e.g. via certificate validation in gossip handlers or CA contacts).
 func (v *View) Peer(id string) *Peer {
 	v.viewMutex.RLock()
 	defer v.viewMutex.RUnlock()
@@ -153,6 +192,10 @@ func (v *View) Peer(id string) *Peer {
 	}
 }
 
+// Full returns a slice of all known peers in the full view map.
+//
+// Prerequisites / Expected Services:
+//   - Used during gossip digest preparation, state responses, or bootstrapping to enumerate known hosts.
 func (v *View) Full() []*Peer {
 	v.viewMutex.RLock()
 	defer v.viewMutex.RUnlock()
@@ -166,6 +209,10 @@ func (v *View) Full() []*Peer {
 	return ret
 }
 
+// Exists reports whether a peer with the specified ID exists in the full view map.
+//
+// Prerequisites / Expected Services:
+//   - Used before processing peer notes or accusations to verify registration in full view.
 func (v *View) Exists(id string) bool {
 	v.viewMutex.RLock()
 	defer v.viewMutex.RUnlock()
@@ -175,6 +222,11 @@ func (v *View) Exists(id string) bool {
 	return ok
 }
 
+// Live returns a slice of all currently active/live peers.
+//
+// Prerequisites / Expected Services:
+//   - Peers must have been inserted into the live view (e.g. initial contacts or validated gossip notes).
+//   - Used by application services, failure detectors, or visualizers to query active cluster membership.
 func (v *View) Live() []*Peer {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -189,6 +241,12 @@ func (v *View) Live() []*Peer {
 
 }
 
+// AddFull registers a new peer in the full view map using their ID and certificate.
+// Returns an error if the peer already exists or if peer initialization fails.
+//
+// Prerequisites / Expected Services:
+//   - Certificate validation (CA validation, TLS verification) should be performed before calling.
+//   - Called during gossip/state exchange when discovering previously unknown certificates.
 func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
@@ -209,6 +267,10 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	return nil
 }
 
+// MyNeighbours returns all distinct neighbours (predecessors and successors) across all active rings.
+//
+// Prerequisites / Expected Services:
+//   - Used by gossip protocols and failure detectors to discover which nodes to monitor/probe.
 func (v *View) MyNeighbours() []*Peer {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -216,6 +278,11 @@ func (v *View) MyNeighbours() []*Peer {
 	return v.rings.allMyNeighbours()
 }
 
+// GossipPartners returns the ring neighbours for the current gossip ring and
+// advances the gossip ring index round-robin for the next call.
+//
+// Prerequisites / Expected Services:
+//   - Expected to be called by the periodic gossip loop (Node.gossipLoop) on each gossip round.
 func (v *View) GossipPartners() []*Peer {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -227,6 +294,12 @@ func (v *View) GossipPartners() []*Peer {
 	return v.rings.myRingNeighbours(v.currGossipRing)
 }
 
+// MonitorTarget returns the successor peer to monitor on the current monitoring ring,
+// along with the ring number, and advances the monitor ring index round-robin.
+//
+// Prerequisites / Expected Services:
+//   - Expected to be called by the periodic failure detector / monitoring loop (Node.monitorLoop).
+//   - The failure detector service (PingService / commService) will probe the returned peer.
 func (v *View) MonitorTarget() (*Peer, uint32) {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -240,6 +313,12 @@ func (v *View) MonitorTarget() (*Peer, uint32) {
 	return v.rings.myRingSuccessor(v.currMonitorRing), ringNum
 }
 
+// AddLive inserts a peer into the live map and places them into the ring structures,
+// closing connections to any peers that are no longer direct ring neighbours.
+//
+// Prerequisites / Expected Services:
+//   - Peer must have been validated (valid certificate and fresh signed Note) before adding to live view.
+//   - connectionManager (commService) must be initialized to close connections to displaced ring neighbours.
 func (v *View) AddLive(p *Peer) {
 	v.liveMutex.Lock()
 	defer v.liveMutex.Unlock()
@@ -257,6 +336,11 @@ func (v *View) AddLive(p *Peer) {
 	}
 }
 
+// MyRingNeighbours returns the successor and predecessor peers for the local node on a specific ring.
+//
+// Prerequisites / Expected Services:
+//   - Ring number must be in range [1, numRings].
+//   - Used during accusation validation to verify monitoring relationships.
 func (v *View) MyRingNeighbours(ringNum uint32) (*Peer, *Peer) {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -264,6 +348,10 @@ func (v *View) MyRingNeighbours(ringNum uint32) (*Peer, *Peer) {
 	return v.rings.myRingSuccessor(ringNum), v.rings.myRingPredecessor(ringNum)
 }
 
+// LivePeer retrieves a peer from the live map by their ID, returning nil if not found.
+//
+// Prerequisites / Expected Services:
+//   - Used when handling gossip and accusations to check if the target is currently considered active.
 func (v *View) LivePeer(id string) *Peer {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -271,6 +359,11 @@ func (v *View) LivePeer(id string) *Peer {
 	return v.liveMap[id]
 }
 
+// RemoveLive removes a peer from the live map and ring structures, closing any active connection to them.
+//
+// Prerequisites / Expected Services:
+//   - connectionManager (commService) must be initialized to close the open transport connection to the removed peer.
+//   - Called when a suspicion timeout expires (Start / checkTimeouts) or on explicit eviction.
 func (v *View) RemoveLive(id string) {
 	v.liveMutex.Lock()
 	defer v.liveMutex.Unlock()
@@ -288,6 +381,11 @@ func (v *View) RemoveLive(id string) {
 	}
 }
 
+// StartTimer begins or updates a suspicion timeout timer for an accused peer based on a received accusation.
+//
+// Prerequisites / Expected Services:
+//   - Accusation signature and observer predecessor relationship must be validated by the accusation handler beforehand.
+//   - View.Start() background timeout checker must be running to eventually evict timed-out accused peers.
 func (v *View) StartTimer(accused *Peer, n *Note, observer *Peer) error {
 	v.timeoutMutex.Lock()
 	defer v.timeoutMutex.Unlock()
@@ -337,6 +435,10 @@ func (v *View) StartTimer(accused *Peer, n *Note, observer *Peer) error {
 	return nil
 }
 
+// HasTimer checks whether an active suspicion timer exists for the given peer ID.
+//
+// Prerequisites / Expected Services:
+//   - Used during gossip and note evaluation to check if an accused peer currently has a pending timeout.
 func (v *View) HasTimer(id string) bool {
 	v.timeoutMutex.RLock()
 	defer v.timeoutMutex.RUnlock()
@@ -346,6 +448,10 @@ func (v *View) HasTimer(id string) bool {
 	return ok
 }
 
+// DeleteTimeout removes the active suspicion timer for the specified peer ID.
+//
+// Prerequisites / Expected Services:
+//   - Called when a valid rebuttal Note is received or when a peer is evicted after timeout expiration.
 func (v *View) DeleteTimeout(id string) {
 	v.timeoutMutex.Lock()
 	defer v.timeoutMutex.Unlock()
@@ -381,6 +487,13 @@ func (v *View) checkTimeouts() {
 	}
 }
 
+// ShouldRebuttal verifies if an accusation against the local node targets the current epoch.
+// If valid, it increments the node's epoch, deactivates the accused ring if allowed, signs a new Note, and returns true.
+//
+// Prerequisites / Expected Services:
+//   - The cryptoService / signer must be active to sign the newly created rebuttal Note.
+//   - Invoked by accusation handling logic when an incoming accusation targets the local node.
+//   - If true is returned, the caller is expected to trigger an immediate rebuttal broadcast via the protocol service.
 func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 	v.self.noteMutex.Lock()
 	defer v.self.noteMutex.Unlock()
@@ -414,6 +527,10 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 	}
 }
 
+// ShouldBeNeighbour reports whether a peer with the given ID should be a direct neighbour of the local node on any ring.
+//
+// Prerequisites / Expected Services:
+//   - Used by incoming gossip RPC handlers (e.g. Spread) to verify whether incoming gossip from a sender should be accepted and merged.
 func (v *View) ShouldBeNeighbour(id string) bool {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -421,6 +538,10 @@ func (v *View) ShouldBeNeighbour(id string) bool {
 	return v.rings.shouldBeMyNeighbour(id)
 }
 
+// FindNeighbours returns all neighbours of the given peer ID across all rings.
+//
+// Prerequisites / Expected Services:
+//   - Used during peer placement checks and diagnostic/visualizer services.
 func (v *View) FindNeighbours(id string) []*Peer {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -428,6 +549,10 @@ func (v *View) FindNeighbours(id string) []*Peer {
 	return v.rings.findNeighbours(id)
 }
 
+// ValidAccuser checks whether the accuser peer is the valid predecessor of the accused peer on the specified ring.
+//
+// Prerequisites / Expected Services:
+//   - Used by accusation validation handlers (Node.evalAccusation) to verify accusation legitimacy before accepting.
 func (v *View) ValidAccuser(accused, accuser *Peer, ringNum uint32) bool {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -435,6 +560,10 @@ func (v *View) ValidAccuser(accused, accuser *Peer, ringNum uint32) bool {
 	return v.rings.isPredecessor(accused, accuser, ringNum)
 }
 
+// IsAlive checks whether a peer with the given ID currently exists in the live view map.
+//
+// Prerequisites / Expected Services:
+//   - Used by failure detectors, visualizers, and message handlers before routing messages.
 func (v *View) IsAlive(id string) bool {
 	v.liveMutex.RLock()
 	defer v.liveMutex.RUnlock()
@@ -465,6 +594,11 @@ func (v *View) selfNote() *proto.Note {
 	return v.self.note.ToPbMsg()
 }
 
+// State returns a protobuf State message containing the local node's latest note
+// and the note epoch numbers of all known peers in the full view.
+//
+// Prerequisites / Expected Services:
+//   - Used by the gossip service to prepare the outgoing State digest for periodic gossip exchange.
 func (v *View) State() *proto.State {
 	ownNote := v.selfNote()
 
@@ -488,6 +622,10 @@ func (v *View) State() *proto.State {
 	return ret
 }
 
+// ValidMask checks whether a ring bitmask does not deactivate more rings than allowed by Byzantine fault tolerance limits.
+//
+// Prerequisites / Expected Services:
+//   - Used by note evaluation handlers (Node.evalNote) when receiving gossip to validate peer note masks against Byzantine thresholds.
 func (v *View) ValidMask(mask uint32) bool {
 	err := validMask(mask, v.rings.numRings, v.maxByz)
 	if err != nil {
@@ -509,7 +647,8 @@ func (v *View) deactivateRing(ringNumber uint32) (uint32, error) {
 
 	maxIdx := v.rings.numRings - 1
 
-	if ringIdx > maxIdx || ringNumber < 0 {
+	// removed dead condition: || ringNumber < 0
+	if ringIdx > maxIdx {
 		return 0, errNonExistingRing
 	}
 

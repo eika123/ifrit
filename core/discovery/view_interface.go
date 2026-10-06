@@ -27,7 +27,7 @@ type Peer struct {
 	IsLive()
 	IsAccused()
 	Equal()
-	IncrementPing()
+	IncrementPingCount()
 	Accusations()
 	Accusation()
 
