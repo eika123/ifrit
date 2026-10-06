@@ -114,6 +114,11 @@ func (ss *serverStub) ShutDown() {
 type commStub struct {
 }
 
+// StreamMessenger implements [commService].
+func (cs *commStub) StreamMessenger(string, chan []byte, chan []byte) error {
+	panic("unimplemented")
+}
+
 func (cs *commStub) Register(p pb.GossipServer) {
 }
 
@@ -154,7 +159,7 @@ func (ps *pingStub) Ping(addr string, m *pb.Ping) (*pb.Pong, error) {
 	return &pb.Pong{}, nil
 }
 
-//TODO we need to decide upon stubs or not stubs etc, not just copy stuff, this is really ugly
+// TODO we need to decide upon stubs or not stubs etc, not just copy stuff, this is really ugly
 type cryptoStub struct {
 	priv *ecdsa.PrivateKey
 }
@@ -188,6 +193,21 @@ func (cs *cryptoStub) Sign(data []byte) ([]byte, []byte, error) {
 
 type cmStub struct {
 	cert *x509.Certificate
+}
+
+// Priv implements [certManager].
+func (cm *cmStub) Priv() *ecdsa.PrivateKey {
+	panic("unimplemented")
+}
+
+// SaveCertificate implements [certManager].
+func (cm *cmStub) SaveCertificate() error {
+	panic("unimplemented")
+}
+
+// SavePrivateKey implements [certManager].
+func (cm *cmStub) SavePrivateKey() error {
+	panic("unimplemented")
 }
 
 func (cm *cmStub) Certificate() *x509.Certificate {
