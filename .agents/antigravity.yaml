@@ -1,0 +1,36 @@
+# Antigravity Workspace Environment Setup
+engine:
+  version: "2.0"
+  default_timeout_seconds: 300
+version: "2.0"
+workspace:
+  name: go-legacy-recovery
+  # Strict mode forces the agent to abort if any SKILL.md constraints are violated
+  strict_mode: true
+  # Legger til forskningsartikler og protokolldokumentasjon som kontekst for agenten
+  resources_path: "./.agents/resources"
+
+agent:
+  profile: senior-go-engineer
+  capabilities:
+    - code-review
+    - refactoring
+    - syntax-repair
+
+# Connect the guardrails to the workspace execution pipeline
+skills:
+  - path: "./skills/go-modern-guardrails/SKILL.md"
+
+pipeline:
+  # The agent must run these checks to verify that code/syntax errors are truly fixed
+  verification:
+    on_change: true
+    commands:
+      - name: check-formatting
+        run: "go fmt ./..."
+      - name: static-analysis
+        run: "go vet ./..."
+      - name: compile-workspace
+        run: "go build ./..."
+      - name: unit-tests
+        run: "go test ./..."

@@ -1,0 +1,23 @@
+resources:
+  - id: johansen2015fireflies
+    title: "Fireflies: A Secure and Scalable Membership and Gossip Service"
+    local_path: "./.agents/resources/johansen2015fireflies.pdf"
+    authors:
+      - "Håvard D. Johansen"
+      - "Robbert Van Renesse"
+      - "Ymir Vigfusson"
+      - "Dag Johansen"
+    journal: "ACM Transactions on Computer Systems (TOCS)"
+    volume: 33
+    issue: 2
+    pages: "1-32"
+    publication_date: "2015-05-22"
+    doi: "10.1145/2701418"
+    url: "https://dl.acm.org/doi/10.1145/2701418"
+    topics:
+      - "Distributed Systems"
+      - "Communication Protocols"
+      - "Gossip Protocols"
+      - "Byzantine Fault Tolerance"
+    abstract: >
+      Presents Fireflies, an overlay network protocol protecting against membership manipulation attacks by organizing members in a verifiable pseudorandom structure. For the complete abstract and details, please refer to the referenced document.
