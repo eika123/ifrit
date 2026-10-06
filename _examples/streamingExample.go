@@ -39,7 +39,10 @@ func main() {
 }
 
 func NewApp() (*App, error) {
-	client, err := ifrit.NewClient()
+	client, err := ifrit.NewClient(&ifrit.Config{
+		New:      true,
+		Hostname: "localhost",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +50,10 @@ func NewApp() (*App, error) {
 	go client.Start()
 	client.RegisterStreamHandler(streamHandler)
 
-	master, err := ifrit.NewClient()
+	master, err := ifrit.NewClient(&ifrit.Config{
+		New:      true,
+		Hostname: "localhost",
+	})
 	if err != nil {
 		return nil, err
 	}

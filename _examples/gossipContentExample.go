@@ -45,7 +45,10 @@ type user struct {
 // As an example we store the client instance within the application
 // such that we can communicate with it as we see fit
 func newApp(caAddr string) (*application, error) {
-	c, err := ifrit.NewClient(caAddr, nil)
+	c, err := ifrit.NewClient(&ifrit.Config{
+		New:      true,
+		Hostname: "localhost",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +56,10 @@ func newApp(caAddr string) (*application, error) {
 	return &application{
 		ifritClient: c,
 		caAddr:      caAddr,
+		exitChan:    make(chan bool),
+		data: &appData{
+			Users: make(map[int]*user),
+		},
 	}, nil
 }
 
@@ -71,10 +78,23 @@ func (a *application) Start() {
 	}
 }
 
+func (a *application) addRandomUser() {
+	if a.data.Users == nil {
+		a.data.Users = make(map[int]*user)
+	}
+	id := len(a.data.Users) + 1
+	a.data.Users[id] = &user{
+		FirstName: "John",
+		LastName:  "Doe",
+		Address:   "123 Main St",
+	}
+	a.ifritClient.SetGossipContent(a.State())
+}
+
 func (a *application) State() []byte {
 	var buf bytes.Buffer
 
-	json.NewEncoder(buf).Encode(a.data)
+	json.NewEncoder(&buf).Encode(a.data)
 
 	return buf.Bytes()
 }
@@ -88,9 +108,14 @@ func (a *application) handleMessages(data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	for k, v := range received {
-		if _, ok := a.data.Users[k]; !ok {
-			a.data.Users[k] = v
+	if received.Users != nil {
+		if a.data.Users == nil {
+			a.data.Users = make(map[int]*user)
+		}
+		for k, v := range received.Users {
+			if _, ok := a.data.Users[k]; !ok {
+				a.data.Users[k] = v
+			}
 		}
 	}
 
