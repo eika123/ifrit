@@ -21,10 +21,16 @@ type Accusation struct {
 	*signature
 }
 
+// Checks that for this accusation a:
+//   - a.accused == accused
+//   - a.accuser == accuser
+//   - a.ringNum == ringNum
+//   - a.epoch == epoch
 func (a Accusation) Equal(accused, accuser string, ringNum uint32, epoch uint64) bool {
 	return a.accused == accused && a.accuser == accuser && a.ringNum == ringNum && a.epoch == epoch
 }
 
+// check if argument other is more recent (larger) than a.epoch
 func (a Accusation) IsMoreRecent(other uint64) bool {
 	return a.epoch < other
 }
@@ -33,6 +39,7 @@ func (a Accusation) IsAccuser(id string) bool {
 	return a.accuser == id
 }
 
+// Converts the internal Accusation struct to a protobuf Accusation message.
 func (a Accusation) ToPbMsg() *pb.Accusation {
 	return &pb.Accusation{
 		Epoch:   a.epoch,
