@@ -42,3 +42,9 @@ planetlab/cmd_results
 experiment_results
 cmd/_plexperiments
 ifritlog
+*.pem
+ifrit_cad
+ifrit_config.yaml
+logfile
+messagesExample
+streamingExample
