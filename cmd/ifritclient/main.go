@@ -2,13 +2,13 @@ package main
 
 import (
 	"errors"
-	"time"
-	"fmt"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	_ "net/http/pprof"
 
@@ -43,10 +43,10 @@ func main() {
 	r.SetHandler(h)
 
 	c, err := ifrit.NewClient(&ifrit.Config{
-		New:      true,
-		Hostname: "127.0.1.1",
-		TCPPort:  2000,
-		UDPPort:  3000,
+		New:            true,
+		Hostname:       "127.0.1.1",
+		TCPPort:        2000,
+		UDPPort:        3000,
 		CryptoUnitPath: "crypto",
 	})
 	if err != nil {
@@ -55,7 +55,6 @@ func main() {
 
 	c.RegisterMsgHandler(msgHandler)
 	go c.Start()
-	
 
 	for {
 		if len(c.Members()) == 0 {
@@ -67,7 +66,7 @@ func main() {
 
 		time.Sleep(3 * time.Second)
 		select {
-			case msg := <-ch:
+		case msg := <-ch:
 			if msg != nil {
 				fmt.Println("Got response from client:", msg)
 			} else {
@@ -75,7 +74,7 @@ func main() {
 			}
 		}
 	}
-	
+
 	channel := make(chan os.Signal, 2)
 	signal.Notify(channel, os.Interrupt, syscall.SIGTERM)
 	<-channel
