@@ -171,6 +171,13 @@ fi
 DB_FILE="$OUTPUT_DIR/${EXP_IDENT}.db"
 PLOT_FILE="$OUTPUT_DIR/${EXP_IDENT}.png"
 
+# Dynamic telemetry DB and plot for network observer
+TELEMETRY_DB_NAME="network-telemetry_${EXP_IDENT#resource-usage-}.db"
+TELEMETRY_PLOT_NAME="network-telemetry_${EXP_IDENT#resource-usage-}.png"
+TELEMETRY_DB_FILE="$OUTPUT_DIR/$TELEMETRY_DB_NAME"
+TELEMETRY_PLOT_FILE="$OUTPUT_DIR/$TELEMETRY_PLOT_NAME"
+export TELEMETRY_DB="/results/$TELEMETRY_DB_NAME"
+
 # Backup database if an existing one is found
 if [ -f "$DB_FILE" ]; then
     TIMESTAMP_BACKUP=$(date +%Y%m%d_%H%M%S)
@@ -181,7 +188,16 @@ if [ -f "$DB_FILE" ]; then
     rm -f "$DB_FILE" "$DB_FILE-wal" "$DB_FILE-shm"
 fi
 
-echo "Using database: $DB_FILE"
+if [ -f "$TELEMETRY_DB_FILE" ]; then
+    TIMESTAMP_BACKUP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="$OUTPUT_DIR/backup-${TELEMETRY_DB_NAME%.db}_${TIMESTAMP_BACKUP}.db"
+    echo "Existing telemetry DB found at $TELEMETRY_DB_FILE. Creating backup at $BACKUP_FILE..."
+    cp "$TELEMETRY_DB_FILE" "$BACKUP_FILE"
+    rm -f "$TELEMETRY_DB_FILE" "$TELEMETRY_DB_FILE-wal" "$TELEMETRY_DB_FILE-shm"
+fi
+
+echo "Using resource stats database: $DB_FILE"
+echo "Using network telemetry database: $TELEMETRY_DB_FILE"
 sqlite3 "$DB_FILE" "CREATE TABLE IF NOT EXISTS stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT,
@@ -237,7 +253,16 @@ STATS_PID=$!
 EXP_PID=$!
 
 if [ -n "$EXPERIMENT_DURATION" ]; then
-    echo "Running experiment (max duration: $EXPERIMENT_DURATION)..."
+    echo "Waiting for containers to initialize before starting $EXPERIMENT_DURATION timer..."
+    # Give compose a few seconds to finish image builds and spin up containers
+    for i in {1..30}; do
+        if docker compose ps -q gossip-node 2>/dev/null | grep -q .; then
+            break
+        fi
+        sleep 1
+    done
+
+    echo "Running experiment (timer started: $EXPERIMENT_DURATION)..."
     sleep "$EXPERIMENT_DURATION" &
     SLEEP_PID=$!
 
@@ -246,7 +271,7 @@ if [ -n "$EXPERIMENT_DURATION" ]; then
 
     if kill -0 "$EXP_PID" 2>/dev/null; then
         echo "Duration limit ($EXPERIMENT_DURATION) reached. Stopping experiment..."
-        # First stop docker containers directly so the compose process unblocks immediately
+        # Stop containers directly and terminate process group
         docker compose stop -t 2 >/dev/null 2>&1 || true
         kill -TERM "$EXP_PID" 2>/dev/null || true
         wait "$EXP_PID" 2>/dev/null || true
@@ -308,8 +333,15 @@ if [ -n "$PLOT_SCRIPT" ]; then
     uv pip install matplotlib --quiet --python "$VENV_DIR"
 
     # 4. Run the plotting script safely inside the virtual environment
-    echo "Generating plots..."
+    echo "Generating resource plots..."
     uv run --python "$VENV_DIR" python3 "$PLOT_SCRIPT" -d "$DB_FILE" -o "$PLOT_FILE"
+
+    # Also generate network telemetry plots if network telemetry DB exists and plot script is present
+    NET_PLOT_SCRIPT="experiments/plot_network_telemetry.py"
+    if [ -f "$NET_PLOT_SCRIPT" ] && [ -f "$TELEMETRY_DB_FILE" ]; then
+        echo "Generating network telemetry plots..."
+        uv run --python "$VENV_DIR" python3 "$NET_PLOT_SCRIPT" -d "$TELEMETRY_DB_FILE" -o "$TELEMETRY_PLOT_FILE"
+    fi
 else
     echo "Could not find plot_resource_usage.py in experiments/ or ., skipping plot generation."
 fi
