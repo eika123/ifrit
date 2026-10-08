@@ -87,13 +87,20 @@ func (us *UDPServer) Start() {
 				continue
 			}
 
-			r, s, err := us.Sign(bytes[:n])
+			var ping pb.Ping
+			if err := proto.Unmarshal(bytes[:n], &ping); err != nil {
+				log.Error("failed to unmarshal ping", "err", err)
+				continue
+			}
+
+			r, s, err := us.Sign(ping.GetNonce())
 			if err != nil {
 				log.Error(err.Error())
 				continue
 			}
 
 			pong := &pb.Pong{
+				Nonce: ping.GetNonce(),
 				Signature: &pb.Signature{
 					R: r,
 					S: s,

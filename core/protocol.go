@@ -62,7 +62,10 @@ func (c correct) Gossip(n *Node) {
 }
 
 func (c correct) Monitor(n *Node) {
-	for i := 1; i <= n.pingsPerInterval; i++ {
+
+	// Fireflies protocol: ping one successor per ring,
+	// up to ringsPingedPerInterval in total.
+	for i := 1; i <= n.ringsPingedPerInterval; i++ {
 		p, ringNum := n.view.MonitorTarget()
 		if p == nil {
 			continue
@@ -93,6 +96,14 @@ func (c correct) Monitor(n *Node) {
 			} else {
 				log.Error(err.Error())
 			}
+		}
+
+		if err == errInvalidPongSignature {
+			log.Debug("Invalid pong signature, successor is malicious (or this implementation is just buggy!)", "succ", p.Addr)
+		}
+
+		if err != nil && err != errInvalidPongSignature {
+			log.Error(err.Error(), "addr", p.Addr)
 		}
 	}
 }

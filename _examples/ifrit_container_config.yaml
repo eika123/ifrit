@@ -4,7 +4,7 @@ ca_addr: "ca:8321"
 
 # Timing intervals
 gossip_interval: 5
-monitor_interval: 5
+monitor_interval: 1
 view_update_interval: 5
 
 # Crash detection & pinging settings

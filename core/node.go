@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,10 +23,9 @@ var (
 )
 
 type Message struct {
-	Data []byte
+	Data  []byte
 	Error error
 }
-
 
 type processMsg func([]byte) ([]byte, error)
 type streamMsg func(chan []byte, chan []byte)
@@ -48,9 +48,9 @@ type Node struct {
 	gossipTimeout      time.Duration
 	gossipTimeoutMutex sync.RWMutex
 
-	pingsPerInterval int
-	monitorTimeout   time.Duration
-	nodeDeadTimeout  float64
+	ringsPingedPerInterval int
+	monitorTimeout         time.Duration
+	nodeDeadTimeout        float64
 
 	msgHandler      processMsg
 	msgHandlerMutex sync.RWMutex
@@ -160,6 +160,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 	} else {
 		perInterval = num
 	}
+	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
 	n := &Node{
 		exitChan:       make(chan bool, 1),
@@ -168,9 +169,9 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		monitorTimeout: time.Second * time.Duration(viper.GetInt32("monitor_interval")),
 		dispatcher: workerpool.NewDispatcher(uint32(viper.
 			GetInt32("max_concurrent_messages"))),
-		entryAddrs:       viper.GetStringSlice("entry_addrs"),
-		p:                correct{},
-		pingsPerInterval: perInterval,
+		entryAddrs:             viper.GetStringSlice("entry_addrs"),
+		p:                      correct{},
+		ringsPingedPerInterval: perInterval,
 
 		fd:   newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),
 		cm:   cm,
@@ -287,7 +288,7 @@ func (n *Node) sendMsg(dest string, ch chan *Message, msg *pb.Msg) {
 	if err != nil {
 		log.Error(err.Error())
 		ch <- nil
-	//	return
+		//	return
 	}
 
 	if reply.GetError() == "" {

@@ -1,11 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
@@ -40,6 +40,15 @@ func (fd *failureDetector) stopServing(d time.Duration) {
 	fd.ps.Pause(d)
 }
 
+func (fd *failureDetector) validPong(pong *pb.Pong, pingMsg *pb.Ping, dest *discovery.Peer) bool {
+	sign := pong.GetSignature()
+	if sign == nil || !bytes.Equal(pong.GetNonce(), pingMsg.GetNonce()) {
+		return false
+	}
+
+	return fd.cs.Verify(pong.GetNonce(), sign.GetR(), sign.GetS(), dest.PublicKey())
+}
+
 func (fd *failureDetector) probe(dest *discovery.Peer) error {
 	msg := &pb.Ping{
 		Nonce: genNonce(),
@@ -55,18 +64,12 @@ func (fd *failureDetector) probe(dest *discovery.Peer) error {
 		return err
 	}
 
-	pong.Signature = nil
-	bytes, err := proto.Marshal(pong)
-	if err != nil {
-		return err
-	}
-
-	if sign := pong.GetSignature(); sign == nil {
-		return errInvalidPongSignature
-	} else {
-		if valid := fd.cs.Verify(bytes, sign.GetR(), sign.GetS(), dest.PublicKey()); !valid {
-			return errInvalidPongSignature
+	if !fd.validPong(pong, msg, dest) {
+		dest.IncrementPingCount()
+		if dest.NumPing() >= fd.maxFailedPings {
+			return errDead
 		}
+		return errInvalidPongSignature
 	}
 
 	dest.ResetPingCount()
