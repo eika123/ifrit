@@ -2,7 +2,7 @@ services:
   ca:
     build:
       context: .
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     container_name: ifrit-ca
     command: ["ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad"]
     ports:
@@ -14,7 +14,7 @@ services:
   gossip-node:
     build:
       context: .
-      dockerfile: Containerfile
+      dockerfile: Dockerfile
     command: ["gossip-node"]
     depends_on:
       - ca
@@ -58,6 +58,26 @@ services:
       - "re2:.*gossip-node.*"
     networks:
       - ifrit-net
+  # Passive Network Observer daemon (monitors UDP Ping/Pong & TCP Gossip wire bytes)
+  network-observer:
+    build:
+      context: .
+      dockerfile: experiments/observer/Containerfile
+    container_name: ifrit-observer
+    depends_on:
+      - ca
+      - gossip-node
+    # For the observer to see all container traffic on ifrit-net, it must run on the host network
+    # A standard container's eth0 only receives unicast packets directed to its own MAC address plus broadcast packets.
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - TELEMETRY_DB=${TELEMETRY_DB:-/results/network_telemetry.db}
+    volumes:
+      - ./experiment_results:/results
+    command: ["-db", "${TELEMETRY_DB:-/results/network_telemetry.db}"]
 networks:
   ifrit-net:
     driver: bridge
