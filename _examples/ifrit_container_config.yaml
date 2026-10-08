@@ -1,0 +1,19 @@
+# Config file used by Ifrit nodes inside container network
+
+ca_addr: "ca:8321"
+
+# Timing intervals
+gossip_interval: 5
+monitor_interval: 5
+view_update_interval: 5
+
+# Crash detection & pinging settings
+ping_limit: 3
+pings_per_interval: 3
+removal_timeout: 30
+
+# Performance settings
+max_concurrent_messages: 5
+use_compression: true
+
+viz_update_interval: 10

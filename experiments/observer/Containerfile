@@ -1,0 +1,25 @@
+FROM docker.io/library/golang:1.24-alpine AS builder
+
+WORKDIR /build
+
+# Install gcc and musl-dev for go-sqlite3 CGO compilation
+RUN apk add --no-cache gcc musl-dev
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build the observer binary with sqlite3 support
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /build/bin/ifrit-observer ./experiments/observer/main.go
+
+# Minimal runtime image with raw socket capability
+FROM docker.io/library/alpine:3.20
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /app
+COPY --from=builder /build/bin/ifrit-observer /usr/local/bin/ifrit-observer
+
+ENTRYPOINT ["ifrit-observer"]
+CMD ["-db", "/results/network_telemetry.db"]
