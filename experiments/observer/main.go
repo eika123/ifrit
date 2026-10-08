@@ -49,52 +49,25 @@ type pendingPing struct {
 	sentAt   time.Time
 }
 
-// Observer coordinates passive sniffing and writing metrics into SQLite.
-type Observer struct {
-	cfg     Config
-	db      *sql.DB
-	dbLock  sync.Mutex
-	stopCh  chan struct{}
-	pingsMu sync.Mutex
-	// Pending pings mapped by "srcIP:srcPort->dstIP:dstPort" and nonceHex
-	pendingByFlow  map[string]pendingPing
-	pendingByNonce map[string]time.Time
+// TelemetryRecorder abstracts persistent storage of network metrics.
+type TelemetryRecorder interface {
+	RecordPingPong(timestamp, eventType, srcIP string, srcPort int, dstIP string, dstPort int, nonceHex string, rttMs float64) error
+	RecordTCP(timestamp, srcIP string, srcPort int, dstIP string, dstPort int, bytesLen int) error
+	Close() error
 }
 
-func main() {
-	var cfg Config
-	flag.StringVar(&cfg.Interface, "iface", "any", "Network interface or bridge to sniff on (e.g., eth0, ifrit-net, any)")
-	flag.StringVar(&cfg.DBPath, "db", "experiment_results/network_telemetry.db", "SQLite output database path")
-	flag.IntVar(&cfg.UDPPort, "udp-port", 9001, "UDP port for failure detection ping/pong")
-	flag.IntVar(&cfg.TCPPort, "tcp-port", 9000, "TCP port for gRPC gossip traffic")
-	flag.Parse()
-
-	log.Printf("Starting Ifrit Network Observer on iface '%s' -> DB '%s'\n", cfg.Interface, cfg.DBPath)
-
-	obs, err := NewObserver(cfg)
-	if err != nil {
-		log.Fatalf("Failed to initialize observer: %v", err)
-	}
-	defer obs.Close()
-
-	// Handle graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-
-	go obs.Start()
-
-	<-sigCh
-	log.Println("Shutting down network observer...")
-	obs.Stop()
+// SQLiteRecorder implements TelemetryRecorder using SQLite.
+type SQLiteRecorder struct {
+	db     *sql.DB
+	dbLock sync.Mutex
 }
 
-func NewObserver(cfg Config) (*Observer, error) {
-	db, err := sql.Open("sqlite3", cfg.DBPath+"?_journal_mode=WAL&_busy_timeout=5000&_sync=NORMAL")
+func NewSQLiteRecorder(dbPath string) (*SQLiteRecorder, error) {
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_sync=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
 
-	// Initialize tables
 	schema := `
 	CREATE TABLE IF NOT EXISTS ping_pong_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,13 +99,103 @@ func NewObserver(cfg Config) (*Observer, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
+	return &SQLiteRecorder{db: db}, nil
+}
+
+func (r *SQLiteRecorder) RecordPingPong(timestamp, eventType, srcIP string, srcPort int, dstIP string, dstPort int, nonceHex string, rttMs float64) error {
+	r.dbLock.Lock()
+	defer r.dbLock.Unlock()
+
+	var rttVal sql.NullFloat64
+	if rttMs >= 0 {
+		rttVal = sql.NullFloat64{Float64: rttMs, Valid: true}
+	}
+
+	_, err := r.db.Exec(`
+		INSERT INTO ping_pong_events (timestamp, event_type, src_ip, src_port, dst_ip, dst_port, nonce_hex, rtt_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, timestamp, eventType, srcIP, srcPort, dstIP, dstPort, nonceHex, rttVal)
+	return err
+}
+
+func (r *SQLiteRecorder) RecordTCP(timestamp, srcIP string, srcPort int, dstIP string, dstPort int, bytesLen int) error {
+	r.dbLock.Lock()
+	defer r.dbLock.Unlock()
+
+	_, err := r.db.Exec(`
+		INSERT INTO tcp_traffic_stats (timestamp, src_ip, src_port, dst_ip, dst_port, packet_bytes)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, timestamp, srcIP, srcPort, dstIP, dstPort, bytesLen)
+	return err
+}
+
+func (r *SQLiteRecorder) Close() error {
+	r.dbLock.Lock()
+	defer r.dbLock.Unlock()
+	if r.db != nil {
+		return r.db.Close()
+	}
+	return nil
+}
+
+// Observer coordinates passive sniffing and passing decoded frames to a TelemetryRecorder.
+type Observer struct {
+	cfg      Config
+	recorder TelemetryRecorder
+	stopCh   chan struct{}
+	pingsMu  sync.Mutex
+	// Pending pings mapped by "srcIP:srcPort->dstIP:dstPort" and nonceHex
+	pendingByFlow  map[string]pendingPing
+	pendingByNonce map[string]time.Time
+}
+
+func main() {
+	var cfg Config
+	flag.StringVar(&cfg.Interface, "iface", "any", "Network interface or bridge to sniff on (e.g., eth0, ifrit-net, any)")
+	flag.StringVar(&cfg.DBPath, "db", "experiment_results/network_telemetry.db", "SQLite output database path")
+	flag.IntVar(&cfg.UDPPort, "udp-port", 9001, "UDP port for failure detection ping/pong")
+	flag.IntVar(&cfg.TCPPort, "tcp-port", 9000, "TCP port for gRPC gossip traffic")
+	flag.Parse()
+
+	log.Printf("Starting Ifrit Network Observer on iface '%s' -> DB '%s'\n", cfg.Interface, cfg.DBPath)
+
+	recorder, err := NewSQLiteRecorder(cfg.DBPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	obs := NewObserverWithRecorder(cfg, recorder)
+	defer obs.Close()
+
+	// Handle graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	go obs.Start()
+
+	<-sigCh
+	log.Println("Shutting down network observer...")
+	obs.Stop()
+}
+
+// NewObserver creates an Observer using a SQLite recorder.
+func NewObserver(cfg Config) (*Observer, error) {
+	rec, err := NewSQLiteRecorder(cfg.DBPath)
+	if err != nil {
+		return nil, err
+	}
+	return NewObserverWithRecorder(cfg, rec), nil
+}
+
+// NewObserverWithRecorder creates an Observer injected with any TelemetryRecorder.
+func NewObserverWithRecorder(cfg Config, rec TelemetryRecorder) *Observer {
 	return &Observer{
 		cfg:            cfg,
-		db:             db,
+		recorder:       rec,
 		stopCh:         make(chan struct{}),
 		pendingByFlow:  make(map[string]pendingPing),
 		pendingByNonce: make(map[string]time.Time),
-	}, nil
+	}
 }
 
 func (obs *Observer) Start() {
@@ -174,12 +237,11 @@ func (obs *Observer) Stop() {
 	close(obs.stopCh)
 }
 
-func (obs *Observer) Close() {
-	obs.dbLock.Lock()
-	defer obs.dbLock.Unlock()
-	if obs.db != nil {
-		obs.db.Close()
+func (obs *Observer) Close() error {
+	if obs.recorder != nil {
+		return obs.recorder.Close()
 	}
+	return nil
 }
 
 // processEthernetFrame parses IP, UDP, and TCP headers without external CGO/pcap libraries.
@@ -223,6 +285,10 @@ func (obs *Observer) processEthernetFrame(data []byte) {
 
 	//    for us, assume the payload is fragmented if necessary, so up to 1480 bytes maximum.
 	// ---------------------------------------------------------------------------------------------
+
+	if len(data) < EthernetHeaderLen {
+		return
+	}
 
 	// Reconstruct little endian 16bit (2byte) from BigEndian two bytes.
 	//                          MSB            LSB
@@ -288,8 +354,9 @@ func (obs *Observer) processEthernetFrame(data []byte) {
 		// filters away TCP traffic not destined for our observer
 		if srcPort == obs.cfg.TCPPort || dstPort == obs.cfg.TCPPort {
 			tcpPayloadLen := len(payload) - tcpHeaderLen
-			if tcpPayloadLen > 0 {
-				obs.handleTCPTraffic(srcIP, dstIP, srcPort, dstPort, tcpPayloadLen)
+			if tcpPayloadLen > 0 && obs.recorder != nil {
+				nowStr := time.Now().Format("15:04:05")
+				_ = obs.recorder.RecordTCP(nowStr, srcIP, srcPort, dstIP, dstPort, tcpPayloadLen)
 			}
 		}
 	}
@@ -303,7 +370,7 @@ func (obs *Observer) handleUDPPacket(srcIP, dstIP string, srcPort, dstPort int, 
 
 	// In Ifrit:
 	// - Ping contains Nonce (32 bytes), Signature is nil.
-	// - Pong contains Signature (R, S), while Nonce is omitted/empty.
+	// - Pong contains Signature (R, S), and echoes Nonce.
 	//
 	// Try unmarshaling as Pong first:
 	var pong pb.Pong
@@ -334,7 +401,9 @@ func (obs *Observer) handleUDPPacket(srcIP, dstIP string, srcPort, dstPort int, 
 			obs.pingsMu.Unlock()
 		}
 
-		obs.insertPingPong(nowStr, "PONG", srcIP, srcPort, dstIP, dstPort, nonceHex, rttMs)
+		if obs.recorder != nil {
+			_ = obs.recorder.RecordPingPong(nowStr, "PONG", srcIP, srcPort, dstIP, dstPort, nonceHex, rttMs)
+		}
 		return
 	}
 
@@ -352,35 +421,10 @@ func (obs *Observer) handleUDPPacket(srcIP, dstIP string, srcPort, dstPort int, 
 		}
 		obs.pingsMu.Unlock()
 
-		obs.insertPingPong(nowStr, "PING", srcIP, srcPort, dstIP, dstPort, nonceHex, -1)
+		if obs.recorder != nil {
+			_ = obs.recorder.RecordPingPong(nowStr, "PING", srcIP, srcPort, dstIP, dstPort, nonceHex, -1)
+		}
 	}
-}
-
-func (obs *Observer) handleTCPTraffic(srcIP, dstIP string, srcPort, dstPort, bytesLen int) {
-	// 24h format: <hour:24h>:<min>:<sec>
-	nowStr := time.Now().Format("15:04:05")
-
-	obs.dbLock.Lock()
-	defer obs.dbLock.Unlock()
-	_, _ = obs.db.Exec(`
-		INSERT INTO tcp_traffic_stats (timestamp, src_ip, src_port, dst_ip, dst_port, packet_bytes)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, nowStr, srcIP, srcPort, dstIP, dstPort, bytesLen)
-}
-
-func (obs *Observer) insertPingPong(timestamp, eventType, srcIP string, srcPort int, dstIP string, dstPort int, nonceHex string, rttMs float64) {
-	obs.dbLock.Lock()
-	defer obs.dbLock.Unlock()
-
-	var rttVal sql.NullFloat64
-	if rttMs >= 0 {
-		rttVal = sql.NullFloat64{Float64: rttMs, Valid: true}
-	}
-
-	_, _ = obs.db.Exec(`
-		INSERT INTO ping_pong_events (timestamp, event_type, src_ip, src_port, dst_ip, dst_port, nonce_hex, rtt_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, timestamp, eventType, srcIP, srcPort, dstIP, dstPort, nonceHex, rttVal)
 }
 
 // hostToNetwork16 converts a 16-bit integer from host byte order (Little-Endian on x86/ARM)
