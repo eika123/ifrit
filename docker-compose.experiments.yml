@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ifrit-ca
-    command: ["ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad"]
+    command: [ "ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad" ]
     ports:
       - "8321:8321"
     networks:
@@ -15,7 +15,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["gossip-node"]
+    command: [ "gossip-node" ]
     depends_on:
       - ca
     deploy:
@@ -73,11 +73,13 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - BPF
+      - PERFMON
     environment:
       - TELEMETRY_DB=${TELEMETRY_DB:-/results/network_telemetry.db}
     volumes:
       - ./experiment_results:/results
-    command: ["-db", "${TELEMETRY_DB:-/results/network_telemetry.db}"]
+    command: [ "-db", "${TELEMETRY_DB:-/results/network_telemetry.db}" ]
 networks:
   ifrit-net:
     driver: bridge

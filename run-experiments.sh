@@ -6,6 +6,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # Parse flags
 DOCKER_MODE=false
+BUILD_MODE=false
 EXPERIMENT_DURATION=""
 CUSTOM_COMPOSE_FILE=""
 
@@ -13,6 +14,10 @@ while [[ "$1" == --* || "$1" == -* ]]; do
     case "$1" in
         --docker-activate)
             DOCKER_MODE=true
+            shift
+            ;;
+        -b|--build)
+            BUILD_MODE=true
             shift
             ;;
         -t|--duration)
@@ -32,8 +37,8 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--docker-activate] [-t <duration>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
-            echo "Example: $0 --docker-activate -t 40s gossip-experiment.sh 10"
+            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
+            echo "Example: $0 --docker-activate --build -t 40s gossip-experiment.sh 10"
             echo "Example: $0 --compose-file custom-compose.yml gossip-experiment.sh 5"
             exit 0
             ;;
@@ -124,6 +129,9 @@ cleanup() {
         if [ -d "experiments/.venv" ]; then
             chown -R "$REAL_USER:$REAL_GROUP" "experiments/.venv" 2>/dev/null || true
         fi
+        if [ -d "experiments/observer" ]; then
+            chown -R "$REAL_USER:$REAL_GROUP" "experiments/observer" 2>/dev/null || true
+        fi
     fi
 
     # ONLY if we started Docker specifically for this experiment
@@ -145,6 +153,27 @@ if [ "$DOCKER_MODE" = true ]; then
     sudo systemctl start docker
 else
     echo "Standard Mode: Using existing Docker-environment..."
+fi
+
+# =====================================================================
+# Recursive Build Mode (eBPF code generation + Docker Compose images)
+# =====================================================================
+if [ "$BUILD_MODE" = true ]; then
+    echo "====================================================================="
+    echo "Build Mode: Recursively building eBPF bytecode and Docker images..."
+    echo "====================================================================="
+    if command -v go >/dev/null 2>&1 || [ -x "/usr/local/go/bin/go" ]; then
+        GO_BIN="$(command -v go || echo "/usr/local/go/bin/go")"
+        echo "1/2: Generating eBPF bytecode using $GO_BIN generate..."
+        PATH="$PATH:/usr/local/go/bin:$HOME/go/bin" "$GO_BIN" generate ./experiments/observer
+    else
+        echo "Notice: go binary not found on PATH; using pre-generated BPF objects."
+    fi
+
+    echo "2/2: Building all Docker images in ${COMPOSE_FILE:-docker-compose.experiments.yml}..."
+    docker compose build --pull
+    echo "Build complete!"
+    echo "====================================================================="
 fi
 
 # =====================================================================

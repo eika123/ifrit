@@ -1,18 +1,29 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/golang/protobuf/proto"
 	pb "github.com/joonnna/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3"
@@ -42,6 +53,7 @@ type Config struct {
 	DBPath    string
 	UDPPort   int
 	TCPPort   int
+	UseEBPF   bool
 }
 
 type pendingPing struct {
@@ -147,6 +159,8 @@ type Observer struct {
 	// Pending pings mapped by "srcIP:srcPort->dstIP:dstPort" and nonceHex
 	pendingByFlow  map[string]pendingPing
 	pendingByNonce map[string]time.Time
+	udpEventCount  uint64
+	tcpEventCount  uint64
 }
 
 func main() {
@@ -155,9 +169,10 @@ func main() {
 	flag.StringVar(&cfg.DBPath, "db", "experiment_results/network_telemetry.db", "SQLite output database path")
 	flag.IntVar(&cfg.UDPPort, "udp-port", 9001, "UDP port for failure detection ping/pong")
 	flag.IntVar(&cfg.TCPPort, "tcp-port", 9000, "TCP port for gRPC gossip traffic")
+	flag.BoolVar(&cfg.UseEBPF, "ebpf", true, "Use eBPF TC filter and RingBuffer instead of raw socket sniffer")
 	flag.Parse()
 
-	log.Printf("Starting Ifrit Network Observer on iface '%s' -> DB '%s'\n", cfg.Interface, cfg.DBPath)
+	log.Printf("Starting Ifrit Network Observer (eBPF: %v) on iface '%s' -> DB '%s'\n", cfg.UseEBPF, cfg.Interface, cfg.DBPath)
 
 	recorder, err := NewSQLiteRecorder(cfg.DBPath)
 	if err != nil {
@@ -199,6 +214,187 @@ func NewObserverWithRecorder(cfg Config, rec TelemetryRecorder) *Observer {
 }
 
 func (obs *Observer) Start() {
+	if obs.cfg.UseEBPF {
+		obs.startEBPF()
+		return
+	}
+	obs.startRawSocket()
+}
+
+func (obs *Observer) startEBPF() {
+	// Remove memory limits on locked memory for BPF maps
+	if err := rlimit.RemoveMemlock(); err != nil {
+		log.Printf("Warning: failed to remove memlock limit: %v\n", err)
+	}
+
+	spec, err := loadFilter()
+	if err != nil {
+		log.Fatalf("Failed to load eBPF collection spec: %v", err)
+	}
+
+	// Rewrite runtime port constants in .rodata
+	if varTCP, ok := spec.Variables["gossip_tcp_port"]; ok {
+		if err := varTCP.Set(uint16(obs.cfg.TCPPort)); err != nil {
+			log.Printf("Warning: failed to set gossip_tcp_port: %v\n", err)
+		}
+	}
+	if varUDP, ok := spec.Variables["ping_udp_port"]; ok {
+		if err := varUDP.Set(uint16(obs.cfg.UDPPort)); err != nil {
+			log.Printf("Warning: failed to set ping_udp_port: %v\n", err)
+		}
+	}
+
+	var objs filterObjects
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		log.Fatalf("Failed to load eBPF objects into kernel: %v", err)
+	}
+	defer objs.Close()
+
+	// Find or auto-discover the network interface
+	iface := obs.resolveInterface(obs.cfg.Interface)
+	log.Printf("Selected network interface '%s' (index %d) for eBPF attachment\n", iface.Name, iface.Index)
+
+	var (
+		linksMu     sync.Mutex
+		activeLinks = make(map[string]link.Link)
+	)
+
+	attachTCX := func(name string, index int, attachType ebpf.AttachType) {
+		linksMu.Lock()
+		defer linksMu.Unlock()
+		key := fmt.Sprintf("%s-%v", name, attachType)
+		if _, exists := activeLinks[key]; exists {
+			return
+		}
+		l, err := link.AttachTCX(link.TCXOptions{
+			Interface: index,
+			Program:   objs.TcPacketFilter,
+			Attach:    attachType,
+		})
+		if err != nil {
+			log.Printf("Warning: failed to attach TCX %v to '%s': %v\n", attachType, name, err)
+			return
+		}
+		activeLinks[key] = l
+		log.Printf("Successfully attached eBPF TC filter (%v) to '%s' (index %d)\n", attachType, name, index)
+	}
+
+	// Always attach to primary interface on Ingress and Egress
+	attachTCX(iface.Name, iface.Index, ebpf.AttachTCXIngress)
+	attachTCX(iface.Name, iface.Index, ebpf.AttachTCXEgress)
+
+	// If the selected interface is a Linux bridge, attach TC Ingress to all slave veth interfaces
+	if isBridgeInterface(iface.Name) {
+		log.Printf("Interface '%s' is a Linux bridge; discovering and attaching to slave ports (veth)...\n", iface.Name)
+		for _, slaveName := range getBridgeSlaves(iface.Name) {
+			if sIface, err := net.InterfaceByName(slaveName); err == nil {
+				attachTCX(sIface.Name, sIface.Index, ebpf.AttachTCXIngress)
+			}
+		}
+
+		// Dynamic watcher goroutine to attach to any new container veth interfaces spawned during experiment
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-obs.stopCh:
+					return
+				case <-ticker.C:
+					for _, slaveName := range getBridgeSlaves(iface.Name) {
+						linksMu.Lock()
+						key := fmt.Sprintf("%s-%v", slaveName, ebpf.AttachTCXIngress)
+						_, attached := activeLinks[key]
+						linksMu.Unlock()
+						if !attached {
+							if sIface, err := net.InterfaceByName(slaveName); err == nil {
+								attachTCX(sIface.Name, sIface.Index, ebpf.AttachTCXIngress)
+							}
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	defer func() {
+		linksMu.Lock()
+		defer linksMu.Unlock()
+		for key, l := range activeLinks {
+			_ = l.Close()
+			delete(activeLinks, key)
+		}
+	}()
+
+	// Open BPF RingBuffer reader
+	rd, err := ringbuf.NewReader(objs.Events)
+	if err != nil {
+		log.Fatalf("Failed to create ringbuffer reader: %v", err)
+	}
+	defer rd.Close()
+
+	go func() {
+		<-obs.stopCh
+		_ = rd.Close()
+	}()
+
+	var event filterPacketEvent
+	for {
+		record, err := rd.Read()
+		if err != nil {
+			if errors.Is(err, ringbuf.ErrClosed) {
+				return
+			}
+			select {
+			case <-obs.stopCh:
+				return
+			default:
+				log.Printf("Error reading ringbuffer: %v\n", err)
+				continue
+			}
+		}
+
+		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &event); err != nil {
+			log.Printf("Error decoding packet event: %v\n", err)
+			continue
+		}
+
+		obs.processPacketEvent(&event)
+	}
+}
+
+func (obs *Observer) processPacketEvent(event *filterPacketEvent) {
+	// IP addresses are stored in network byte order (Big-Endian)
+	srcIP := net.IPv4(byte(event.SrcIp), byte(event.SrcIp>>8), byte(event.SrcIp>>16), byte(event.SrcIp>>24)).String()
+	dstIP := net.IPv4(byte(event.DstIp), byte(event.DstIp>>8), byte(event.DstIp>>16), byte(event.DstIp>>24)).String()
+
+	srcPort := int(event.SrcPort)
+	dstPort := int(event.DstPort)
+
+	payloadLen := int(event.PayloadLen)
+	if payloadLen > len(event.Payload) {
+		payloadLen = len(event.Payload)
+	}
+	payload := event.Payload[:payloadLen]
+
+	switch event.Protocol {
+	case IPProtoUDP:
+		if srcPort == obs.cfg.UDPPort || dstPort == obs.cfg.UDPPort {
+			atomic.AddUint64(&obs.udpEventCount, 1)
+			obs.handleUDPPacket(srcIP, dstIP, srcPort, dstPort, payload)
+		}
+	case IPProtoTCP:
+		if srcPort == obs.cfg.TCPPort || dstPort == obs.cfg.TCPPort {
+			atomic.AddUint64(&obs.tcpEventCount, 1)
+			if int(event.PayloadLen) > 0 && obs.recorder != nil {
+				nowStr := time.Now().Format("15:04:05")
+				_ = obs.recorder.RecordTCP(nowStr, srcIP, srcPort, dstIP, dstPort, int(event.PayloadLen))
+			}
+		}
+	}
+}
+
+func (obs *Observer) startRawSocket() {
 	// Raw socket packet sniffer (AF_PACKET on Linux)
 	// ETH_P_ALL = 0x0003 (captures all incoming and outgoing IP packets)
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(hostToNetwork16(syscall.ETH_P_ALL)))
@@ -235,12 +431,120 @@ func (obs *Observer) Start() {
 
 func (obs *Observer) Stop() {
 	close(obs.stopCh)
+	log.Printf("Network observer finished. Total captured: %d UDP events, %d TCP events\n",
+		atomic.LoadUint64(&obs.udpEventCount), atomic.LoadUint64(&obs.tcpEventCount))
 }
 
 func (obs *Observer) Close() error {
 	if obs.recorder != nil {
 		return obs.recorder.Close()
 	}
+	return nil
+}
+
+// isBridgeInterface returns true if the specified network device is a Linux bridge.
+func isBridgeInterface(ifaceName string) bool {
+	bridgePath := filepath.Join("/sys/class/net", ifaceName, "bridge")
+	if fi, err := os.Stat(bridgePath); err == nil && fi.IsDir() {
+		return true
+	}
+	brifPath := filepath.Join("/sys/class/net", ifaceName, "brif")
+	if fi, err := os.Stat(brifPath); err == nil && fi.IsDir() {
+		return true
+	}
+	return false
+}
+
+// getBridgeSlaves discovers all slave interfaces associated with a Linux bridge.
+// It checks both /sys/class/net/<bridge>/brif/ and /sys/class/net/*/master.
+func getBridgeSlaves(bridgeName string) []string {
+	slavesMap := make(map[string]bool)
+
+	// Method 1: Check sysfs bridge interface directory: /sys/class/net/<bridge>/brif/
+	brifPath := filepath.Join("/sys/class/net", bridgeName, "brif")
+	if entries, err := os.ReadDir(brifPath); err == nil {
+		for _, entry := range entries {
+			slavesMap[entry.Name()] = true
+		}
+	}
+
+	// Method 2: Inspect all interfaces in /sys/class/net/*/master
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			masterPath := filepath.Join("/sys/class/net", iface.Name, "master")
+			if target, err := os.Readlink(masterPath); err == nil {
+				if filepath.Base(target) == bridgeName {
+					slavesMap[iface.Name] = true
+				}
+			}
+		}
+	}
+
+	var slaves []string
+	for name := range slavesMap {
+		slaves = append(slaves, name)
+	}
+	sort.Strings(slaves)
+	return slaves
+}
+
+// resolveInterface resolves the target network interface or automatically discovers
+// docker bridge devices (ifrit-br0, br-*, docker0) or interfaces containing "docker" or "ifrit".
+func (obs *Observer) resolveInterface(target string) *net.Interface {
+	lowerTarget := strings.ToLower(strings.TrimSpace(target))
+
+	// Allow up to 15 seconds during container / network bootstrap
+	deadline := time.Now().Add(15 * time.Second)
+
+	for {
+		// 1. If explicit interface given (e.g. "ifrit-br0" or "eth0"), check directly
+		if lowerTarget != "" && lowerTarget != "any" && lowerTarget != "docker" && lowerTarget != "ifrit" {
+			if iface, err := net.InterfaceByName(target); err == nil {
+				return iface
+			}
+		}
+
+		ifaces, err := net.Interfaces()
+		if err == nil {
+			// 2. Search for bridge with "ifrit" in the name (e.g., ifrit-br0)
+			for _, i := range ifaces {
+				name := strings.ToLower(i.Name)
+				if strings.Contains(name, "ifrit") {
+					log.Printf("Autodiscovered Ifrit interface: %s\n", i.Name)
+					return &i
+				}
+			}
+
+			// 3. Search for Docker compose bridges (usually br-<12char hex>)
+			for _, i := range ifaces {
+				if strings.HasPrefix(i.Name, "br-") {
+					log.Printf("Autodiscovered Docker Compose bridge interface: %s\n", i.Name)
+					return &i
+				}
+			}
+
+			// 4. Search for standard docker0 bridge
+			for _, i := range ifaces {
+				if i.Name == "docker0" {
+					log.Printf("Autodiscovered standard Docker bridge interface: %s\n", i.Name)
+					return &i
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// 5. Fallback to loopback
+	if lo, err := net.InterfaceByName("lo"); err == nil {
+		log.Println("No Docker bridge discovered after waiting; defaulting to loopback interface ('lo')")
+		return lo
+	}
+
+	log.Fatalf("No suitable network interface found for eBPF attachment")
 	return nil
 }
 

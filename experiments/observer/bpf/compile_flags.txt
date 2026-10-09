@@ -1,0 +1,7 @@
+-target
+bpf
+-O2
+-Wall
+-Wno-missing-declarations
+-I.
+-I/usr/include

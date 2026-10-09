@@ -343,3 +343,92 @@ func TestProcessEthernetFrame_UDPPingAndPong(t *testing.T) {
 		t.Errorf("Expected matching nonce hex %s, got %s", pingEv.NonceHex, pongEv.NonceHex)
 	}
 }
+
+// TestProcessPacketEvent verifies that filterPacketEvent decoded from eBPF RingBuffer
+// are processed and recorded identically to raw socket frames.
+func TestProcessPacketEvent_UDP(t *testing.T) {
+	rec := &MockRecorder{}
+	cfg := Config{
+		UDPPort: 9001,
+		TCPPort: 9000,
+		UseEBPF: true,
+	}
+	obs := NewObserverWithRecorder(cfg, rec)
+
+	nonce := make([]byte, 32)
+	for i := range nonce {
+		nonce[i] = byte(i + 1)
+	}
+	pingMsg := &pb.Ping{Nonce: nonce}
+	pingPayload, err := proto.Marshal(pingMsg)
+	if err != nil {
+		t.Fatalf("Marshal Ping failed: %v", err)
+	}
+
+	var event filterPacketEvent
+	event.Protocol = IPProtoUDP
+	event.SrcPort = 45678
+	event.DstPort = 9001
+	// 172.18.0.2 in network byte order: 0x020012ac
+	event.SrcIp = 172 | (18 << 8) | (0 << 16) | (2 << 24)
+	event.DstIp = 172 | (18 << 8) | (0 << 16) | (3 << 24)
+	event.PayloadLen = uint32(len(pingPayload))
+	copy(event.Payload[:], pingPayload)
+
+	obs.processPacketEvent(&event)
+
+	if len(rec.PingPongEvents) != 1 {
+		t.Fatalf("Expected 1 PING event recorded, got %d", len(rec.PingPongEvents))
+	}
+	if rec.PingPongEvents[0].EventType != "PING" {
+		t.Errorf("Expected PING event, got %s", rec.PingPongEvents[0].EventType)
+	}
+}
+
+func TestProcessPacketEvent_TCP(t *testing.T) {
+	rec := &MockRecorder{}
+	cfg := Config{
+		UDPPort: 9001,
+		TCPPort: 9000,
+		UseEBPF: true,
+	}
+	obs := NewObserverWithRecorder(cfg, rec)
+
+	var event filterPacketEvent
+	event.Protocol = IPProtoTCP
+	event.SrcPort = 9000
+	event.DstPort = 54321
+	event.SrcIp = 172 | (18 << 8) | (0 << 16) | (2 << 24)
+	event.DstIp = 172 | (18 << 8) | (0 << 16) | (3 << 24)
+	event.PayloadLen = 128
+
+	obs.processPacketEvent(&event)
+
+	if len(rec.TCPEvents) != 1 {
+		t.Fatalf("Expected 1 TCP event recorded, got %d", len(rec.TCPEvents))
+	}
+	if rec.TCPEvents[0].BytesLen != 128 {
+		t.Errorf("Expected 128 bytes recorded, got %d", rec.TCPEvents[0].BytesLen)
+	}
+}
+
+func TestIsBridgeInterface(t *testing.T) {
+	// Loopback interface is never a bridge
+	if isBridgeInterface("lo") {
+		t.Errorf("Expected isBridgeInterface('lo') to be false, got true")
+	}
+
+	// Non-existent interface should safely return false
+	if isBridgeInterface("nonexistent_dev_xyz_123") {
+		t.Errorf("Expected isBridgeInterface('nonexistent_dev_xyz_123') to be false, got true")
+	}
+}
+
+func TestGetBridgeSlaves(t *testing.T) {
+	// Non-existent interface should return empty slice
+	slaves := getBridgeSlaves("nonexistent_dev_xyz_123")
+	if len(slaves) != 0 {
+		t.Errorf("Expected 0 slaves for nonexistent device, got %d", len(slaves))
+	}
+}
+
