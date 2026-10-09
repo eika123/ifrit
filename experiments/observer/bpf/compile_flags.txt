@@ -1,0 +1,6 @@
+-target
+bpf
+-O2
+-Wall
+-I.
+-I/usr/include
