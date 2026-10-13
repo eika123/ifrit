@@ -24,6 +24,7 @@ services:
       - IFRIT_CONFIG=/app/ifrit_config.yaml
       - IFRIT_TELEMETRY_DB=/results
       - IFRIT_TELEMETRY_CHECKPOINT_INTERVAL=${IFRIT_TELEMETRY_CHECKPOINT_INTERVAL:-10s}
+      - IFRIT_NODE_NAME=${IFRIT_NODE_NAME:-}
     volumes:
       - ./_examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
       - ./experiment_results:/results
