@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/netutil"
 	pb "github.com/joonnna/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3" // needed for sqlite3 driver
 	"golang.org/x/net/context"
@@ -37,14 +39,42 @@ type TelemetryLogger interface {
 type GossipEvent struct {
 	Timestamp       time.Time
 	Direction       string // "INCOMING" or "OUTGOING"
-	HostAddr        string
-	RemoteAddr      string
+	Host            string
+	HostPort        string
+	RemoteHost      string
+	RemotePort      string
 	HasNote         bool
 	DataBytes       int
 	AccusationCount int
 	NoteCount       int
 	AccusedNodes    []string
 	Rings           []uint32
+}
+
+func getLocalHostIdentifier() string {
+	if ip := netutil.GetLocalIP(); ip != "" {
+		return ip
+	}
+	if h := os.Getenv("HOSTNAME"); h != "" {
+		return h
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "localhost"
+}
+
+func splitHostAndPort(addr string) (string, string) {
+	if addr == "" {
+		return "", ""
+	}
+	if h, p, err := net.SplitHostPort(addr); err == nil {
+		return h, p
+	}
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		return addr[:idx], addr[idx+1:]
+	}
+	return addr, ""
 }
 
 func extractAccusations(accs []*pb.Accusation) []string {
@@ -65,20 +95,36 @@ func extractRings(accs []*pb.Accusation) []uint32 {
 
 // Client Interceptor factory: returns a unary client interceptor.
 // This interceptor is called before client TLS encryption.
+//
+// In OUTGOING events:
+//   - Request fields (stateReq): Represent this local node's own outgoing state/payload:
+//   - HasNote: whether this node attached its own pb.Note.
+//   - DataBytes: byte size of this node's own ExternalGossip payload.
+//   - Reply fields (stateResp): Represent information received back from the remote peer:
+//   - AccusationCount, AccusedNodes, Rings: accusations returned by the remote peer.
+//   - NoteCount: membership notes returned by the remote peer.
 func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		err := invoker(ctx, method, req, reply, cc, opts...)
+		var pr peer.Peer
+		callOpts := append(opts, grpc.Peer(&pr))
+		err := invoker(ctx, method, req, reply, cc, callOpts...)
 
 		if method == "/proto.gossip/Spread" && err == nil {
 			stateReq, okReq := req.(*pb.State)
 			stateResp, okResp := reply.(*pb.StateResponse)
 			if okReq && okResp {
+				remoteAddr := cc.Target()
+				if pr.Addr != nil {
+					remoteAddr = pr.Addr.String()
+				}
+				remoteHost, remotePort := splitHostAndPort(remoteAddr)
 				telemetryLogger.OnGossipExchange(GossipEvent{
-					Timestamp: time.Now(),
-					Direction: "OUTGOING",
-					//HostAddr:        netutil.GetLocalIP(),
-					HostAddr:        os.Getenv("HOSTNAME"),
-					RemoteAddr:      cc.Target(),
+					Timestamp:       time.Now(),
+					Direction:       "OUTGOING",
+					Host:            getLocalHostIdentifier(),
+					HostPort:        "",
+					RemoteHost:      remoteHost,
+					RemotePort:      remotePort,
 					HasNote:         stateReq.GetOwnNote() != nil,
 					DataBytes:       len(stateReq.GetExternalGossip()),
 					AccusationCount: len(stateResp.GetAccusations()),
@@ -104,12 +150,15 @@ func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryS
 			if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
 				remoteAddr = p.Addr.String()
 			}
+			remoteHost, remotePort := splitHostAndPort(remoteAddr)
 			if okReq && okResp {
 				telemetryLogger.OnGossipExchange(GossipEvent{
 					Timestamp:       time.Now(),
 					Direction:       "INCOMING",
-					HostAddr:        os.Getenv("HOSTNAME"),
-					RemoteAddr:      remoteAddr,
+					Host:            getLocalHostIdentifier(),
+					HostPort:        "",
+					RemoteHost:      remoteHost,
+					RemotePort:      remotePort,
 					HasNote:         stateReq.GetOwnNote() != nil,
 					DataBytes:       len(stateReq.GetExternalGossip()),
 					AccusationCount: len(stateResp.GetAccusations()),
@@ -129,7 +178,7 @@ func getTelemetryDBPath() string {
 	if customPath == "disabled" || customPath == "off" {
 		return ""
 	}
-	hostname := os.Getenv("HOSTNAME")
+	hostname := getLocalHostIdentifier()
 	if hostname == "" {
 		if h, err := os.Hostname(); err == nil {
 			hostname = h
@@ -180,7 +229,9 @@ func NewRPCInterfaceLogger(dbPath string) (*rpcInterfaceLogger, error) {
 		timestamp INTEGER,
 		direction TEXT, -- "OUTGOING" or "INCOMING"
 		host TEXT,
-		remote TEXT,
+		host_port TEXT,
+		remote_host TEXT,
+		remote_port TEXT,
 		has_note BOOLEAN,
 		data_bytes INTEGER,
 		accusation_count INTEGER,
@@ -234,11 +285,16 @@ func (rpcil *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
 	}
 
 	_, err = rpcil.dbConn.Exec(
-		`INSERT INTO gossip_exchange (timestamp, direction, host, remote, has_note, data_bytes, accusation_count, note_count, accused_nodes, rings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO gossip_exchange (
+			timestamp, direction, host, host_port, remote_host, remote_port, 
+			has_note, data_bytes, accusation_count, note_count, accused_nodes, rings
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.Timestamp,
 		event.Direction,
-		event.HostAddr,
-		event.RemoteAddr,
+		event.Host,
+		event.HostPort,
+		event.RemoteHost,
+		event.RemotePort,
 		event.HasNote,
 		event.DataBytes,
 		event.AccusationCount,
