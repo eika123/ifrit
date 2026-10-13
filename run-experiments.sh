@@ -208,6 +208,13 @@ cleanup() {
         wait "$EXP_PID" 2>/dev/null
     fi
 
+    # Capture container IP -> human-readable container name mapping before teardown
+    DOCKER_DNS_FILE="$OUTPUT_DIR/docker_dns.txt"
+    if [ ! -f "$DOCKER_DNS_FILE" ] && docker compose ps -q >/dev/null 2>&1; then
+        docker compose ps -q 2>/dev/null | xargs -r docker inspect \
+            --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{.Name}}' > "$DOCKER_DNS_FILE" 2>/dev/null || true
+    fi
+
     # Stop active docker compose containers cleanly
     docker compose down --volumes --remove-orphans 2>/dev/null || true
 
@@ -304,6 +311,10 @@ TELEMETRY_DB_FILE="$OUTPUT_DIR/$TELEMETRY_DB_NAME"
 TELEMETRY_PLOT_FILE="$OUTPUT_DIR/$TELEMETRY_PLOT_NAME"
 export TELEMETRY_DB="/results/$TELEMETRY_DB_NAME"
 
+# Dynamic unified database for node-level gRPC gossip telemetry
+GOSSIP_TELEMETRY_DB_NAME="gossip-telemetry_${EXP_IDENT#resource-usage-}.db"
+GOSSIP_TELEMETRY_DB_FILE="$OUTPUT_DIR/$GOSSIP_TELEMETRY_DB_NAME"
+
 # Backup database if an existing one is found
 if [ -f "$DB_FILE" ]; then
     TIMESTAMP_BACKUP=$(date +%Y%m%d_%H%M%S)
@@ -397,8 +408,14 @@ if [ -n "$EXPERIMENT_DURATION" ]; then
 
     if kill -0 "$EXP_PID" 2>/dev/null; then
         echo "Duration limit ($EXPERIMENT_DURATION) reached. Stopping experiment..."
-        # Stop containers directly and terminate process group
-        docker compose stop -t 2 >/dev/null 2>&1 || true
+        # Capture container IP -> human-readable container name mapping before stopping
+        DOCKER_DNS_FILE="$OUTPUT_DIR/docker_dns.txt"
+        if [ ! -f "$DOCKER_DNS_FILE" ] && docker compose ps -q >/dev/null 2>&1; then
+            docker compose ps -q 2>/dev/null | xargs -r docker inspect \
+                --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{.Name}}' > "$DOCKER_DNS_FILE" 2>/dev/null || true
+        fi
+        # Stop containers with a generous 10s grace period for clean exit
+        docker compose stop -t 10 >/dev/null 2>&1 || true
         kill -TERM "$EXP_PID" 2>/dev/null || true
         wait "$EXP_PID" 2>/dev/null || true
     else
@@ -412,8 +429,15 @@ else
 fi
 unset EXP_PID
 
+# Capture container IP -> human-readable container name mapping before teardown (if not captured yet)
+DOCKER_DNS_FILE="$OUTPUT_DIR/docker_dns.txt"
+if [ ! -f "$DOCKER_DNS_FILE" ] && docker compose ps -q >/dev/null 2>&1; then
+    docker compose ps -q 2>/dev/null | xargs -r docker inspect \
+        --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{.Name}}' > "$DOCKER_DNS_FILE" 2>/dev/null || true
+fi
+
 # Best-effort container teardown (clean up any remaining containers)
-docker compose stop -t 2 >/dev/null 2>&1 || true
+docker compose stop -t 10 >/dev/null 2>&1 || true
 docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 
 # Fold any remaining WAL files into their .db files and remove -wal/-shm clutter
@@ -424,6 +448,19 @@ if command -v sqlite3 >/dev/null 2>&1; then
             rm -f "${db}-wal" "${db}-shm"
         fi
     done
+fi
+
+# Automatically merge per-node telemetry databases into a unified database
+MERGE_SCRIPT=""
+if [ -f "experiments/merge_gossip_telemetry.py" ]; then
+    MERGE_SCRIPT="experiments/merge_gossip_telemetry.py"
+elif [ -f "merge_gossip_telemetry.py" ]; then
+    MERGE_SCRIPT="merge_gossip_telemetry.py"
+fi
+
+if [ -n "$MERGE_SCRIPT" ]; then
+    echo "Merging per-node gossip telemetry databases into $GOSSIP_TELEMETRY_DB_FILE..."
+    python3 "$MERGE_SCRIPT" -d "$OUTPUT_DIR" -o "$GOSSIP_TELEMETRY_DB_FILE" --cleanup
 fi
 
 
