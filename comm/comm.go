@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 
+	log "github.com/inconshreveable/log15"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
 
@@ -29,16 +30,25 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 		return nil, errNilPriv
 	}
 
+	var telemetryLogger TelemetryLogger
+	if dbPath := getTelemetryDBPath(); dbPath != "" {
+		var err error
+		telemetryLogger, err = NewRPCInterfaceLogger(dbPath)
+		if err != nil {
+			log.Error("Failed to initialize telemetry logger: " + err.Error())
+		}
+	}
+
 	serverConf := serverConfig(cert, caCert, priv)
 
-	server, err := newServer(serverConf, l)
+	server, err := newServer(serverConf, l, telemetryLogger)
 	if err != nil {
 		return nil, err
 	}
 
 	clientConf := clientConfig(cert, caCert, priv)
 
-	client, err := newClient(clientConf)
+	client, err := newClient(clientConf, telemetryLogger)
 	if err != nil {
 		return nil, err
 	}

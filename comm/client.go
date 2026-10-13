@@ -14,8 +14,8 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/keepalive"
 )
 
 var (
@@ -35,20 +35,25 @@ type conn struct {
 	cc *grpc.ClientConn
 }
 
-func newClient(config *tls.Config) (*gRPCClient, error) {
+func newClient(config *tls.Config, telemetryLogger TelemetryLogger) (*gRPCClient, error) {
 	var dialOptions []grpc.DialOption
 
 	if config == nil {
 		return nil, errNilConfig
 	}
 
-	creds := credentials.NewTLS(config)
+	// --------------------------------- Telemetry logging ------------------------------------
+	if telemetryLogger != nil {
+		dialOptions = append(dialOptions, grpc.WithUnaryInterceptor(gossipClientInterceptorFactory(telemetryLogger)))
+	}
+	// -----------------------------------------------------------------------------------------
 
+	creds := credentials.NewTLS(config)
 	dialOptions = append(dialOptions, grpc.WithTransportCredentials(creds))
-	dialOptions = append(dialOptions, grpc.WithBackoffMaxDelay(time.Minute * 1))
+	dialOptions = append(dialOptions, grpc.WithBackoffMaxDelay(time.Minute*1))
 	dialOptions = append(dialOptions, grpc.WithKeepaliveParams(keepalive.ClientParameters{
-		Time: time.Minute * 1, 
-		Timeout: 30 * time.Second,
+		Time:                time.Minute * 1,
+		Timeout:             30 * time.Second,
 		PermitWithoutStream: true,
 	}))
 

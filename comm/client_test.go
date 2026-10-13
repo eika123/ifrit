@@ -28,7 +28,7 @@ func (suite *ClientTestSuite) SetupTest() {
 	conf, err := validClientConfig()
 	require.NoError(suite.T(), err, "Failed to generate config")
 
-	c, err := newClient(conf)
+	c, err := newClient(conf, nil)
 	require.NoError(suite.T(), err, "Failed to create client")
 
 	suite.c = c
@@ -54,7 +54,7 @@ func (suite *ClientTestSuite) TestNewClient() {
 	}
 
 	for i, t := range tests {
-		c, err := newClient(t.config)
+		c, err := newClient(t.config, nil)
 		require.Equalf(suite.T(), t.out, err, "Invalid error output for test %d", i)
 
 		if t.out == nil {

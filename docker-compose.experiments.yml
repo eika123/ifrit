@@ -22,8 +22,10 @@ services:
       replicas: ${NODES:-3}
     environment:
       - IFRIT_CONFIG=/app/ifrit_config.yaml
+      - IFRIT_TELEMETRY_DB=/results
     volumes:
       - ./_examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
+      - ./experiment_results:/results
     networks:
       - ifrit-net
   # Continuous background chaos daemon for experiments
@@ -79,9 +81,12 @@ services:
       - TELEMETRY_DB=${TELEMETRY_DB:-/results/network_telemetry.db}
     volumes:
       - ./experiment_results:/results
-    command: [ "-db", "${TELEMETRY_DB:-/results/network_telemetry.db}" ]
+    command: [ "-db", "${TELEMETRY_DB:-/results/network_telemetry.db}", "-iface", "ifrit-br0" ]
 networks:
   ifrit-net:
     driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: "ifrit-br0"
 volumes:
   ca-data:
+

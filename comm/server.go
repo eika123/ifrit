@@ -30,7 +30,7 @@ type gRPCServer struct {
 	listenAddr string
 }
 
-func newServer(config *tls.Config, l net.Listener) (*gRPCServer, error) {
+func newServer(config *tls.Config, listener net.Listener, telemetryLogger TelemetryLogger) (*gRPCServer, error) {
 	var serverOpts []grpc.ServerOption
 
 	if config == nil {
@@ -46,10 +46,13 @@ func newServer(config *tls.Config, l net.Listener) (*gRPCServer, error) {
 
 	serverOpts = append(serverOpts, grpc.Creds(creds))
 	serverOpts = append(serverOpts, grpc.KeepaliveParams(keepAlive))
+	if telemetryLogger != nil {
+		serverOpts = append(serverOpts, grpc.UnaryInterceptor(gossipServerInterceptorFactory(telemetryLogger)))
+	}
 
 	return &gRPCServer{
-		listener:   l,
-		listenAddr: l.Addr().String(),
+		listener:   listener,
+		listenAddr: listener.Addr().String(),
 		rpcServer:  grpc.NewServer(serverOpts...),
 	}, nil
 }

@@ -3,6 +3,9 @@ FROM docker.io/library/golang:1.25-alpine AS builder
 
 WORKDIR /build
 
+# Install gcc and musl-dev for go-sqlite3 CGO compilation
+RUN apk add --no-cache gcc musl-dev
+
 # Copy dependency files and source code
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,8 +15,8 @@ COPY . .
 # Build the CA daemon
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/ifrit-ca ./cmd/ca
 
-# Build the gossip content example node
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/gossip-node ./_examples/gossipContentExample.go
+# Build the gossip content example node with CGO for SQLite telemetry
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /build/bin/gossip-node ./_examples/gossipContentExample.go
 
 # Stage 2: Minimal runtime image
 FROM docker.io/library/alpine:3.20

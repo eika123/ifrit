@@ -109,28 +109,59 @@ func GetListener(hostname string, portnum int) (net.Listener, string, error) {
 	return l, "", errFoundNoPort
 }
 
-//Hacky AF
+// //Hacky AF
+// func GetLocalIP() string {
+// 	/*
+// 			conn, err := net.Dial("udp", "8.8.8.8:80")
+// 			if err != nil {
+// 				log.Error(err.Error())
+// 			}
+// 			defer conn.Close()
+//
+// 			localAddr := conn.LocalAddr().(*net.UDPAddr)
+//
+// 			return localAddr.IP.String()
+// 		return h
+// 	*/
+//
+// 	h, _ := os.Hostname()
+// 	addr, err := net.LookupHost(h)
+// 	if err != nil || len(addr) < 1 {
+// 		return ""
+// 	}
+//
+// 	return addr[0]
+// }
+
 func GetLocalIP() string {
-	/*
-			conn, err := net.Dial("udp", "8.8.8.8:80")
-			if err != nil {
-				log.Error(err.Error())
-			}
-			defer conn.Close()
-
-			localAddr := conn.LocalAddr().(*net.UDPAddr)
-
-			return localAddr.IP.String()
-		return h
-	*/
-
-	h, _ := os.Hostname()
-	addr, err := net.LookupHost(h)
-	if err != nil || len(addr) < 1 {
+	ifaces, err := net.Interfaces()
+	if err != nil {
 		return ""
 	}
-
-	return addr[0]
+	for _, iface := range ifaces {
+		// Ignore interfaces that are down or are loopback (127.0.0.1)
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			// Only return non-loopback IPv4
+			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+				return ip.String()
+			}
+		}
+	}
+	return ""
 }
 
 func LocalIP() (string, error) {
