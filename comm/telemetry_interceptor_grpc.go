@@ -31,6 +31,7 @@ import (
 // TelemetryListener receives unencrypted semantic gossip events.
 type TelemetryLogger interface {
 	OnGossipExchange(event GossipEvent)
+	Close() error
 }
 
 type GossipEvent struct {
@@ -157,6 +158,7 @@ func getTelemetryDBPath() string {
 type rpcInterfaceLogger struct {
 	dbConn *sql.DB
 	dbLock sync.Mutex
+	stopCh chan struct{}
 }
 
 func NewRPCInterfaceLogger(dbPath string) (*rpcInterfaceLogger, error) {
@@ -192,15 +194,37 @@ func NewRPCInterfaceLogger(dbPath string) (*rpcInterfaceLogger, error) {
 		return nil, err
 	}
 
-	return &rpcInterfaceLogger{
+	rpcil := &rpcInterfaceLogger{
 		dbConn: db,
-	}, nil
+		stopCh: make(chan struct{}),
+	}
+
+	go rpcil.periodicCheckpoint()
+	return rpcil, nil
 }
 
-func (crpcl *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
+func (rpcil *rpcInterfaceLogger) Close() error {
+
+	select {
+	case <-rpcil.stopCh:
+		// already closed
+	default:
+		close(rpcil.stopCh)
+	}
+
+	rpcil.dbLock.Lock()
+	defer rpcil.dbLock.Unlock()
+	if rpcil.dbConn != nil {
+		_, _ = rpcil.dbConn.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+		return rpcil.dbConn.Close()
+	}
+	return nil
+}
+
+func (rpcil *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
 	// send the event to our sqlite3 database
-	crpcl.dbLock.Lock()
-	defer crpcl.dbLock.Unlock()
+	rpcil.dbLock.Lock()
+	defer rpcil.dbLock.Unlock()
 
 	accusedStr := strings.Join(event.AccusedNodes, ",")
 	ringsBytes, err := json.Marshal(event.Rings)
@@ -209,7 +233,7 @@ func (crpcl *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
 		ringsBytes = []byte("[]")
 	}
 
-	_, err = crpcl.dbConn.Exec(
+	_, err = rpcil.dbConn.Exec(
 		`INSERT INTO gossip_exchange (timestamp, direction, host, remote, has_note, data_bytes, accusation_count, note_count, accused_nodes, rings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.Timestamp,
 		event.Direction,
@@ -225,4 +249,34 @@ func (crpcl *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
 	if err != nil {
 		log.Error(err.Error())
 	}
+}
+
+func (rpcil *rpcInterfaceLogger) periodicCheckpoint() {
+	interval := getCheckpointInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rpcil.stopCh:
+			return
+		case <-ticker.C:
+			rpcil.dbLock.Lock()
+			// PASSIVE checkpoint moves committed frames without blocking active gossip RPCs
+			_, _ = rpcil.dbConn.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+			rpcil.dbLock.Unlock()
+		}
+	}
+}
+
+func getCheckpointInterval() time.Duration {
+	val := os.Getenv("IFRIT_TELEMETRY_CHECKPOINT_INTERVAL")
+	if val == "" {
+		return 10 * time.Second // Default fallback
+	}
+	dur, err := time.ParseDuration(val)
+	if err != nil {
+		log.Warn("Invalid IFRIT_TELEMETRY_CHECKPOINT_INTERVAL, using default 10s", "val", val, "err", err)
+		return 10 * time.Second
+	}
+	return dur
 }

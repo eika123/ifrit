@@ -19,6 +19,7 @@ var (
 type Comm struct {
 	s *gRPCServer
 	*gRPCClient
+	telemetryLogger TelemetryLogger
 }
 
 func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Listener) (*Comm, error) {
@@ -54,8 +55,9 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 	}
 
 	return &Comm{
-		s:          server,
-		gRPCClient: client,
+		s:               server,
+		gRPCClient:      client,
+		telemetryLogger: telemetryLogger,
 	}, nil
 }
 
@@ -68,7 +70,12 @@ func (c *Comm) Start() {
 }
 
 func (c *Comm) Stop() {
+
 	c.s.stop()
+
+	if c.telemetryLogger != nil {
+		_ = c.telemetryLogger.Close()
+	}
 }
 
 func (c *Comm) Addr() string {

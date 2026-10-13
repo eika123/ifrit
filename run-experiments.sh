@@ -28,6 +28,14 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             EXPERIMENT_DURATION="${1#*=}"
             shift
             ;;
+        -c|--checkpoint-interval)
+            CHECKPOINT_INTERVAL="$2"
+            shift 2
+            ;;
+        --checkpoint-interval=*)
+            CHECKPOINT_INTERVAL="${1#*=}"
+            shift
+            ;;
         -f|--compose-file)
             CUSTOM_COMPOSE_FILE="$2"
             shift 2
@@ -37,8 +45,8 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
-            echo "Example: $0 --docker-activate --build -t 40s gossip-experiment.sh 10"
+            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <interval>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
+            echo "Example: $0 --docker-activate --build -t 40s -c 5s gossip-experiment.sh 10"
             echo "Example: $0 --compose-file custom-compose.yml gossip-experiment.sh 5"
             exit 0
             ;;
@@ -47,6 +55,12 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             ;;
     esac
 done
+
+# Export checkpoint interval if specified
+if [ -n "$CHECKPOINT_INTERVAL" ]; then
+    export IFRIT_TELEMETRY_CHECKPOINT_INTERVAL="$CHECKPOINT_INTERVAL"
+    echo "Using telemetry checkpoint interval: $IFRIT_TELEMETRY_CHECKPOINT_INTERVAL"
+fi
 
 # Set and export COMPOSE_FILE environment variable for docker compose
 if [ -n "$CUSTOM_COMPOSE_FILE" ]; then
@@ -318,6 +332,16 @@ unset EXP_PID
 # Best-effort container teardown (clean up any remaining containers)
 docker compose stop -t 2 >/dev/null 2>&1 || true
 docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+
+# Fold any remaining WAL files into their .db files and remove -wal/-shm clutter
+if command -v sqlite3 >/dev/null 2>&1; then
+    for db in "$OUTPUT_DIR"/telemetry_*.db; do
+        if [ -f "$db" ]; then
+            sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+            rm -f "${db}-wal" "${db}-shm"
+        fi
+    done
+fi
 
 
 # =====================================================================
