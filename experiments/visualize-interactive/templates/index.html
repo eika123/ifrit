@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ifrit Telemetry & Node Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: 'Inter', sans-serif; background-color: #0b0f19; color: #f3f4f6; }
+    .glass-card { background: rgba(30, 41, 59, 0.65); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800 bg-slate-900/80 sticky top-0 z-50 backdrop-blur-md px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+          Ifrit Telemetry & Node Explorer
+          <span class="text-xs font-mono font-medium px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-400 border border-indigo-800/60">SQLite Live</span>
+        </h1>
+        <p id="target-indicator" class="text-xs text-slate-400 font-mono truncate max-w-xl">Loading database...</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <label class="flex items-center gap-2 text-xs text-slate-300 font-medium cursor-pointer">
+        <input type="checkbox" id="auto-refresh" class="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0">
+        Auto-refresh (3s)
+      </label>
+      <button onclick="refreshAll()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition flex items-center gap-1.5 shadow-sm">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <main class="flex-1 p-6 max-w-7xl mx-auto w-full space-y-6">
+
+    <!-- KPI Metric Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Total Exchanges</div>
+        <div id="stat-total" class="text-2xl font-bold font-mono text-white mt-1">0</div>
+        <div class="text-[11px] text-slate-500 mt-0.5"><span id="stat-out">0</span> Out / <span id="stat-in">0</span> In</div>
+      </div>
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Active Hosts</div>
+        <div id="stat-hosts" class="text-2xl font-bold font-mono text-indigo-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-500 mt-0.5">Participating nodes</div>
+      </div>
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Total Data Transferred</div>
+        <div id="stat-total-bytes" class="text-2xl font-bold font-mono text-sky-400 mt-1">0 B</div>
+        <div class="text-[11px] text-slate-500 mt-0.5">All nodes combined</div>
+      </div>
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Accusations Logged</div>
+        <div id="stat-acc" class="text-2xl font-bold font-mono text-red-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-500 mt-0.5">Failure detections</div>
+      </div>
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Max Membership Notes</div>
+        <div id="stat-notes" class="text-2xl font-bold font-mono text-emerald-400 mt-1">0</div>
+        <div class="text-[11px] text-slate-500 mt-0.5">In single response batch</div>
+      </div>
+      <div class="glass-card rounded-xl p-4">
+        <div class="text-xs text-slate-400 font-medium">Max External Payload</div>
+        <div id="stat-bytes" class="text-2xl font-bold font-mono text-amber-400 mt-1">0 B</div>
+        <div class="text-[11px] text-slate-500 mt-0.5">Application gossip data</div>
+      </div>
+    </div>
+
+    <!-- Top Row: Node Selector Deck & Gossip Rate Timeline -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Node Selector Deck -->
+      <div class="lg:col-span-7 glass-card rounded-xl p-5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <h2 class="text-sm font-bold text-white flex items-center gap-2">
+                <span>Participating Nodes Filter</span>
+                <span id="active-filter-badge" class="hidden text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-900/80 text-indigo-300 border border-indigo-700">Filtered</span>
+              </h2>
+              <p class="text-xs text-slate-400">Click any node to isolate its activity, charts, and database records.</p>
+            </div>
+            <button onclick="selectNodeFilter('')" class="text-xs text-slate-400 hover:text-white px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 transition">
+              Show All Nodes
+            </button>
+          </div>
+
+          <div id="nodes-deck" class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-60 overflow-y-auto p-1">
+            <div class="text-xs text-slate-500 py-4 col-span-3 text-center">Loading nodes...</div>
+          </div>
+        </div>
+
+        <div class="text-[11px] text-slate-500 mt-3 border-t border-slate-800/80 pt-2 flex items-center justify-between">
+          <span>Clicking a node filters table and charts.</span>
+          <span id="nodes-count-label" class="font-mono">0 nodes</span>
+        </div>
+      </div>
+
+      <!-- Gossip Rate Timeline -->
+      <div class="lg:col-span-5 glass-card rounded-xl p-5 flex flex-col">
+        <div class="flex items-center justify-between mb-2">
+          <div>
+            <h2 class="text-sm font-bold text-white">Gossip Rate Timeline</h2>
+            <p class="text-xs text-slate-400">Exchanges per time bucket</p>
+          </div>
+          <span id="chart-node-label" class="text-xs font-mono font-medium text-indigo-400 px-2 py-0.5 rounded bg-slate-800">All Nodes</span>
+        </div>
+        <div class="h-60 mt-2">
+          <canvas id="timeline-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Per-Node DataBytes Section -->
+    <div class="glass-card rounded-xl p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-800">
+        <div>
+          <h2 class="text-sm font-bold text-white flex items-center gap-2">
+            <span>DataBytes Transferred Over Time (Per Node)</span>
+            <span class="text-xs font-mono px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60">External Gossip</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">Individual volume curves across experiment time buckets</p>
+        </div>
+
+        <!-- Direction Buttons -->
+        <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+          <button id="btn-dir-outgoing" onclick="setBytesDirection('OUTGOING')" 
+                  class="px-3 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm">
+            Outgoing (Sent)
+          </button>
+          <button id="btn-dir-incoming" onclick="setBytesDirection('INCOMING')" 
+                  class="px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
+            Incoming (Recv)
+          </button>
+          <button id="btn-dir-all" onclick="setBytesDirection('ALL')" 
+                  class="px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
+            Both
+          </button>
+        </div>
+      </div>
+
+      <div id="node-bytes-stack" class="space-y-4">
+        <div class="text-xs text-slate-500 py-6 text-center">Loading per-node charts...</div>
+      </div>
+    </div>
+
+    <!-- Database Records & Multi-Filtering -->
+    <div class="glass-card rounded-xl p-5">
+      
+      <!-- Unified Filter Bar -->
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4 pb-4 border-b border-slate-800">
+        <div>
+          <h2 class="text-sm font-bold text-white flex items-center gap-2">
+            <span>Database Records</span>
+            <span id="record-count-badge" class="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">0 rows</span>
+          </h2>
+          <p class="text-xs text-slate-400">Search and filter rows from <code class="font-mono text-slate-300">gossip_exchange</code></p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- Host Filter Dropdown -->
+          <div class="flex items-center gap-1.5">
+            <label class="text-[11px] text-slate-400">Host:</label>
+            <select id="filter-host" onchange="onFilterChange()" class="bg-slate-900 text-xs text-indigo-300 font-mono border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500">
+              <option value="">All Hosts</option>
+            </select>
+          </div>
+
+          <!-- Remote Host Filter Dropdown -->
+          <div class="flex items-center gap-1.5">
+            <label class="text-[11px] text-slate-400">Remote:</label>
+            <select id="filter-remote-host" onchange="onFilterChange()" class="bg-slate-900 text-xs text-sky-300 font-mono border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-sky-500">
+              <option value="">All Remote Hosts</option>
+            </select>
+          </div>
+
+          <!-- Text Search -->
+          <div class="relative">
+            <input type="text" id="filter-search" oninput="debounceFilter()" placeholder="Search host, remote, acc..." 
+                   class="bg-slate-900 text-xs text-slate-200 border border-slate-700 rounded-lg pl-8 pr-3 py-1.5 focus:outline-none focus:border-indigo-500 w-44">
+            <svg class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          </div>
+
+          <!-- Direction Select -->
+          <select id="filter-direction" onchange="onFilterChange()" class="bg-slate-900 text-xs text-slate-200 border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none">
+            <option value="">All Directions</option>
+            <option value="OUTGOING">OUTGOING only</option>
+            <option value="INCOMING">INCOMING only</option>
+          </select>
+
+          <!-- Has Note Filter -->
+          <select id="filter-has-note" onchange="onFilterChange()" class="bg-slate-900 text-xs text-slate-200 border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none">
+            <option value="">All Notes</option>
+            <option value="true">Has Own Note (✓)</option>
+            <option value="false">No Note (-)</option>
+          </select>
+
+          <!-- Accusation Checkbox -->
+          <label class="flex items-center gap-1.5 text-xs text-slate-300 bg-slate-900 px-2.5 py-1.5 rounded-lg border border-slate-700 cursor-pointer">
+            <input type="checkbox" id="filter-acc-only" onchange="onFilterChange()" class="rounded bg-slate-800 border-slate-600 text-red-600 focus:ring-0">
+            <span>Accusations > 0</span>
+          </label>
+
+          <!-- Reset Button -->
+          <button onclick="resetAllFilters()" class="text-xs text-slate-400 hover:text-white px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 transition">
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Table View -->
+      <div class="overflow-x-auto rounded-lg border border-slate-800">
+        <table class="w-full text-left text-xs text-slate-300 font-mono">
+          <thead class="bg-slate-900/90 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
+            <tr>
+              <th class="px-3.5 py-2.5 cursor-pointer hover:text-white transition select-none" onclick="toggleSortOrder()" title="Click to sort ASC/DESC">
+                <div class="flex items-center gap-1.5">
+                  <span>Timestamp</span>
+                  <span id="sort-order-icon" class="text-indigo-400 font-bold">↓</span>
+                </div>
+              </th>
+              <th class="px-3.5 py-2.5">Dir</th>
+              <th class="px-3.5 py-2.5">Local Host</th>
+              <th class="px-3.5 py-2.5">Remote Host / Port</th>
+              <th class="px-3.5 py-2.5 text-center">Own Note</th>
+              <th class="px-3.5 py-2.5 text-right">Data Bytes</th>
+              <th class="px-3.5 py-2.5 text-right">Notes</th>
+              <th class="px-3.5 py-2.5 text-right">Accusations</th>
+              <th class="px-3.5 py-2.5">Accused Nodes / Rings</th>
+            </tr>
+          </thead>
+          <tbody id="exchanges-table-body" class="divide-y divide-slate-800/60 bg-slate-950/40">
+            <tr>
+              <td colspan="9" class="px-4 py-8 text-center text-slate-500">Loading gossip records...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="flex items-center justify-between text-xs text-slate-400 mt-3 pt-2">
+        <span id="pagination-info">Showing recent 50 records</span>
+        <div class="flex gap-2">
+          <button id="btn-page-prev" onclick="prevPage()" disabled class="px-2 py-1 bg-slate-800 disabled:opacity-40 text-slate-300 rounded hover:bg-slate-700 transition">Previous</button>
+          <button id="btn-page-next" onclick="nextPage()" disabled class="px-2 py-1 bg-slate-800 disabled:opacity-40 text-slate-300 rounded hover:bg-slate-700 transition">Next</button>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+
+  <footer class="border-t border-slate-800 py-4 px-6 text-center text-xs text-slate-500 font-mono">
+    Ifrit Gossip Telemetry Visualizer • FastAPI & SQLite backend • Master Thesis Research
+  </footer>
+
+  <script src="/static/js/telemetry.js"></script>
+</body>
+</html>
