@@ -36,6 +36,46 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             CHECKPOINT_INTERVAL="${1#*=}"
             shift
             ;;
+        --chaos-interval)
+            CHAOS_INTERVAL="$2"
+            shift 2
+            ;;
+        --chaos-interval=*)
+            CHAOS_INTERVAL="${1#*=}"
+            shift
+            ;;
+        --chaos-duration)
+            CHAOS_DURATION="$2"
+            shift 2
+            ;;
+        --chaos-duration=*)
+            CHAOS_DURATION="${1#*=}"
+            shift
+            ;;
+        --delay)
+            DELAY_MS="$2"
+            shift 2
+            ;;
+        --delay=*)
+            DELAY_MS="${1#*=}"
+            shift
+            ;;
+        --jitter)
+            JITTER_MS="$2"
+            shift 2
+            ;;
+        --jitter=*)
+            JITTER_MS="${1#*=}"
+            shift
+            ;;
+        --loss)
+            LOSS_PERCENT="$2"
+            shift 2
+            ;;
+        --loss=*)
+            LOSS_PERCENT="${1#*=}"
+            shift
+            ;;
         -f|--compose-file)
             CUSTOM_COMPOSE_FILE="$2"
             shift 2
@@ -45,9 +85,11 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <interval>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
+            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <checkpoint-interval>] [--chaos-interval <1m>] [--chaos-duration <55s>] [--delay <ms>] [--jitter <ms>] [--loss <%>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
             echo "Example: $0 --docker-activate --build -t 40s -c 5s gossip-experiment.sh 10"
+            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 gossip-experiment.sh 5"
             echo "Example: $0 --compose-file custom-compose.yml gossip-experiment.sh 5"
+            echo "Note: Must have --chaos-interval > --chaos-duration"
             exit 0
             ;;
         *)
@@ -55,6 +97,47 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             ;;
     esac
 done
+
+# Helper to parse human durations (e.g., 55s, 1m, 2h) to seconds
+parse_duration_to_seconds() {
+    local dur="$1"
+    local total=0
+    # Match combinations like 1h30m, 5m, 55s
+    while [[ "$dur" =~ ([0-9]+)([smhd]) ]]; do
+        local num="${BASH_REMATCH[1]}"
+        local unit="${BASH_REMATCH[2]}"
+        case "$unit" in
+            s) total=$((total + num)) ;;
+            m) total=$((total + num * 60)) ;;
+            h) total=$((total + num * 3600)) ;;
+            d) total=$((total + num * 86400)) ;;
+        esac
+        dur="${dur#*"${BASH_REMATCH[0]}"}"
+    done
+    echo "$total"
+}
+
+# Export and validate chaos parameters
+EFFECTIVE_INTERVAL="${CHAOS_INTERVAL:-1m}"
+EFFECTIVE_DURATION="${CHAOS_DURATION:-55s}"
+
+if [ -n "$CHAOS_INTERVAL" ] || [ -n "$CHAOS_DURATION" ]; then
+    INTERVAL_SECS=$(parse_duration_to_seconds "$EFFECTIVE_INTERVAL")
+    DURATION_SECS=$(parse_duration_to_seconds "$EFFECTIVE_DURATION")
+
+    if [ "$DURATION_SECS" -ge "$INTERVAL_SECS" ]; then
+        echo "Error: Pumba netem requires --chaos-duration ($EFFECTIVE_DURATION = ${DURATION_SECS}s) to be strictly shorter than --chaos-interval ($EFFECTIVE_INTERVAL = ${INTERVAL_SECS}s)."
+        echo "Example of valid configuration: --chaos-interval 1m --chaos-duration 55s (or --chaos-interval 5m --chaos-duration 4m50s)"
+        exit 1
+    fi
+
+    export PUMBA_INTERVAL="$EFFECTIVE_INTERVAL"
+    export PUMBA_DURATION="$EFFECTIVE_DURATION"
+fi
+
+[ -n "$DELAY_MS" ] && export DELAY_MS="$DELAY_MS"
+[ -n "$JITTER_MS" ] && export JITTER_MS="$JITTER_MS"
+[ -n "$LOSS_PERCENT" ] && export LOSS_PERCENT="$LOSS_PERCENT"
 
 # Export checkpoint interval if specified
 if [ -n "$CHECKPOINT_INTERVAL" ]; then

@@ -41,10 +41,10 @@ services:
       - --log-level
       - ${PUMBA_LOG_LEVEL:-info}
       - --interval
-      - 1m
+      - ${PUMBA_INTERVAL:-1m}
       - netem
       - --duration
-      - 55s
+      - ${PUMBA_DURATION:-55s}
       - --interface
       - eth0
       - delay
