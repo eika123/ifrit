@@ -1,5 +1,51 @@
 #!/usr/bin/env bash
 
+
+show_help() {
+        cat << 'EOF'
+Ifrit Experiment Runner
+================================================================================================
+Orchestrates Ifrit gossip experiments over a Docker container network, injects optional network
+chaos (latency, jitter, packet loss), collects telemetry across nodes, merges
+SQLite results, and plots resource and exchange statistics.
+Usage:
+  ./run-experiments.sh [options] <experiment-script.sh> [script_args...]
+-------------------------------------------------------------------------------------------------
+Options:
+      --docker-activate         Run experiment inside a dedicated Docker container
+      -b, --build               Rebuild Docker images before starting
+      -t, --duration <dur>      Experiment run duration (e.g. 40s, 5m, 1h). Default: indefinite
+      -c, --checkpoint-interval Sampling interval for resource usage (e.g. 5s)
+      -f, --compose-file <file> Override default docker-compose file
+      --teardown-grace-period   Seconds to wait before killing containers (default: 10s)
+    Network Chaos (Pumba):
+      --delay <ms>              Network latency to inject in milliseconds
+      --jitter <ms>             Latency jitter in milliseconds
+      --loss <%>                Packet loss percentage
+      --chaos-interval <dur>    Interval between chaos periods (e.g. 1m, 5m)
+      --chaos-duration <dur>    Duration of each chaos period (must be < interval, e.g. 55s)
+
+    Note: Must have --chaos-interval > --chaos-duration
+-------------------------------------------------------------------------------------------------
+    Examples:
+  ./run-experiments.sh -t 40s -c 5s gossip-experiment.sh 10
+  ./run-experiments.sh -t 5m --delay 50 --jitter 10 --loss 1 gossip-experiment.sh 5
+  ./run-experiments.sh --docker-activate --build -t 2m gossip-experiment.sh 8
+=================================================================================================
+EOF
+}
+
+
+usage(){
+            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <checkpoint-interval>] [--chaos-interval <1m>] [--chaos-duration <55s>] [--delay <ms>] [--jitter <ms>] [--loss <%>] [-f <compose-file>] [--teardown-grace-period <seconds>] <experiment-script.sh> [script_args...]"
+            echo "Example: $0 --docker-activate --build -t 40s -c 5s gossip-experiment.sh 10"
+            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 gossip-experiment.sh 5"
+            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 --teardown-grace-period 15 gossip-experiment.sh 5"
+            echo "Note: Must have --chaos-interval > --chaos-duration"
+}
+
+
+
 CONTAINER_NAME="go-experiment-runner"
 OUTPUT_DIR="$(pwd)/experiment_results"
 mkdir -p "$OUTPUT_DIR"
@@ -9,6 +55,7 @@ DOCKER_MODE=false
 BUILD_MODE=false
 EXPERIMENT_DURATION=""
 CUSTOM_COMPOSE_FILE=""
+TEARDOWN_GRACE_PERIOD="${TEARDOWN_GRACE_PERIOD:-10}"
 
 while [[ "$1" == --* || "$1" == -* ]]; do
     case "$1" in
@@ -84,19 +131,29 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             CUSTOM_COMPOSE_FILE="${1#*=}"
             shift
             ;;
+        --teardown-grace-period)
+            TEARDOWN_GRACE_PERIOD="$2"
+            shift 2
+            ;;
+        --teardown-grace-period=*)
+            TEARDOWN_GRACE_PERIOD="${1#*=}"
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <checkpoint-interval>] [--chaos-interval <1m>] [--chaos-duration <55s>] [--delay <ms>] [--jitter <ms>] [--loss <%>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
-            echo "Example: $0 --docker-activate --build -t 40s -c 5s gossip-experiment.sh 10"
-            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 gossip-experiment.sh 5"
-            echo "Example: $0 --compose-file custom-compose.yml gossip-experiment.sh 5"
-            echo "Note: Must have --chaos-interval > --chaos-duration"
+            show_help
             exit 0
+            ;;
+        --*|-*)
+            echo "Error: Unknown option '$1'" >&2
+            usage >&2
+            exit 1
             ;;
         *)
             break
             ;;
     esac
 done
+
 
 # Helper to parse human durations (e.g., 55s, 1m, 2h) to seconds
 parse_duration_to_seconds() {
@@ -432,12 +489,13 @@ unset EXP_PID
 # Capture container IP -> human-readable container name mapping before teardown (if not captured yet)
 DOCKER_DNS_FILE="$OUTPUT_DIR/docker_dns.txt"
 if [ ! -f "$DOCKER_DNS_FILE" ] && docker compose ps -q >/dev/null 2>&1; then
+    # fetch the docker id and use it to inspect the containers, redirecting ip-name pairs to the dns file
     docker compose ps -q 2>/dev/null | xargs -r docker inspect \
-        --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{.Name}}' > "$DOCKER_DNS_FILE" 2>/dev/null || true
+        -f "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}} {{.Name}}" > "$DOCKER_DNS_FILE" 2>/dev/null || true
 fi
 
-# Best-effort container teardown (clean up any remaining containers)
-docker compose stop -t 10 >/dev/null 2>&1 || true
+# Best-effort container teardown  (clean up any remaining containers)
+docker compose stop -t $TEARDOWN_GRACE_PERIOD >/dev/null 2>&1 || true
 docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 
 # Fold any remaining WAL files into their .db files and remove -wal/-shm clutter
