@@ -1,50 +1,77 @@
 #!/usr/bin/env bash
 
 
+# Locate optional pluggable chaos manager
+CHAOS_MANAGER=""
+if [ -f "experiments/pumba-chaos-manager.sh" ]; then
+    CHAOS_MANAGER="experiments/pumba-chaos-manager.sh"
+elif [ -f "./pumba-chaos-manager.sh" ]; then
+    CHAOS_MANAGER="./pumba-chaos-manager.sh"
+fi
+
+CHAOS_SUPPORTED_OPTS=""
+if [ -n "$CHAOS_MANAGER" ]; then
+    CHAOS_SUPPORTED_OPTS=$("$CHAOS_MANAGER" --list-options 2>/dev/null || true)
+fi
+
+is_chaos_opt() {
+    local opt="$1"
+    for pair in $CHAOS_SUPPORTED_OPTS; do
+        if [[ "$pair" == "$opt:val" ]]; then
+            echo "val"
+            return 0
+        elif [[ "$pair" == "$opt:bool" ]]; then
+            echo "bool"
+            return 0
+        fi
+    done
+    return 1
+}
+
 show_help() {
-        cat << 'EOF'
+    cat << EOF
 Ifrit Experiment Runner
 ================================================================================================
-Orchestrates Ifrit gossip experiments over a Docker container network, injects optional network
-chaos (latency, jitter, packet loss), collects telemetry across nodes, merges
-SQLite results, and plots resource and exchange statistics.
-Usage:
-  ./run-experiments.sh [options] <experiment-script.sh> [script_args...]
--------------------------------------------------------------------------------------------------
-Options:
-      --docker-activate         Run experiment inside a dedicated Docker container
-      -b, --build               Rebuild Docker images before starting
-      -t, --duration <dur>      Experiment run duration (e.g. 40s, 5m, 1h). Default: indefinite
-      -c, --checkpoint-interval Sampling interval for resource usage (e.g. 5s)
-      -f, --compose-file <file> Override default docker-compose file
-      --teardown-grace-period   Seconds to wait before killing containers (default: 10s)
-    Network Chaos (Pumba):
-      --delay <ms>              Network latency to inject in milliseconds
-      --jitter <ms>             Latency jitter in milliseconds
-      --loss <%>                Packet loss percentage
-      --chaos-interval <dur>    Interval between chaos periods (e.g. 1m, 5m)
-      --chaos-duration <dur>    Duration of each chaos period (must be < interval, e.g. 55s)
+Orchestrates Ifrit distributed experiments over Docker container networks,
+tracks container resource usage, coordinates pluggable network & lifecycle chaos,
+merges SQLite telemetry databases, and generates plots.
 
-    Note: Must have --chaos-interval > --chaos-duration
+Usage:
+  ./run-experiments.sh [runner options] [chaos options] <experiment-script.sh> [script_args...]
 -------------------------------------------------------------------------------------------------
-    Examples:
+Runner Options:
+  --docker-activate         Run experiment inside a dedicated Docker container
+  -b, --build               Rebuild Docker images before starting
+  -t, --duration <dur>      Experiment run duration (e.g. 40s, 5m, 1h). Default: indefinite
+  -c, --checkpoint-interval Sampling interval for resource usage (e.g. 5s)
+  -f, --compose-file <file> Override default docker-compose file
+  --teardown-grace-period   Seconds to wait before killing containers (default: 10s)
+  -r, --rings <count>       Number of rings in Fireflies topology (default: 3)
+  -h, --help                Show this help message
+
+Examples:
   ./run-experiments.sh -t 40s -c 5s gossip-experiment.sh 10
-  ./run-experiments.sh -t 5m --delay 50 --jitter 10 --loss 1 gossip-experiment.sh 5
-  ./run-experiments.sh --docker-activate --build -t 2m gossip-experiment.sh 8
+  ./run-experiments.sh -t 2m --delay 500 --loss 10 gossip-experiment.sh 5
+  ./run-experiments.sh -t 2m --pause-node random --pause-duration 15s gossip-experiment.sh 5
 =================================================================================================
 EOF
+
+    if [ -n "$CHAOS_MANAGER" ]; then
+        echo ""
+        echo "Active Chaos Manager: $CHAOS_MANAGER"
+        echo "(All options below are dynamically accepted and forwarded to $CHAOS_MANAGER):"
+        echo "-------------------------------------------------------------------------------------------------"
+        "$CHAOS_MANAGER" --help
+    else
+        echo ""
+        echo "Note: No chaos manager detected (e.g. experiments/pumba-chaos-manager.sh)."
+    fi
 }
 
-
-usage(){
-            echo "Usage: $0 [--docker-activate] [-b|--build] [-t <duration>] [-c <checkpoint-interval>] [--chaos-interval <1m>] [--chaos-duration <55s>] [--delay <ms>] [--jitter <ms>] [--loss <%>] [-f <compose-file>] [--teardown-grace-period <seconds>] <experiment-script.sh> [script_args...]"
-            echo "Example: $0 --docker-activate --build -t 40s -c 5s gossip-experiment.sh 10"
-            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 gossip-experiment.sh 5"
-            echo "Example: $0 -t 5m --chaos-interval 5m --chaos-duration 4m55s --delay 50 --jitter 10 --teardown-grace-period 15 gossip-experiment.sh 5"
-            echo "Note: Must have --chaos-interval > --chaos-duration"
+usage() {
+    echo "Usage: $0 [runner options] [chaos options] <experiment-script.sh> [script_args...]"
+    echo "Run '$0 --help' for available options."
 }
-
-
 
 CONTAINER_NAME="go-experiment-runner"
 OUTPUT_DIR="$(pwd)/experiment_results"
@@ -56,6 +83,7 @@ BUILD_MODE=false
 EXPERIMENT_DURATION=""
 CUSTOM_COMPOSE_FILE=""
 TEARDOWN_GRACE_PERIOD="${TEARDOWN_GRACE_PERIOD:-10}"
+CHAOS_ARGS=()
 
 while [[ "$1" == --* || "$1" == -* ]]; do
     case "$1" in
@@ -83,46 +111,6 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             CHECKPOINT_INTERVAL="${1#*=}"
             shift
             ;;
-        --chaos-interval)
-            CHAOS_INTERVAL="$2"
-            shift 2
-            ;;
-        --chaos-interval=*)
-            CHAOS_INTERVAL="${1#*=}"
-            shift
-            ;;
-        --chaos-duration)
-            CHAOS_DURATION="$2"
-            shift 2
-            ;;
-        --chaos-duration=*)
-            CHAOS_DURATION="${1#*=}"
-            shift
-            ;;
-        --delay)
-            DELAY_MS="$2"
-            shift 2
-            ;;
-        --delay=*)
-            DELAY_MS="${1#*=}"
-            shift
-            ;;
-        --jitter)
-            JITTER_MS="$2"
-            shift 2
-            ;;
-        --jitter=*)
-            JITTER_MS="${1#*=}"
-            shift
-            ;;
-        --loss)
-            LOSS_PERCENT="$2"
-            shift 2
-            ;;
-        --loss=*)
-            LOSS_PERCENT="${1#*=}"
-            shift
-            ;;
         -f|--compose-file)
             CUSTOM_COMPOSE_FILE="$2"
             shift 2
@@ -139,21 +127,49 @@ while [[ "$1" == --* || "$1" == -* ]]; do
             TEARDOWN_GRACE_PERIOD="${1#*=}"
             shift
             ;;
+        -r|--rings)
+            export RINGS="$2"
+            shift 2
+            ;;
+        --rings=*)
+            export RINGS="${1#*=}"
+            shift
+            ;;
         -h|--help)
             show_help
             exit 0
             ;;
-        --*|-*)
-            echo "Error: Unknown option '$1'" >&2
-            usage >&2
-            exit 1
-            ;;
         *)
-            break
+            # Check if this flag is accepted dynamically by the chaos manager
+            opt_raw="${1#--}"
+            opt_raw="${opt_raw#-}"
+            opt_key="${opt_raw%%=*}"
+            kind=$(is_chaos_opt "$opt_key" || true)
+
+            if [ "$kind" = "val" ]; then
+                if [[ "$1" == *=* ]]; then
+                    CHAOS_ARGS+=("$1")
+                    shift
+                else
+                    if [ $# -lt 2 ]; then
+                        echo "Error: Chaos option '$1' requires a value." >&2
+                        exit 1
+                    fi
+                    CHAOS_ARGS+=("$1" "$2")
+                    shift 2
+                fi
+            elif [ "$kind" = "bool" ]; then
+                CHAOS_ARGS+=("$1")
+                shift
+            else
+                echo "Error: Unknown option '$1'" >&2
+                echo "" >&2
+                show_help >&2
+                exit 1
+            fi
             ;;
     esac
 done
-
 
 # Helper to parse human durations (e.g., 55s, 1m, 2h) to seconds
 parse_duration_to_seconds() {
@@ -173,28 +189,6 @@ parse_duration_to_seconds() {
     done
     echo "$total"
 }
-
-# Export and validate chaos parameters
-EFFECTIVE_INTERVAL="${CHAOS_INTERVAL:-1m}"
-EFFECTIVE_DURATION="${CHAOS_DURATION:-55s}"
-
-if [ -n "$CHAOS_INTERVAL" ] || [ -n "$CHAOS_DURATION" ]; then
-    INTERVAL_SECS=$(parse_duration_to_seconds "$EFFECTIVE_INTERVAL")
-    DURATION_SECS=$(parse_duration_to_seconds "$EFFECTIVE_DURATION")
-
-    if [ "$DURATION_SECS" -ge "$INTERVAL_SECS" ]; then
-        echo "Error: Pumba netem requires --chaos-duration ($EFFECTIVE_DURATION = ${DURATION_SECS}s) to be strictly shorter than --chaos-interval ($EFFECTIVE_INTERVAL = ${INTERVAL_SECS}s)."
-        echo "Example of valid configuration: --chaos-interval 1m --chaos-duration 55s (or --chaos-interval 5m --chaos-duration 4m50s)"
-        exit 1
-    fi
-
-    export PUMBA_INTERVAL="$EFFECTIVE_INTERVAL"
-    export PUMBA_DURATION="$EFFECTIVE_DURATION"
-fi
-
-[ -n "$DELAY_MS" ] && export DELAY_MS="$DELAY_MS"
-[ -n "$JITTER_MS" ] && export JITTER_MS="$JITTER_MS"
-[ -n "$LOSS_PERCENT" ] && export LOSS_PERCENT="$LOSS_PERCENT"
 
 # Export checkpoint interval if specified
 if [ -n "$CHECKPOINT_INTERVAL" ]; then
@@ -263,6 +257,12 @@ cleanup() {
     if [ -n "$EXP_PID" ]; then
         kill -TERM "$EXP_PID" 2>/dev/null
         wait "$EXP_PID" 2>/dev/null
+    fi
+
+    # Terminate chaos manager if still running
+    if [ -n "${CHAOS_PID:-}" ]; then
+        kill -TERM "$CHAOS_PID" 2>/dev/null || true
+        wait "$CHAOS_PID" 2>/dev/null || true
     fi
 
     # Capture container IP -> human-readable container name mapping before teardown
@@ -443,6 +443,7 @@ STATS_PID=$!
 # Run the experiment itself (lifecycle managed by runner)
 # =====================================================================
 # Start experiment script in its own process group/background
+CHAOS_PID=""
 "$SCRIPT_PATH" "$@" &
 EXP_PID=$!
 
@@ -456,6 +457,12 @@ if [ -n "$EXPERIMENT_DURATION" ]; then
         sleep 1
     done
 
+    # Start chaos manager if chaos arguments were provided
+    if [ ${#CHAOS_ARGS[@]} -gt 0 ] && [ -n "$CHAOS_MANAGER" ]; then
+        "$CHAOS_MANAGER" "${CHAOS_ARGS[@]}" &
+        CHAOS_PID=$!
+    fi
+
     echo "Running experiment (timer started: $EXPERIMENT_DURATION)..."
     sleep "$EXPERIMENT_DURATION" &
     SLEEP_PID=$!
@@ -465,6 +472,12 @@ if [ -n "$EXPERIMENT_DURATION" ]; then
 
     if kill -0 "$EXP_PID" 2>/dev/null; then
         echo "Duration limit ($EXPERIMENT_DURATION) reached. Stopping experiment..."
+        # Stop chaos manager first so it does not attempt to attach to dying containers
+        if [ -n "${CHAOS_PID:-}" ]; then
+            kill -TERM "$CHAOS_PID" 2>/dev/null || true
+            wait "$CHAOS_PID" 2>/dev/null || true
+            CHAOS_PID=""
+        fi
         # Capture container IP -> human-readable container name mapping before stopping
         DOCKER_DNS_FILE="$OUTPUT_DIR/docker_dns.txt"
         if [ ! -f "$DOCKER_DNS_FILE" ] && docker compose ps -q >/dev/null 2>&1; then
@@ -477,12 +490,32 @@ if [ -n "$EXPERIMENT_DURATION" ]; then
         wait "$EXP_PID" 2>/dev/null || true
     else
         echo "Experiment finished before duration limit ($EXPERIMENT_DURATION)."
+        if [ -n "${CHAOS_PID:-}" ]; then
+            kill -TERM "$CHAOS_PID" 2>/dev/null || true
+            wait "$CHAOS_PID" 2>/dev/null || true
+            CHAOS_PID=""
+        fi
         kill -9 "$SLEEP_PID" 2>/dev/null || true
         wait "$SLEEP_PID" 2>/dev/null || true
     fi
 else
+    for i in {1..30}; do
+        if docker compose ps -q gossip-node 2>/dev/null | grep -q .; then
+            break
+        fi
+        sleep 1
+    done
+    if [ ${#CHAOS_ARGS[@]} -gt 0 ] && [ -n "$CHAOS_MANAGER" ]; then
+        "$CHAOS_MANAGER" "${CHAOS_ARGS[@]}" &
+        CHAOS_PID=$!
+    fi
     echo "Running experiment (indefinite, press Ctrl+C to stop and plot)..."
     wait "$EXP_PID" 2>/dev/null
+    if [ -n "${CHAOS_PID:-}" ]; then
+        kill -TERM "$CHAOS_PID" 2>/dev/null || true
+        wait "$CHAOS_PID" 2>/dev/null || true
+        CHAOS_PID=""
+    fi
 fi
 unset EXP_PID
 
