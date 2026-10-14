@@ -113,6 +113,71 @@ func splitHostAndPort(addr string) (string, string) {
 	return addr, ""
 }
 
+// Helper to log telemetry for Spread RPC exchanges (rebuttals, gossip payloads, accusations, notes)
+func logSpreadExchange(
+	telemetryLogger TelemetryLogger,
+	stateReq *pb.State,
+	stateResp *pb.StateResponse,
+	host, remoteHost, remotePort string,
+	requestDir, responseDir string,
+) {
+	if telemetryLogger == nil || stateReq == nil || stateResp == nil {
+		return
+	}
+	now := time.Now()
+
+	// Distinguish between a Rebuttal and regular Gossip
+	if len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil {
+		ownNote := stateReq.GetOwnNote()
+		telemetryLogger.OnRebuttal(RebuttalEvent{
+			Timestamp:  now,
+			Direction:  requestDir,
+			Host:       host,
+			HostPort:   "",
+			RemoteHost: remoteHost,
+			RemotePort: remotePort,
+			NodeID:     hex.EncodeToString(ownNote.GetId()),
+			Epoch:      ownNote.GetEpoch(),
+			Mask:       ownNote.GetMask(),
+		})
+	} else {
+		telemetryLogger.OnGossipExchange(GossipEvent{
+			Timestamp:       now,
+			Direction:       requestDir,
+			Host:            host,
+			HostPort:        "",
+			RemoteHost:      remoteHost,
+			RemotePort:      remotePort,
+			PayloadDataSize: len(stateReq.GetExternalGossip()),
+		})
+	}
+
+	for _, acc := range stateResp.GetAccusations() {
+		telemetryLogger.OnAccusation(AccusationEvent{
+			Timestamp:  now,
+			Direction:  responseDir,
+			Host:       host,
+			RemoteHost: remoteHost,
+			Accuser:    hex.EncodeToString(acc.GetAccuser()),
+			Accused:    hex.EncodeToString(acc.GetAccused()),
+			RingNum:    acc.GetRingNum(),
+			Epoch:      acc.GetEpoch(),
+		})
+	}
+
+	for _, note := range stateResp.GetNotes() {
+		telemetryLogger.OnNote(NoteEvent{
+			Timestamp:  now,
+			Direction:  responseDir,
+			Host:       host,
+			RemoteHost: remoteHost,
+			NodeID:     hex.EncodeToString(note.GetId()),
+			Epoch:      note.GetEpoch(),
+			Mask:       note.GetMask(),
+		})
+	}
+}
+
 // Client Interceptor factory: returns a unary client interceptor.
 // This interceptor is called before client TLS encryption.
 func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryClientInterceptor {
@@ -133,64 +198,16 @@ func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryC
 					remoteAddr = pr.Addr.String()
 				}
 				remoteHost, remotePort := splitHostAndPort(remoteAddr)
-				host := getLocalHostIdentifier()
-				now := time.Now()
-
-				// Distinguish between a Rebuttal and regular Gossip
-				isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
-
-				if isRebuttal {
-					ownNote := stateReq.GetOwnNote()
-					telemetryLogger.OnRebuttal(RebuttalEvent{
-						Timestamp:  now,
-						Direction:  "OUTGOING",
-						Host:       host,
-						HostPort:   "",
-						RemoteHost: remoteHost,
-						RemotePort: remotePort,
-						NodeID:     hex.EncodeToString(ownNote.GetId()),
-						Epoch:      ownNote.GetEpoch(),
-						Mask:       ownNote.GetMask(),
-					})
-				} else {
-					payloadSize := len(stateReq.GetExternalGossip())
-					telemetryLogger.OnGossipExchange(GossipEvent{
-						Timestamp:       now,
-						Direction:       "OUTGOING",
-						Host:            host,
-						HostPort:        "",
-						RemoteHost:      remoteHost,
-						RemotePort:      remotePort,
-						PayloadDataSize: payloadSize,
-					})
-				}
-
-				// Log accusations received from remote peer in reply
-				for _, acc := range stateResp.GetAccusations() {
-					telemetryLogger.OnAccusation(AccusationEvent{
-						Timestamp:  now,
-						Direction:  "INCOMING",
-						Host:       host,
-						RemoteHost: remoteHost,
-						Accuser:    hex.EncodeToString(acc.GetAccuser()),
-						Accused:    hex.EncodeToString(acc.GetAccused()),
-						RingNum:    acc.GetRingNum(),
-						Epoch:      acc.GetEpoch(),
-					})
-				}
-
-				// Log membership notes received from remote peer in reply
-				for _, note := range stateResp.GetNotes() {
-					telemetryLogger.OnNote(NoteEvent{
-						Timestamp:  now,
-						Direction:  "INCOMING",
-						Host:       host,
-						RemoteHost: remoteHost,
-						NodeID:     hex.EncodeToString(note.GetId()),
-						Epoch:      note.GetEpoch(),
-						Mask:       note.GetMask(),
-					})
-				}
+				logSpreadExchange(
+					telemetryLogger,
+					stateReq,
+					stateResp,
+					getLocalHostIdentifier(),
+					remoteHost,
+					remotePort,
+					"OUTGOING", // Request sent out
+					"INCOMING", // Response received in
+				)
 			}
 		}
 		return err
@@ -205,70 +222,22 @@ func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryS
 		if info.FullMethod == "/proto.gossip/Spread" && err == nil {
 			stateReq, okReq := req.(*pb.State)
 			stateResp, okResp := reply.(*pb.StateResponse)
-			remoteAddr := "unknown"
-			if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-				remoteAddr = p.Addr.String()
-			}
-			remoteHost, remotePort := splitHostAndPort(remoteAddr)
-			host := getLocalHostIdentifier()
-			now := time.Now()
-
 			if okReq && okResp {
-				// Distinguish between a Rebuttal and regular Gossip
-				isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
-
-				if isRebuttal {
-					ownNote := stateReq.GetOwnNote()
-					telemetryLogger.OnRebuttal(RebuttalEvent{
-						Timestamp:  now,
-						Direction:  "INCOMING",
-						Host:       host,
-						HostPort:   "",
-						RemoteHost: remoteHost,
-						RemotePort: remotePort,
-						NodeID:     hex.EncodeToString(ownNote.GetId()),
-						Epoch:      ownNote.GetEpoch(),
-						Mask:       ownNote.GetMask(),
-					})
-				} else {
-					payloadSize := len(stateReq.GetExternalGossip())
-					telemetryLogger.OnGossipExchange(GossipEvent{
-						Timestamp:       now,
-						Direction:       "INCOMING",
-						Host:            host,
-						HostPort:        "",
-						RemoteHost:      remoteHost,
-						RemotePort:      remotePort,
-						PayloadDataSize: payloadSize,
-					})
+				remoteAddr := "unknown"
+				if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+					remoteAddr = p.Addr.String()
 				}
-
-				// Log accusations sent back to remote peer in reply
-				for _, acc := range stateResp.GetAccusations() {
-					telemetryLogger.OnAccusation(AccusationEvent{
-						Timestamp:  now,
-						Direction:  "OUTGOING",
-						Host:       host,
-						RemoteHost: remoteHost,
-						Accuser:    hex.EncodeToString(acc.GetAccuser()),
-						Accused:    hex.EncodeToString(acc.GetAccused()),
-						RingNum:    acc.GetRingNum(),
-						Epoch:      acc.GetEpoch(),
-					})
-				}
-
-				// Log membership notes sent back to remote peer in reply
-				for _, note := range stateResp.GetNotes() {
-					telemetryLogger.OnNote(NoteEvent{
-						Timestamp:  now,
-						Direction:  "OUTGOING",
-						Host:       host,
-						RemoteHost: remoteHost,
-						NodeID:     hex.EncodeToString(note.GetId()),
-						Epoch:      note.GetEpoch(),
-						Mask:       note.GetMask(),
-					})
-				}
+				remoteHost, remotePort := splitHostAndPort(remoteAddr)
+				logSpreadExchange(
+					telemetryLogger,
+					stateReq,
+					stateResp,
+					getLocalHostIdentifier(),
+					remoteHost,
+					remotePort,
+					"INCOMING", // Request received in
+					"OUTGOING", // Response sent out
+				)
 			}
 		}
 		return reply, err
