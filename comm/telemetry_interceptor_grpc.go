@@ -126,8 +126,9 @@ func logSpreadExchange(
 	}
 	now := time.Now()
 
-	// Distinguish between a Rebuttal and regular Gossip
-	if len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil {
+	// 1. Rebuttal logging: if hosts is empty and ownNote is present, this message is refuting an accusation
+	isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
+	if isRebuttal {
 		ownNote := stateReq.GetOwnNote()
 		telemetryLogger.OnRebuttal(RebuttalEvent{
 			Timestamp:  now,
@@ -140,7 +141,11 @@ func logSpreadExchange(
 			Epoch:      ownNote.GetEpoch(),
 			Mask:       ownNote.GetMask(),
 		})
-	} else {
+	}
+
+	// 2. Gossip exchange logging: log application payload if data is present or if this is a standard gossip exchange
+	payloadSize := len(stateReq.GetExternalGossip())
+	if payloadSize > 0 || !isRebuttal {
 		telemetryLogger.OnGossipExchange(GossipEvent{
 			Timestamp:       now,
 			Direction:       requestDir,
@@ -148,7 +153,7 @@ func logSpreadExchange(
 			HostPort:        "",
 			RemoteHost:      remoteHost,
 			RemotePort:      remotePort,
-			PayloadDataSize: len(stateReq.GetExternalGossip()),
+			PayloadDataSize: payloadSize,
 		})
 	}
 

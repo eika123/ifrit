@@ -226,7 +226,23 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	assert.Len(t, rec.accusationEvents, 1)
 	assert.Equal(t, uint32(1), rec.accusationEvents[0].RingNum)
 	assert.Len(t, rec.noteEvents, 1)
-	assert.Equal(t, uint64(4), rec.noteEvents[0].Epoch)
+	// 3. Rebuttal with piggybacked application payload
+	piggybackReq := &pb.State{
+		ExistingHosts: nil,
+		OwnNote: &pb.Note{
+			Id:    []byte("my-node-id"),
+			Epoch: 11,
+			Mask:  3,
+		},
+		ExternalGossip: []byte("piggybacked data"),
+	}
+	err = interceptor(context.Background(), "/proto.gossip/Spread", piggybackReq, resp, nil, invoker)
+	require.NoError(t, err)
+
+	assert.Len(t, rec.rebuttalEvents, 2)
+	assert.Equal(t, uint64(11), rec.rebuttalEvents[1].Epoch)
+	assert.Len(t, rec.gossipEvents, 2)
+	assert.Equal(t, len("piggybacked data"), rec.gossipEvents[1].PayloadDataSize)
 }
 
 func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
