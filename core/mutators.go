@@ -48,8 +48,8 @@ func (n *Node) getGossipTimeout() time.Duration {
 	return n.gossipTimeout
 }
 
-// Exposed to let ifrit client set directly
-func (n *Node) SetExternalGossipContent(data []byte) {
+// Internal helper to set external gossip bytes, updated exclusively via GossipSet AddElement/merge
+func (n *Node) setExternalGossipContent(data []byte) {
 	n.externalGossipMutex.Lock()
 	defer n.externalGossipMutex.Unlock()
 

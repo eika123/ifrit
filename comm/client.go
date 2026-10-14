@@ -74,12 +74,13 @@ func (c *gRPCClient) Gossip(addr string, args *pb.State) (*pb.StateResponse, err
 		return nil, err
 	}
 
-	r, err := conn.Spread(context.Background(), args)
+	// rpc call on remote connection peer.
+	reply, err := conn.Spread(context.Background(), args)
 	if err != nil {
 		return nil, err
 	}
 
-	return r, nil
+	return reply, nil
 }
 
 func (c *gRPCClient) Send(addr string, args *pb.Msg) (*pb.MsgResponse, error) {

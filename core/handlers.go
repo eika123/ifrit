@@ -76,6 +76,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		}
 
 		if handler := n.getGossipHandler(); handler != nil && extGossip != nil {
+			// received some gossip, handle it
 			reply.ExternalGossip, err = handler(extGossip)
 			if err != nil {
 				log.Error(err.Error())
