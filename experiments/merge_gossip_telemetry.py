@@ -64,9 +64,8 @@ def merge_databases(db_files, output_db, cleanup_sources=False, dns_file=None):
     dest_conn = sqlite3.connect(output_db)
     dest_cursor = dest_conn.cursor()
 
-    schema_initialized = False
-    columns = []
-    total_rows = 0
+    known_tables = {}
+    table_row_counts = {}
     merged_sources = []
 
     dest_cursor.execute("PRAGMA busy_timeout = 5000;")
@@ -90,54 +89,58 @@ def merge_databases(db_files, output_db, cleanup_sources=False, dns_file=None):
             src_conn = sqlite3.connect(db_path)
             src_cursor = src_conn.cursor()
 
-            # Dynamically extract schema from the first valid source database
-            if not schema_initialized:
-                create_sql, cols = get_table_schema_and_columns(src_cursor, "gossip_exchange")
-                if create_sql and cols:
-                    dest_cursor.executescript(create_sql + ";")
-                    # Build standard indices if present in schema
-                    if "timestamp" in cols:
-                        dest_cursor.execute("CREATE INDEX IF NOT EXISTS idx_gossip_ts ON gossip_exchange(timestamp);")
-                    if "host" in cols:
-                        dest_cursor.execute("CREATE INDEX IF NOT EXISTS idx_gossip_host ON gossip_exchange(host);")
-                    if "direction" in cols:
-                        dest_cursor.execute("CREATE INDEX IF NOT EXISTS idx_gossip_dir ON gossip_exchange(direction);")
+            # Discover all non-sqlite tables in this source database
+            src_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+            tables = [r[0] for r in src_cursor.fetchall()]
 
+            had_data = False
+            for tbl in tables:
+                if tbl == "node_identity":
+                    try:
+                        src_cursor.execute("SELECT ip, name FROM node_identity;")
+                        identities = src_cursor.fetchall()
+                        if identities:
+                            dest_cursor.execute("CREATE TABLE IF NOT EXISTS node_identity (ip TEXT PRIMARY KEY, name TEXT);")
+                            dest_cursor.executemany("INSERT OR IGNORE INTO node_identity (ip, name) VALUES (?, ?);", identities)
+                            dest_conn.commit()
+                    except Exception:
+                        pass
+                    continue
+
+                # Initialize table schema in destination if seen for the first time
+                if tbl not in known_tables:
+                    create_sql, cols = get_table_schema_and_columns(src_cursor, tbl)
+                    if create_sql and cols:
+                        dest_cursor.executescript(create_sql + ";")
+                        if "timestamp" in cols:
+                            dest_cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_ts ON {tbl}(timestamp);")
+                        if "host" in cols:
+                            dest_cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_host ON {tbl}(host);")
+                        if "direction" in cols:
+                            dest_cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_dir ON {tbl}(direction);")
+                        dest_conn.commit()
+                        known_tables[tbl] = cols
+
+                if tbl not in known_tables:
+                    continue
+
+                cols = known_tables[tbl]
+                col_list_str = ", ".join(cols)
+                placeholders = ", ".join(["?"] * len(cols))
+                query = f"SELECT {col_list_str} FROM {tbl};"
+
+                src_cursor.execute(query)
+                rows = src_cursor.fetchall()
+
+                if rows:
+                    insert_sql = f"INSERT INTO {tbl} ({col_list_str}) VALUES ({placeholders});"
+                    dest_cursor.executemany(insert_sql, rows)
                     dest_conn.commit()
-                    columns = cols
-                    schema_initialized = True
-
-            if not schema_initialized:
-                src_conn.close()
-                continue
-
-            # Dynamically select all columns discovered in the schema
-            col_list_str = ", ".join(columns)
-            placeholders = ", ".join(["?"] * len(columns))
-            query = f"SELECT {col_list_str} FROM gossip_exchange;"
-
-            src_cursor.execute(query)
-            rows = src_cursor.fetchall()
-
-            # Merge node_identity entries if present in source (only if not already registered)
-            try:
-                src_cursor.execute("SELECT ip, name FROM node_identity;")
-                identities = src_cursor.fetchall()
-                if identities:
-                    dest_cursor.execute("CREATE TABLE IF NOT EXISTS node_identity (ip TEXT PRIMARY KEY, name TEXT);")
-                    dest_cursor.executemany("INSERT OR IGNORE INTO node_identity (ip, name) VALUES (?, ?);", identities)
-                    dest_conn.commit()
-            except Exception:
-                pass
+                    table_row_counts[tbl] = table_row_counts.get(tbl, 0) + len(rows)
+                    had_data = True
 
             src_conn.close()
-
-            # Insert dynamically into destination database
-            if rows:
-                insert_sql = f"INSERT INTO gossip_exchange ({col_list_str}) VALUES ({placeholders});"
-                dest_cursor.executemany(insert_sql, rows)
-                dest_conn.commit()
-                total_rows += len(rows)
+            if had_data:
                 merged_sources.append(db_path)
 
         except Exception as e:
@@ -145,10 +148,12 @@ def merge_databases(db_files, output_db, cleanup_sources=False, dns_file=None):
 
     dest_conn.close()
 
-    if schema_initialized:
-        print(f"Successfully merged {total_rows} gossip exchange rows from {len(merged_sources)} node databases into {output_db}")
+    total_rows = sum(table_row_counts.values())
+    if known_tables:
+        summary_parts = [f"{count} in '{tbl}'" for tbl, count in table_row_counts.items()]
+        print(f"Successfully merged {total_rows} rows ({', '.join(summary_parts)}) from {len(merged_sources)} node databases into {output_db}")
     else:
-        print("Notice: No gossip_exchange tables found in source databases.")
+        print("Notice: No telemetry tables found in source databases.")
 
     if cleanup_sources:
         for p in merged_sources:

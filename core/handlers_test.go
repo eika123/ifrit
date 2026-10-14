@@ -1009,7 +1009,7 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*x509.Certificate, er
 		NotBefore:             time.Now().AddDate(-10, 0, 0),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		ExtraExtensions:       []pkix.Extension{ext},
-		PublicKey:             priv.PublicKey,
+		PublicKey:             &priv.PublicKey,
 		IPAddresses:           []net.IP{ip},
 		IsCA:                  true,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth,

@@ -17,18 +17,23 @@ type UDPServer struct {
 	pauseChan chan time.Duration
 
 	pongSigner
+	timeout time.Duration
 }
 
 type pongSigner interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
-func NewUdpServer(ps pongSigner, conn *net.UDPConn) (*UDPServer, error) {
+func NewUdpServer(ps pongSigner, conn *net.UDPConn, timeout time.Duration) (*UDPServer, error) {
+	if timeout <= 0 {
+		timeout = time.Second * 5
+	}
 	return &UDPServer{
 		conn:       conn,
 		exitChan:   make(chan bool, 1),
 		pauseChan:  make(chan time.Duration, 1),
 		pongSigner: ps,
+		timeout:    timeout,
 	}, nil
 }
 
@@ -43,7 +48,7 @@ func (us *UDPServer) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 		return nil, err
 	}
 	defer c.Close()
-	c.SetDeadline(time.Now().Add(time.Second * 5))
+	c.SetDeadline(time.Now().Add(us.timeout))
 
 	data, err := proto.Marshal(p)
 	if err != nil {

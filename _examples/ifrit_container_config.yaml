@@ -8,6 +8,7 @@ monitor_interval: 1
 view_update_interval: 5
 
 # Crash detection & pinging settings
+ping_timeout: 1
 ping_limit: 3
 pings_per_interval: 3
 removal_timeout: 30

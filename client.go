@@ -3,6 +3,7 @@ package ifrit
 import (
 	"crypto/x509/pkix"
 	"errors"
+	"time"
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/comm"
@@ -93,7 +94,8 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, err
 	}
 
-	udpServer, err := comm.NewUdpServer(cu, udpConn)
+	pingTimeout := time.Second * time.Duration(viper.GetInt32("ping_timeout"))
+	udpServer, err := comm.NewUdpServer(cu, udpConn, pingTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +266,7 @@ func readConfig() error {
 	viper.SetDefault("gossip_interval", 10)
 	viper.SetDefault("monitor_interval", 10)
 	viper.SetDefault("view_update_interval", 10)
+	viper.SetDefault("ping_timeout", 5)
 	viper.SetDefault("ping_limit", 3)
 	viper.SetDefault("pings_per_interval", 3)
 	viper.SetDefault("removal_timeout", 60)

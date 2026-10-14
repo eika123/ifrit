@@ -12,7 +12,7 @@ package comm
 
 import (
 	"database/sql"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -30,12 +30,17 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-// TelemetryListener receives unencrypted semantic gossip events.
+// TelemetryLogger receives unencrypted semantic protocol events: application gossip,
+// failure-recovery rebuttals, accusations, and membership notes.
 type TelemetryLogger interface {
 	OnGossipExchange(event GossipEvent)
+	OnRebuttal(event RebuttalEvent)
+	OnAccusation(event AccusationEvent)
+	OnNote(event NoteEvent)
 	Close() error
 }
 
+// GossipEvent represents an application data exchange between peers.
 type GossipEvent struct {
 	Timestamp       time.Time
 	Direction       string // "INCOMING" or "OUTGOING"
@@ -43,12 +48,43 @@ type GossipEvent struct {
 	HostPort        string
 	RemoteHost      string
 	RemotePort      string
-	HasNote         bool
-	DataBytes       int
-	AccusationCount int
-	NoteCount       int
-	AccusedNodes    []string
-	Rings           []uint32
+	PayloadDataSize int
+}
+
+// RebuttalEvent captures when an accused node broadcasts or receives an urgent rebuttal Note.
+type RebuttalEvent struct {
+	Timestamp  time.Time
+	Direction  string // "OUTGOING" (issued by this node) or "INCOMING" (received by this node)
+	Host       string
+	HostPort   string
+	RemoteHost string
+	RemotePort string
+	NodeID     string // hex encoded ID of the accused node
+	Epoch      uint64 // incremented epoch
+	Mask       uint32 // active/deactivated ring mask
+}
+
+// AccusationEvent represents an accusation against a suspected node on a specific ring.
+type AccusationEvent struct {
+	Timestamp  time.Time
+	Direction  string // "OUTGOING" (served to peer) or "INCOMING" (received from peer)
+	Host       string
+	RemoteHost string
+	Accuser    string // hex encoded ID
+	Accused    string // hex encoded ID
+	RingNum    uint32 // ring number on which accusation was made
+	Epoch      uint64 // epoch being accused
+}
+
+// NoteEvent represents a membership Note exchanged between peers.
+type NoteEvent struct {
+	Timestamp  time.Time
+	Direction  string // "OUTGOING" (served to peer) or "INCOMING" (received from peer)
+	Host       string
+	RemoteHost string
+	NodeID     string // hex encoded ID
+	Epoch      uint64
+	Mask       uint32
 }
 
 func getLocalHostIdentifier() string {
@@ -77,32 +113,8 @@ func splitHostAndPort(addr string) (string, string) {
 	return addr, ""
 }
 
-func extractAccusations(accs []*pb.Accusation) []string {
-	accIds := []string{}
-	for _, acc := range accs {
-		accIds = append(accIds, acc.String())
-	}
-	return accIds
-}
-
-func extractRings(accs []*pb.Accusation) []uint32 {
-	rings := []uint32{}
-	for _, acc := range accs {
-		rings = append(rings, acc.GetRingNum())
-	}
-	return rings
-}
-
 // Client Interceptor factory: returns a unary client interceptor.
 // This interceptor is called before client TLS encryption.
-//
-// In OUTGOING events:
-//   - Request fields (stateReq): Represent this local node's own outgoing state/payload:
-//   - HasNote: whether this node attached its own pb.Note.
-//   - DataBytes: byte size of this node's own ExternalGossip payload.
-//   - Reply fields (stateResp): Represent information received back from the remote peer:
-//   - AccusationCount, AccusedNodes, Rings: accusations returned by the remote peer.
-//   - NoteCount: membership notes returned by the remote peer.
 func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		var pr peer.Peer
@@ -113,25 +125,72 @@ func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryC
 			stateReq, okReq := req.(*pb.State)
 			stateResp, okResp := reply.(*pb.StateResponse)
 			if okReq && okResp {
-				remoteAddr := cc.Target()
+				remoteAddr := ""
+				if cc != nil {
+					remoteAddr = cc.Target()
+				}
 				if pr.Addr != nil {
 					remoteAddr = pr.Addr.String()
 				}
 				remoteHost, remotePort := splitHostAndPort(remoteAddr)
-				telemetryLogger.OnGossipExchange(GossipEvent{
-					Timestamp:       time.Now(),
-					Direction:       "OUTGOING",
-					Host:            getLocalHostIdentifier(),
-					HostPort:        "",
-					RemoteHost:      remoteHost,
-					RemotePort:      remotePort,
-					HasNote:         stateReq.GetOwnNote() != nil,
-					DataBytes:       len(stateReq.GetExternalGossip()),
-					AccusationCount: len(stateResp.GetAccusations()),
-					NoteCount:       len(stateResp.GetNotes()),
-					AccusedNodes:    extractAccusations(stateResp.GetAccusations()),
-					Rings:           extractRings(stateResp.GetAccusations()),
-				})
+				host := getLocalHostIdentifier()
+				now := time.Now()
+
+				// Distinguish between a Rebuttal and regular Gossip
+				isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
+
+				if isRebuttal {
+					ownNote := stateReq.GetOwnNote()
+					telemetryLogger.OnRebuttal(RebuttalEvent{
+						Timestamp:  now,
+						Direction:  "OUTGOING",
+						Host:       host,
+						HostPort:   "",
+						RemoteHost: remoteHost,
+						RemotePort: remotePort,
+						NodeID:     hex.EncodeToString(ownNote.GetId()),
+						Epoch:      ownNote.GetEpoch(),
+						Mask:       ownNote.GetMask(),
+					})
+				} else {
+					payloadSize := len(stateReq.GetExternalGossip())
+					telemetryLogger.OnGossipExchange(GossipEvent{
+						Timestamp:       now,
+						Direction:       "OUTGOING",
+						Host:            host,
+						HostPort:        "",
+						RemoteHost:      remoteHost,
+						RemotePort:      remotePort,
+						PayloadDataSize: payloadSize,
+					})
+				}
+
+				// Log accusations received from remote peer in reply
+				for _, acc := range stateResp.GetAccusations() {
+					telemetryLogger.OnAccusation(AccusationEvent{
+						Timestamp:  now,
+						Direction:  "INCOMING",
+						Host:       host,
+						RemoteHost: remoteHost,
+						Accuser:    hex.EncodeToString(acc.GetAccuser()),
+						Accused:    hex.EncodeToString(acc.GetAccused()),
+						RingNum:    acc.GetRingNum(),
+						Epoch:      acc.GetEpoch(),
+					})
+				}
+
+				// Log membership notes received from remote peer in reply
+				for _, note := range stateResp.GetNotes() {
+					telemetryLogger.OnNote(NoteEvent{
+						Timestamp:  now,
+						Direction:  "INCOMING",
+						Host:       host,
+						RemoteHost: remoteHost,
+						NodeID:     hex.EncodeToString(note.GetId()),
+						Epoch:      note.GetEpoch(),
+						Mask:       note.GetMask(),
+					})
+				}
 			}
 		}
 		return err
@@ -151,21 +210,65 @@ func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryS
 				remoteAddr = p.Addr.String()
 			}
 			remoteHost, remotePort := splitHostAndPort(remoteAddr)
+			host := getLocalHostIdentifier()
+			now := time.Now()
+
 			if okReq && okResp {
-				telemetryLogger.OnGossipExchange(GossipEvent{
-					Timestamp:       time.Now(),
-					Direction:       "INCOMING",
-					Host:            getLocalHostIdentifier(),
-					HostPort:        "",
-					RemoteHost:      remoteHost,
-					RemotePort:      remotePort,
-					HasNote:         stateReq.GetOwnNote() != nil,
-					DataBytes:       len(stateReq.GetExternalGossip()),
-					AccusationCount: len(stateResp.GetAccusations()),
-					NoteCount:       len(stateResp.GetNotes()),
-					AccusedNodes:    extractAccusations(stateResp.GetAccusations()),
-					Rings:           extractRings(stateResp.GetAccusations()),
-				})
+				// Distinguish between a Rebuttal and regular Gossip
+				isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
+
+				if isRebuttal {
+					ownNote := stateReq.GetOwnNote()
+					telemetryLogger.OnRebuttal(RebuttalEvent{
+						Timestamp:  now,
+						Direction:  "INCOMING",
+						Host:       host,
+						HostPort:   "",
+						RemoteHost: remoteHost,
+						RemotePort: remotePort,
+						NodeID:     hex.EncodeToString(ownNote.GetId()),
+						Epoch:      ownNote.GetEpoch(),
+						Mask:       ownNote.GetMask(),
+					})
+				} else {
+					payloadSize := len(stateReq.GetExternalGossip())
+					telemetryLogger.OnGossipExchange(GossipEvent{
+						Timestamp:       now,
+						Direction:       "INCOMING",
+						Host:            host,
+						HostPort:        "",
+						RemoteHost:      remoteHost,
+						RemotePort:      remotePort,
+						PayloadDataSize: payloadSize,
+					})
+				}
+
+				// Log accusations sent back to remote peer in reply
+				for _, acc := range stateResp.GetAccusations() {
+					telemetryLogger.OnAccusation(AccusationEvent{
+						Timestamp:  now,
+						Direction:  "OUTGOING",
+						Host:       host,
+						RemoteHost: remoteHost,
+						Accuser:    hex.EncodeToString(acc.GetAccuser()),
+						Accused:    hex.EncodeToString(acc.GetAccused()),
+						RingNum:    acc.GetRingNum(),
+						Epoch:      acc.GetEpoch(),
+					})
+				}
+
+				// Log membership notes sent back to remote peer in reply
+				for _, note := range stateResp.GetNotes() {
+					telemetryLogger.OnNote(NoteEvent{
+						Timestamp:  now,
+						Direction:  "OUTGOING",
+						Host:       host,
+						RemoteHost: remoteHost,
+						NodeID:     hex.EncodeToString(note.GetId()),
+						Epoch:      note.GetEpoch(),
+						Mask:       note.GetMask(),
+					})
+				}
 			}
 		}
 		return reply, err
@@ -224,7 +327,7 @@ func NewRPCInterfaceLogger(dbPath string) (*rpcInterfaceLogger, error) {
 		return nil, err
 	}
 
-	// Create table gossip_exchange
+	// 1. Create table gossip_exchange (application gossip only)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS gossip_exchange (
 		timestamp INTEGER,
 		direction TEXT, -- "OUTGOING" or "INCOMING"
@@ -232,15 +335,62 @@ func NewRPCInterfaceLogger(dbPath string) (*rpcInterfaceLogger, error) {
 		host_port TEXT,
 		remote_host TEXT,
 		remote_port TEXT,
-		has_note BOOLEAN,
-		data_bytes INTEGER,
-		accusation_count INTEGER,
-		note_count INTEGER,
-		accused_nodes TEXT,
-		rings TEXT
+		payload_data_size INTEGER,
+		data_bytes INTEGER -- alias for backwards compatibility
 	)`)
 	if err != nil {
-		log.Error("Failed to create database table: " + err.Error())
+		log.Error("Failed to create gossip_exchange table: " + err.Error())
+		db.Close()
+		return nil, err
+	}
+
+	// 2. Create table rebuttal_events
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS rebuttal_events (
+		timestamp INTEGER,
+		direction TEXT, -- "OUTGOING" or "INCOMING"
+		host TEXT,
+		host_port TEXT,
+		remote_host TEXT,
+		remote_port TEXT,
+		node_id TEXT,
+		epoch INTEGER,
+		mask INTEGER
+	)`)
+	if err != nil {
+		log.Error("Failed to create rebuttal_events table: " + err.Error())
+		db.Close()
+		return nil, err
+	}
+
+	// 3. Create table accusation_events
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS accusation_events (
+		timestamp INTEGER,
+		direction TEXT, -- "OUTGOING" or "INCOMING"
+		host TEXT,
+		remote_host TEXT,
+		accuser TEXT,
+		accused TEXT,
+		ring_num INTEGER,
+		epoch INTEGER
+	)`)
+	if err != nil {
+		log.Error("Failed to create accusation_events table: " + err.Error())
+		db.Close()
+		return nil, err
+	}
+
+	// 4. Create table note_events
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS note_events (
+		timestamp INTEGER,
+		direction TEXT, -- "OUTGOING" or "INCOMING"
+		host TEXT,
+		remote_host TEXT,
+		node_id TEXT,
+		epoch INTEGER,
+		mask INTEGER
+	)`)
+	if err != nil {
+		log.Error("Failed to create note_events table: " + err.Error())
 		db.Close()
 		return nil, err
 	}
@@ -273,34 +423,91 @@ func (rpcil *rpcInterfaceLogger) Close() error {
 }
 
 func (rpcil *rpcInterfaceLogger) OnGossipExchange(event GossipEvent) {
-	// send the event to our sqlite3 database
 	rpcil.dbLock.Lock()
 	defer rpcil.dbLock.Unlock()
 
-	accusedStr := strings.Join(event.AccusedNodes, ",")
-	ringsBytes, err := json.Marshal(event.Rings)
-	if err != nil {
-		log.Error("Failed to marshal rings: " + err.Error())
-		ringsBytes = []byte("[]")
-	}
-
-	_, err = rpcil.dbConn.Exec(
+	_, err := rpcil.dbConn.Exec(
 		`INSERT INTO gossip_exchange (
 			timestamp, direction, host, host_port, remote_host, remote_port, 
-			has_note, data_bytes, accusation_count, note_count, accused_nodes, rings
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			payload_data_size, data_bytes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.Timestamp,
 		event.Direction,
 		event.Host,
 		event.HostPort,
 		event.RemoteHost,
 		event.RemotePort,
-		event.HasNote,
-		event.DataBytes,
-		event.AccusationCount,
-		event.NoteCount,
-		accusedStr,
-		ringsBytes,
+		event.PayloadDataSize,
+		event.PayloadDataSize,
+	)
+	if err != nil {
+		log.Error(err.Error())
+	}
+}
+
+func (rpcil *rpcInterfaceLogger) OnRebuttal(event RebuttalEvent) {
+	rpcil.dbLock.Lock()
+	defer rpcil.dbLock.Unlock()
+
+	_, err := rpcil.dbConn.Exec(
+		`INSERT INTO rebuttal_events (
+			timestamp, direction, host, host_port, remote_host, remote_port, 
+			node_id, epoch, mask
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.Timestamp,
+		event.Direction,
+		event.Host,
+		event.HostPort,
+		event.RemoteHost,
+		event.RemotePort,
+		event.NodeID,
+		event.Epoch,
+		event.Mask,
+	)
+	if err != nil {
+		log.Error(err.Error())
+	}
+}
+
+func (rpcil *rpcInterfaceLogger) OnAccusation(event AccusationEvent) {
+	rpcil.dbLock.Lock()
+	defer rpcil.dbLock.Unlock()
+
+	_, err := rpcil.dbConn.Exec(
+		`INSERT INTO accusation_events (
+			timestamp, direction, host, remote_host, 
+			accuser, accused, ring_num, epoch
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.Timestamp,
+		event.Direction,
+		event.Host,
+		event.RemoteHost,
+		event.Accuser,
+		event.Accused,
+		event.RingNum,
+		event.Epoch,
+	)
+	if err != nil {
+		log.Error(err.Error())
+	}
+}
+
+func (rpcil *rpcInterfaceLogger) OnNote(event NoteEvent) {
+	rpcil.dbLock.Lock()
+	defer rpcil.dbLock.Unlock()
+
+	_, err := rpcil.dbConn.Exec(
+		`INSERT INTO note_events (
+			timestamp, direction, host, remote_host, 
+			node_id, epoch, mask
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		event.Timestamp,
+		event.Direction,
+		event.Host,
+		event.RemoteHost,
+		event.NodeID,
+		event.Epoch,
+		event.Mask,
 	)
 	if err != nil {
 		log.Error(err.Error())

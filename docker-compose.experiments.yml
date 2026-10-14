@@ -7,6 +7,8 @@ services:
     command: [ "ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad" ]
     ports:
       - "8321:8321"
+    environment:
+      - IFRIT_NUMRINGS=${RINGS:-3}
     networks:
       - ifrit-net
     volumes:
@@ -28,38 +30,8 @@ services:
     volumes:
       - ./_examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
       - ./experiment_results:/results
-    networks:
-      - ifrit-net
-  # Continuous background chaos daemon for experiments
-  chaos-pumba:
-    image: docker.io/gaiaadm/pumba:latest
-    container_name: ifrit-pumba
-    depends_on:
-      - gossip-node
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    command:
-      - --log-level
-      - ${PUMBA_LOG_LEVEL:-info}
-      - --interval
-      - ${PUMBA_INTERVAL:-1m}
-      - netem
-      - --duration
-      - ${PUMBA_DURATION:-55s}
-      - --interface
-      - eth0
-      - delay
-      - --time
-      - ${DELAY_MS:-50}
-      - --jitter
-      - ${JITTER_MS:-10}
-      - loss
-      - --percent
-      - ${LOSS_PERCENT:-1}
-      - corrupt
-      - --percent
-      - ${CORRUPT_PERCENT:-1}
-      - "re2:.*gossip-node.*"
+    cap_add:
+      - NET_ADMIN
     networks:
       - ifrit-net
   # Passive Network Observer daemon (monitors UDP Ping/Pong & TCP Gossip wire bytes)

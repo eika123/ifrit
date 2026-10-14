@@ -35,16 +35,35 @@ DB_TARGET = ""  # Set at startup: file or directory
 
 def resolve_db_path() -> str:
     """Find the best database file to query."""
-    if os.path.isfile(DB_TARGET):
-        return DB_TARGET
-    if os.path.isdir(DB_TARGET):
-        merged = glob.glob(os.path.join(DB_TARGET, "gossip-telemetry_*.db"))
-        if merged:
-            return sorted(merged, key=os.path.getmtime, reverse=True)[0]
-        node_dbs = glob.glob(os.path.join(DB_TARGET, "telemetry_*.db"))
-        if node_dbs:
-            return sorted(node_dbs, key=os.path.getmtime, reverse=True)[0]
-    return DB_TARGET
+    candidates = []
+    if DB_TARGET:
+        candidates.append(DB_TARGET)
+
+    env_target = os.environ.get("DB_TARGET") or os.environ.get("TELEMETRY_DB")
+    if env_target:
+        candidates.append(env_target)
+
+    candidates.extend([
+        "experiment_results",
+        os.path.join("..", "experiment_results"),
+        os.path.join("..", "..", "experiment_results"),
+    ])
+
+    for target in candidates:
+        if os.path.isfile(target):
+            return os.path.abspath(target)
+        if os.path.isdir(target):
+            merged = glob.glob(os.path.join(target, "gossip-telemetry_*.db"))
+            if merged:
+                return os.path.abspath(sorted(merged, key=os.path.getmtime, reverse=True)[0])
+            node_dbs = glob.glob(os.path.join(target, "telemetry_*.db"))
+            if node_dbs:
+                return os.path.abspath(sorted(node_dbs, key=os.path.getmtime, reverse=True)[0])
+            all_dbs = glob.glob(os.path.join(target, "*.db"))
+            if all_dbs:
+                return os.path.abspath(sorted(all_dbs, key=os.path.getmtime, reverse=True)[0])
+
+    return DB_TARGET or ""
 
 
 class NodeStats(BaseModel):
@@ -64,6 +83,7 @@ class SummaryStats(BaseModel):
     total_outgoing: int = 0
     total_incoming: int = 0
     total_accusations: int = 0
+    total_rebuttals: int = 0
     unique_hosts: List[str] = []
     unique_remote_hosts: List[str] = []
     node_names: Dict[str, str] = {}
@@ -106,32 +126,70 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
                 "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
             }
 
-        # 1. Overall Metrics
-        cursor_totals = await db.execute("""
+        # 1. Check table columns dynamically
+        cur_cols = await db.execute("PRAGMA table_info(gossip_exchange)")
+        cols = {r[1] for r in await cur_cols.fetchall()}
+
+        data_col = "payload_data_size" if "payload_data_size" in cols else ("data_bytes" if "data_bytes" in cols else "0")
+        acc_cnt_col = "COALESCE(accusation_count, 0)" if "accusation_count" in cols else "0"
+        note_cnt_col = "COALESCE(note_count, 0)" if "note_count" in cols else "0"
+
+        # Overall Metrics
+        cursor_totals = await db.execute(f"""
             SELECT 
                 COUNT(*),
                 SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END),
-                SUM(COALESCE(accusation_count, 0)),
-                MAX(COALESCE(note_count, 0)),
-                MAX(COALESCE(data_bytes, 0)),
-                SUM(COALESCE(data_bytes, 0)),
+                SUM({acc_cnt_col}),
+                MAX({note_cnt_col}),
+                MAX(COALESCE({data_col}, 0)),
+                SUM(COALESCE({data_col}, 0)),
                 MIN(timestamp),
                 MAX(timestamp)
             FROM gossip_exchange
         """)
         row = await cursor_totals.fetchone()
 
+        # Check total rebuttals if rebuttal_events table exists
+        total_rebuttals = 0
+        try:
+            cur_reb = await db.execute("SELECT COUNT(*) FROM rebuttal_events")
+            r_reb = await cur_reb.fetchone()
+            if r_reb and r_reb[0]:
+                total_rebuttals = r_reb[0]
+        except Exception:
+            pass
+
+        # Check total accusations if accusation_events table exists
+        total_accs = row[3] or 0
+        try:
+            cur_acc = await db.execute("SELECT COUNT(*) FROM accusation_events")
+            r_acc = await cur_acc.fetchone()
+            if r_acc and r_acc[0]:
+                total_accs = r_acc[0]
+        except Exception:
+            pass
+
+        # Check total notes if note_events table exists
+        max_notes = row[4] or 0
+        try:
+            cur_notes = await db.execute("SELECT COUNT(*) FROM note_events")
+            r_notes = await cur_notes.fetchone()
+            if r_notes and r_notes[0]:
+                max_notes = r_notes[0]
+        except Exception:
+            pass
+
         # 2. Node Breakdown
-        cursor_nodes = await db.execute("""
+        cursor_nodes = await db.execute(f"""
             SELECT 
                 host,
                 COUNT(*) as total_exchanges,
                 SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END) as outgoing_count,
                 SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END) as incoming_count,
-                SUM(COALESCE(data_bytes, 0)) as total_bytes,
-                SUM(CASE WHEN direction = 'INCOMING' THEN COALESCE(accusation_count, 0) ELSE 0 END) as acc_sent,
-                SUM(CASE WHEN direction = 'OUTGOING' THEN COALESCE(accusation_count, 0) ELSE 0 END) as acc_received,
+                SUM(COALESCE({data_col}, 0)) as total_bytes,
+                SUM(CASE WHEN direction = 'INCOMING' THEN {acc_cnt_col} ELSE 0 END) as acc_sent,
+                SUM(CASE WHEN direction = 'OUTGOING' THEN {acc_cnt_col} ELSE 0 END) as acc_received,
                 COUNT(DISTINCT CASE WHEN direction = 'OUTGOING' THEN remote_host ELSE NULL END) as active_peers,
                 MAX(timestamp) as last_seen
             FROM gossip_exchange
@@ -179,11 +237,12 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
             "total_exchanges": row[0] or 0,
             "total_outgoing": row[1] or 0,
             "total_incoming": row[2] or 0,
-            "total_accusations": row[3] or 0,
+            "total_accusations": total_accs,
+            "total_rebuttals": total_rebuttals,
             "unique_hosts": host_names,
             "unique_remote_hosts": unique_remote_hosts,
             "node_names": node_names,
-            "max_notes": row[4] or 0,
+            "max_notes": max_notes,
             "max_payload_bytes": row[5] or 0,
             "total_data_bytes": row[6] or 0,
             "min_timestamp": str(row[7]) if row[7] is not None else None,
@@ -199,7 +258,7 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
                 substr(timestamp, 1, 19) as ts_bucket,
                 SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END) as out_cnt,
                 SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END) as in_cnt,
-                SUM(data_bytes) as total_bytes
+                SUM(COALESCE({data_col}, 0)) as total_bytes
             FROM gossip_exchange
             {where_tl}
             GROUP BY ts_bucket
@@ -247,12 +306,16 @@ async def get_timeseries(host: Optional[str] = None, buckets: int = 50):
 
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
+            cur_cols = await db.execute("PRAGMA table_info(gossip_exchange)")
+            cols = {r[1] for r in await cur_cols.fetchall()}
+            data_col = "payload_data_size" if "payload_data_size" in cols else ("data_bytes" if "data_bytes" in cols else "0")
+
             cursor = await db.execute(f"""
                 SELECT 
                     substr(timestamp, 1, 19) as ts_bucket,
                     SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END) as out_cnt,
                     SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END) as in_cnt,
-                    SUM(data_bytes) as total_bytes
+                    SUM(COALESCE({data_col}, 0)) as total_bytes
                 FROM gossip_exchange
                 {where}
                 GROUP BY ts_bucket
@@ -272,8 +335,130 @@ async def get_timeseries(host: Optional[str] = None, buckets: int = 50):
 
 
 # -------------------------------------------------------------------------
-# Filterable Exchanges Table Endpoint (Pure Standard SQL)
+# Dynamic Multi-Table Data & Counts Endpoints
 # -------------------------------------------------------------------------
+
+@app.get("/api/table_counts")
+async def get_table_counts():
+    target = resolve_db_path()
+    if not os.path.exists(target):
+        return {}
+    async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
+        try:
+            cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+            tables = [r[0] for r in await cursor.fetchall()]
+            counts = {}
+            for t in tables:
+                c = await db.execute(f"SELECT COUNT(*) FROM {t}")
+                counts[t] = (await c.fetchone())[0]
+            return counts
+        except Exception:
+            return {}
+
+
+@app.get("/api/table_data")
+async def get_table_data(
+    table: str = "gossip_exchange",
+    limit: int = 50,
+    offset: int = 0,
+    sort_order: str = "DESC",
+    host: Optional[str] = None,
+    remote_host: Optional[str] = None,
+    direction: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    target = resolve_db_path()
+    if not os.path.exists(target):
+        return {"items": [], "total": 0, "columns": [], "table": table}
+
+    allowed_tables = {"gossip_exchange", "rebuttal_events", "accusation_events", "note_events", "node_identity"}
+    if table not in allowed_tables:
+        return {"items": [], "total": 0, "columns": [], "table": table, "error": f"Invalid table '{table}'"}
+
+    order_direction = "ASC" if sort_order.upper() == "ASC" else "DESC"
+
+    async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
+        try:
+            c_check = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+            if not await c_check.fetchone():
+                return {"items": [], "total": 0, "columns": [], "table": table}
+
+            c_info = await db.execute(f"PRAGMA table_info({table})")
+            columns = [r[1] for r in await c_info.fetchall()]
+
+            where = []
+            params = []
+
+            if host:
+                if "host" in columns:
+                    where.append("host = ?")
+                    params.append(host)
+                elif "ip" in columns:
+                    where.append("ip = ?")
+                    params.append(host)
+
+            if remote_host and "remote_host" in columns:
+                where.append("remote_host = ?")
+                params.append(remote_host)
+
+            if direction and "direction" in columns:
+                where.append("direction = ?")
+                params.append(direction)
+
+            if search:
+                searchable = [c for c in columns if c in ("host", "remote_host", "accuser", "accused", "node_id", "name", "ip", "accused_nodes")]
+                if searchable:
+                    s_clause = " OR ".join(f"{c} LIKE ?" for c in searchable)
+                    where.append(f"({s_clause})")
+                    params.extend([f"%{search}%"] * len(searchable))
+
+            where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+            cnt_cursor = await db.execute(f"SELECT COUNT(*) FROM {table} {where_clause}", params)
+            total = (await cnt_cursor.fetchone())[0]
+
+            sort_col = "timestamp" if "timestamp" in columns else columns[0]
+            col_list_str = ", ".join(columns)
+
+            select_sql = f"""
+                SELECT {col_list_str}
+                FROM {table}
+                {where_clause}
+                ORDER BY {sort_col} {order_direction}
+                LIMIT ? OFFSET ?
+            """
+            cursor = await db.execute(select_sql, params + [limit, offset])
+            rows = await cursor.fetchall()
+
+            items = []
+            for r in rows:
+                item_dict = {}
+                for k, v in zip(columns, r):
+                    if k == "timestamp":
+                        item_dict[k] = str(v)
+                    elif k in ("rings", "accused_nodes") and isinstance(v, str):
+                        try:
+                            item_dict[k] = json.loads(v)
+                        except Exception:
+                            item_dict[k] = v
+                    else:
+                        item_dict[k] = v
+                if table == "gossip_exchange":
+                    if "payload_data_size" in item_dict and "data_bytes" not in item_dict:
+                        item_dict["data_bytes"] = item_dict["payload_data_size"]
+                    elif "data_bytes" in item_dict and "payload_data_size" not in item_dict:
+                        item_dict["payload_data_size"] = item_dict["data_bytes"]
+                items.append(item_dict)
+
+            return {
+                "items": items,
+                "total": total,
+                "columns": columns,
+                "table": table,
+            }
+        except Exception as e:
+            return {"items": [], "total": 0, "columns": [], "table": table, "error": str(e)}
+
 
 @app.get("/api/exchanges")
 async def get_exchanges(
@@ -288,99 +473,16 @@ async def get_exchanges(
     limit: int = 50,
     offset: int = 0
 ):
-    target = resolve_db_path()
-    if not os.path.exists(target):
-        return {"items": [], "total": 0}
-
-    order_direction = "ASC" if sort_order.upper() == "ASC" else "DESC"
-
-    where = []
-    params = []
-
-    if host:
-        where.append("host = ?")
-        params.append(host)
-
-    if remote_host:
-        where.append("remote_host = ?")
-        params.append(remote_host)
-
-    if peer:
-        where.append("remote_host LIKE ?")
-        params.append(f"%{peer}%")
-
-    if direction:
-        where.append("direction = ?")
-        params.append(direction)
-
-    if has_accusations:
-        where.append("accusation_count > 0")
-
-    if has_note is not None and has_note != "":
-        val = has_note.lower() in ("true", "1", "yes") if isinstance(has_note, str) else bool(has_note)
-        where.append("has_note = ?")
-        params.append(1 if val else 0)
-
-    if search:
-        where.append("(host LIKE ? OR remote_host LIKE ? OR accused_nodes LIKE ?)")
-        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
-
-    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
-
-    async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
-        try:
-            cnt_cursor = await db.execute(f"SELECT COUNT(*) FROM gossip_exchange {where_clause}", params)
-            total = (await cnt_cursor.fetchone())[0]
-
-            select_sql = f"""
-                SELECT timestamp, direction, host, host_port, remote_host, remote_port,
-                       has_note, data_bytes, accusation_count, note_count, accused_nodes, rings
-                FROM gossip_exchange
-                {where_clause}
-                ORDER BY timestamp {order_direction}
-                LIMIT ? OFFSET ?
-            """
-            cursor = await db.execute(select_sql, params + [limit, offset])
-            rows = await cursor.fetchall()
-        except Exception as e:
-            return {"items": [], "total": 0, "error": str(e)}
-
-    items = []
-    for r in rows:
-        acc_nodes = r[10]
-        rings = r[11]
-        try:
-            if isinstance(acc_nodes, str) and (acc_nodes.startswith("[") or acc_nodes.startswith("{")):
-                acc_nodes = json.loads(acc_nodes)
-        except Exception:
-            pass
-        try:
-            if isinstance(rings, str) and (rings.startswith("[") or rings.startswith("{")):
-                rings = json.loads(rings)
-        except Exception:
-            pass
-
-        r_host = r[4] or ""
-        r_port = r[5] or ""
-        r_composite = f"{r_host}:{r_port}" if r_port else r_host
-
-        items.append({
-            "timestamp": str(r[0]),
-            "direction": r[1],
-            "host": r[2],
-            "host_port": r[3] or "",
-            "remote_host": r_host,
-            "remote_port": r_port,
-            "remote": r_composite,
-            "has_note": bool(r[6]),
-            "data_bytes": r[7] or 0,
-            "accusation_count": r[8] or 0,
-            "note_count": r[9] or 0,
-            "accused_nodes": acc_nodes,
-            "rings": rings,
-        })
-
-    return {"items": items, "total": total}
+    return await get_table_data(
+        table="gossip_exchange",
+        limit=limit,
+        offset=offset,
+        sort_order=sort_order,
+        host=host,
+        remote_host=remote_host or peer,
+        direction=direction,
+        search=search,
+    )
 
 
 # -------------------------------------------------------------------------
@@ -406,7 +508,7 @@ async def get_bytes_per_node(direction: Optional[str] = "OUTGOING"):
             hosts = [h[0] for h in await c_hosts.fetchall()]
 
             cursor = await db.execute(f"""
-                SELECT timestamp, host, COALESCE(data_bytes, 0)
+                SELECT timestamp, host, COALESCE(payload_data_size, data_bytes, 0)
                 FROM gossip_exchange
                 {where_sql}
                 ORDER BY timestamp ASC
@@ -414,7 +516,7 @@ async def get_bytes_per_node(direction: Optional[str] = "OUTGOING"):
             rows = await cursor.fetchall()
 
             c_totals = await db.execute(f"""
-                SELECT host, SUM(COALESCE(data_bytes, 0)) as b
+                SELECT host, SUM(COALESCE(payload_data_size, data_bytes, 0)) as b
                 FROM gossip_exchange
                 {where_sql}
                 GROUP BY host
@@ -437,6 +539,69 @@ async def get_bytes_per_node(direction: Optional[str] = "OUTGOING"):
     }
 
 
+@app.get("/api/rebuttals")
+async def get_rebuttals(limit: int = 100):
+    target = resolve_db_path()
+    if not os.path.exists(target):
+        return {"items": [], "total": 0}
+    async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
+        try:
+            c = await db.execute("SELECT COUNT(*) FROM rebuttal_events")
+            total = (await c.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT timestamp, direction, host, remote_host, node_id, epoch, mask FROM rebuttal_events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            )
+            rows = await cursor.fetchall()
+            items = [
+                {
+                    "timestamp": str(r[0]),
+                    "direction": r[1],
+                    "host": r[2],
+                    "remote_host": r[3],
+                    "node_id": r[4],
+                    "epoch": r[5],
+                    "mask": r[6],
+                }
+                for r in rows
+            ]
+            return {"items": items, "total": total}
+        except Exception:
+            return {"items": [], "total": 0}
+
+
+@app.get("/api/accusations")
+async def get_accusations(limit: int = 100):
+    target = resolve_db_path()
+    if not os.path.exists(target):
+        return {"items": [], "total": 0}
+    async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
+        try:
+            c = await db.execute("SELECT COUNT(*) FROM accusation_events")
+            total = (await c.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT timestamp, direction, host, remote_host, accuser, accused, ring_num, epoch FROM accusation_events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            )
+            rows = await cursor.fetchall()
+            items = [
+                {
+                    "timestamp": str(r[0]),
+                    "direction": r[1],
+                    "host": r[2],
+                    "remote_host": r[3],
+                    "accuser": r[4],
+                    "accused": r[5],
+                    "ring_num": r[6],
+                    "epoch": r[7],
+                }
+                for r in rows
+            ]
+            return {"items": items, "total": total}
+        except Exception:
+            return {"items": [], "total": 0}
+
+
 @app.get("/", response_class=FileResponse)
 async def dashboard_index():
     index_file = os.path.join(TEMPLATES_DIR, "index.html")
@@ -445,13 +610,6 @@ async def dashboard_index():
 
 def main():
     parser = argparse.ArgumentParser(description="Ifrit Telemetry Dashboard Server (FastAPI + SQLite)")
-    parser.add_argument(
-        "target",
-        nargs="?",
-        default="experiment_results",
-        help="Path to merged SQLite file or experiment directory containing telemetry databases (default: experiment_results)",
-    )
-
     default_target = "experiment_results"
     if not os.path.exists(default_target) and os.path.exists(os.path.join("..", "experiment_results")):
         default_target = os.path.join("..", "experiment_results")

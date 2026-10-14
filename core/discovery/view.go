@@ -42,6 +42,9 @@ type View struct {
 	currGossipRing  uint32
 	currMonitorRing uint32
 
+	// max number of corrupt monitors this node can tolerate,
+	// e.g. t in k=2t+1, where k is the number of rings,
+	// so maxByz = floor((rings - 1)/2). See fireflies paper p.7.
 	maxByz           uint32
 	deactivatedRings uint32
 
@@ -83,6 +86,7 @@ type signer interface {
 func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer) (*View, error) {
 	var i, mask uint32
 
+	// max tolerable corrupt nodes, i.e t in k=2t+1, where t is the max number of corrupt nodes.
 	maxByz := (float64(numRings) / 2.0) - 1
 	if maxByz < 0 {
 		maxByz = 0

@@ -9,11 +9,10 @@ let debounceTimer = null;
 
 // Centralized reactive state
 const state = {
+  active_table: "gossip_exchange",
   host: "",
   remote_host: "",
   direction: "",
-  has_note: "",
-  has_accusations: false,
   search: "",
   sort_order: "DESC",
   bytes_direction: "OUTGOING",
@@ -26,6 +25,81 @@ const NODE_COLORS = [
   '#fb923c', '#4ade80', '#2dd4bf', '#a3e635',
   '#facc15', '#e879f9', '#60a5fa', '#34d399'
 ];
+
+// Configuration schemas for all database tables
+const TABLE_CONFIGS = {
+  gossip_exchange: {
+    title: "Gossip Exchanges",
+    subtitle: "Application gossip payloads transferred between nodes",
+    hasDirection: true,
+    hasRemote: true,
+    columns: [
+      { key: "timestamp", label: "Timestamp", sortable: true },
+      { key: "direction", label: "Dir", sortable: false },
+      { key: "host", label: "Local Host", sortable: false },
+      { key: "host_port", label: "Port", sortable: false },
+      { key: "remote_host", label: "Remote Host", sortable: false },
+      { key: "remote_port", label: "Port", sortable: false },
+      { key: "payload_data_size", label: "Payload Data Size", sortable: false, align: "right" }
+    ]
+  },
+  rebuttal_events: {
+    title: "Rebuttals",
+    subtitle: "Overriding false accusations by bumping node epoch",
+    hasDirection: true,
+    hasRemote: true,
+    columns: [
+      { key: "timestamp", label: "Timestamp", sortable: true },
+      { key: "direction", label: "Dir", sortable: false },
+      { key: "host", label: "Local Host", sortable: false },
+      { key: "remote_host", label: "Remote Host", sortable: false },
+      { key: "node_id", label: "Node ID", sortable: false },
+      { key: "epoch", label: "Epoch", sortable: false, align: "center" },
+      { key: "mask", label: "Ring Mask", sortable: false, align: "right" }
+    ]
+  },
+  accusation_events: {
+    title: "Accusations",
+    subtitle: "Ring successor failure accusations and suspicion events",
+    hasDirection: true,
+    hasRemote: true,
+    columns: [
+      { key: "timestamp", label: "Timestamp", sortable: true },
+      { key: "direction", label: "Dir", sortable: false },
+      { key: "host", label: "Observer Host", sortable: false },
+      { key: "remote_host", label: "Remote Host", sortable: false },
+      { key: "accuser", label: "Accuser", sortable: false },
+      { key: "accused", label: "Accused Node", sortable: false },
+      { key: "ring_num", label: "Ring", sortable: false, align: "center" },
+      { key: "epoch", label: "Epoch", sortable: false, align: "center" }
+    ]
+  },
+  note_events: {
+    title: "Membership Notes",
+    subtitle: "Disseminated membership notes and liveness claims",
+    hasDirection: true,
+    hasRemote: true,
+    columns: [
+      { key: "timestamp", label: "Timestamp", sortable: true },
+      { key: "direction", label: "Dir", sortable: false },
+      { key: "host", label: "Local Host", sortable: false },
+      { key: "remote_host", label: "Remote Host", sortable: false },
+      { key: "node_id", label: "Node ID", sortable: false },
+      { key: "epoch", label: "Epoch", sortable: false, align: "center" },
+      { key: "mask", label: "Ring Mask", sortable: false, align: "right" }
+    ]
+  },
+  node_identity: {
+    title: "Node Identities",
+    subtitle: "IP address to Docker container hostname mapping",
+    hasDirection: false,
+    hasRemote: false,
+    columns: [
+      { key: "ip", label: "IP Address", sortable: true },
+      { key: "name", label: "Container Name", sortable: false }
+    ]
+  }
+};
 
 function formatHostLabel(host) {
   if (!host) return "";
@@ -40,13 +114,331 @@ function formatBytes(bytes) {
   return bytes + ' B';
 }
 
+function formatTimestamp(raw) {
+  if (!raw) return "-";
+  let ts = String(raw).replace('T', ' ').split('+')[0];
+  if (ts.includes('.')) {
+    const parts = ts.split('.');
+    ts = parts[0] + '.' + parts[1].substring(0, 3);
+  }
+  return ts;
+}
+
 function setElemText(id, text) {
   const el = document.getElementById(id);
   if (el) el.innerText = text;
 }
 
 // -------------------------------------------------------------
-// Data Loading & API Calls
+// Toast Notifications
+// -------------------------------------------------------------
+
+function showToast(message, type = 'info', duration = 2800) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const icons = {
+    info: `<svg class="w-4 h-4 text-indigo-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+    success: `<svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`,
+    warning: `<svg class="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`,
+    error: `<svg class="w-4 h-4 text-rose-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`
+  };
+
+  const borders = {
+    info: 'border-indigo-500/50 shadow-indigo-500/10',
+    success: 'border-emerald-500/50 shadow-emerald-500/10',
+    warning: 'border-amber-500/50 shadow-amber-500/10',
+    error: 'border-rose-500/50 shadow-rose-500/10'
+  };
+
+  const toast = document.createElement('div');
+  toast.className = `pointer-events-auto flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-slate-900/95 backdrop-blur-md border ${borders[type] || borders.info} shadow-xl text-xs text-slate-200 transform translate-y-3 opacity-0 transition-all duration-200 ease-out cursor-pointer hover:bg-slate-850`;
+  toast.innerHTML = `
+    ${icons[type] || icons.info}
+    <div class="flex-1 font-medium font-sans leading-snug">${message}</div>
+    <button class="text-slate-500 hover:text-slate-300 ml-1 text-sm font-bold leading-none select-none">&times;</button>
+  `;
+
+  toast.addEventListener('click', () => dismissToast(toast));
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.remove('translate-y-3', 'opacity-0');
+    toast.classList.add('translate-y-0', 'opacity-100');
+  });
+
+  const timer = setTimeout(() => dismissToast(toast), duration);
+
+  function dismissToast(el) {
+    clearTimeout(timer);
+    el.classList.remove('translate-y-0', 'opacity-100');
+    el.classList.add('translate-y-2', 'opacity-0');
+    setTimeout(() => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 200);
+  }
+}
+
+// -------------------------------------------------------------
+// Table Switching & Header Rendering
+// -------------------------------------------------------------
+
+function switchTable(tableName) {
+  if (!TABLE_CONFIGS[tableName]) return;
+  state.active_table = tableName;
+  state.offset = 0;
+
+  // Update tab buttons appearance
+  document.querySelectorAll('.table-tab-btn').forEach(btn => {
+    btn.className = 'table-tab-btn px-3 py-1.5 text-xs font-medium rounded-lg transition flex items-center gap-1.5 text-slate-400 hover:text-white hover:bg-slate-800';
+  });
+  const activeBtn = document.getElementById(`tab-btn-${tableName}`);
+  if (activeBtn) {
+    activeBtn.className = 'table-tab-btn px-3 py-1.5 text-xs font-medium rounded-lg transition flex items-center gap-1.5 bg-indigo-600 text-white shadow-sm';
+  }
+
+  const cfg = TABLE_CONFIGS[tableName];
+  setElemText('table-subtitle', cfg.subtitle);
+
+  // Toggle filter visibility
+  const dirCont = document.getElementById('filter-direction-container');
+  if (dirCont) dirCont.style.display = cfg.hasDirection ? '' : 'none';
+
+  const remoteCont = document.getElementById('filter-remote-container');
+  if (remoteCont) remoteCont.style.display = cfg.hasRemote ? '' : 'none';
+
+  showToast(`Switched view to <strong>${cfg.title}</strong>`, 'info');
+  loadTableData();
+}
+
+function renderTableHeader() {
+  const thead = document.getElementById('table-head');
+  if (!thead) return;
+  const cfg = TABLE_CONFIGS[state.active_table] || TABLE_CONFIGS.gossip_exchange;
+
+  const ths = cfg.columns.map(col => {
+    const alignClass = col.align === 'right' ? 'text-right' : (col.align === 'center' ? 'text-center' : 'text-left');
+    if (col.sortable) {
+      const arrow = state.sort_order === 'DESC' ? '↓' : '↑';
+      return `
+        <th class="px-3.5 py-2.5 cursor-pointer hover:text-white transition select-none ${alignClass}"
+            onclick="toggleSortOrder()" title="Click to sort ASC/DESC">
+          <div class="flex items-center gap-1.5 ${col.align === 'right' ? 'justify-end' : (col.align === 'center' ? 'justify-center' : '')}">
+            <span>${col.label}</span>
+            <span class="text-indigo-400 font-bold">${arrow}</span>
+          </div>
+        </th>
+      `;
+    }
+    return `<th class="px-3.5 py-2.5 ${alignClass}">${col.label}</th>`;
+  }).join('');
+
+  thead.innerHTML = `<tr>${ths}</tr>`;
+}
+
+// -------------------------------------------------------------
+// Table Counts Loading
+// -------------------------------------------------------------
+
+async function loadTableCounts() {
+  try {
+    const res = await fetch('/api/table_counts');
+    const counts = await res.json();
+    Object.keys(TABLE_CONFIGS).forEach(tbl => {
+      const cnt = counts[tbl] || 0;
+      setElemText(`tab-count-${tbl}`, cnt.toLocaleString());
+    });
+  } catch (e) {
+    console.error("Table counts error:", e);
+  }
+}
+
+// -------------------------------------------------------------
+// Main Table Data Loading & Formatting
+// -------------------------------------------------------------
+
+async function loadTableData() {
+  renderTableHeader();
+  const tbody = document.getElementById('table-body');
+  if (!tbody) return;
+
+  try {
+    const params = new URLSearchParams({
+      table: state.active_table,
+      limit: state.limit,
+      offset: state.offset,
+      sort_order: state.sort_order
+    });
+    if (state.host) params.append('host', state.host);
+    if (state.remote_host) params.append('remote_host', state.remote_host);
+    if (state.direction) params.append('direction', state.direction);
+    if (state.search) params.append('search', state.search);
+
+    const res = await fetch(`/api/table_data?${params}`);
+    const data = await res.json();
+    totalItems = data.total || 0;
+
+    // Update count badge & pagination
+    setElemText('record-count-badge', `${totalItems.toLocaleString()} rows`);
+    const pageFrom = totalItems > 0 ? state.offset + 1 : 0;
+    const pageTo = Math.min(state.offset + state.limit, totalItems);
+    setElemText('pagination-info', `Showing ${pageFrom} - ${pageTo} of ${totalItems.toLocaleString()} records`);
+
+    const prevBtn = document.getElementById('btn-page-prev');
+    const nextBtn = document.getElementById('btn-page-next');
+    if (prevBtn) prevBtn.disabled = state.offset <= 0;
+    if (nextBtn) nextBtn.disabled = state.offset + state.limit >= totalItems;
+
+    setElemText(`tab-count-${state.active_table}`, totalItems.toLocaleString());
+
+    renderTableRows(data.items || [], totalItems);
+  } catch (e) {
+    console.error("Load table data error:", e);
+    showToast(`Error loading ${TABLE_CONFIGS[state.active_table]?.title || state.active_table}: ${e.message}`, 'error');
+    tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-red-400">Failed to load records: ${e.message}</td></tr>`;
+  }
+}
+
+function renderTableRows(items, total) {
+  const tbody = document.getElementById('table-body');
+  if (!tbody) return;
+
+  if (!items || items.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">No records found for active filters in <code>${state.active_table}</code>.</td></tr>`;
+    return;
+  }
+
+  const table = state.active_table;
+  tbody.innerHTML = items.map(item => {
+    const ts = formatTimestamp(item.timestamp);
+    const isOut = item.direction === 'OUTGOING';
+    const dirBadge = isOut
+      ? '<span class="px-1.5 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800 text-[10px] font-semibold">OUT</span>'
+      : '<span class="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-semibold">IN</span>';
+
+    const localLabel = formatHostLabel(item.host);
+    const remoteLabel = formatHostLabel(item.remote_host);
+
+    if (table === 'gossip_exchange') {
+      const bytes = item.payload_data_size ?? item.data_bytes ?? 0;
+      return `
+        <tr class="hover:bg-slate-900/60 transition">
+          <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
+          <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
+            <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-slate-500 whitespace-nowrap font-mono">${item.host_port ? ':' + item.host_port : '-'}</td>
+          <td class="px-3.5 py-2 text-slate-300 whitespace-nowrap font-mono">
+            <button onclick="selectRemoteHostFilter('${item.remote_host}')" class="text-sky-300 hover:underline font-mono">${remoteLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-slate-500 whitespace-nowrap font-mono">${item.remote_port ? ':' + item.remote_port : '-'}</td>
+          <td class="px-3.5 py-2 text-right whitespace-nowrap">
+            <span class="text-sky-300 font-bold font-mono">${formatBytes(bytes)}</span>
+            <span class="text-slate-500 text-[10px] ml-1 font-mono">(${bytes} B)</span>
+          </td>
+        </tr>
+      `;
+    }
+
+    if (table === 'rebuttal_events') {
+      const nodeLabel = formatHostLabel(item.node_id);
+      return `
+        <tr class="hover:bg-slate-900/60 transition">
+          <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
+          <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
+            <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-sky-300 whitespace-nowrap font-mono">
+            <button onclick="selectRemoteHostFilter('${item.remote_host}')" class="hover:underline font-mono">${remoteLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-slate-300 whitespace-nowrap font-mono">${nodeLabel}</td>
+          <td class="px-3.5 py-2 text-center whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800 text-[10px] font-bold">Epoch ${item.epoch}</span>
+          </td>
+          <td class="px-3.5 py-2 text-right font-mono text-slate-400 whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px]">mask: ${item.mask}</span>
+          </td>
+        </tr>
+      `;
+    }
+
+    if (table === 'accusation_events') {
+      const accuserLabel = formatHostLabel(item.accuser);
+      const accusedLabel = formatHostLabel(item.accused);
+      return `
+        <tr class="hover:bg-slate-900/60 transition">
+          <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
+          <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
+            <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-sky-300 whitespace-nowrap font-mono">
+            <button onclick="selectRemoteHostFilter('${item.remote_host}')" class="hover:underline font-mono">${remoteLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-slate-300 whitespace-nowrap font-mono">
+            <button onclick="selectNodeFilter('${item.accuser}')" class="text-indigo-300 hover:underline font-mono">${accuserLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 whitespace-nowrap font-mono">
+            <button onclick="selectNodeFilter('${item.accused}')" class="px-2 py-0.5 rounded bg-red-950/80 text-red-300 border border-red-800 hover:bg-red-900 font-semibold transition text-xs">
+              ⚠️ ${accusedLabel}
+            </button>
+          </td>
+          <td class="px-3.5 py-2 text-center whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded bg-sky-950 text-sky-300 border border-sky-800 text-[10px] font-semibold">Ring #${item.ring_num}</span>
+          </td>
+          <td class="px-3.5 py-2 text-center whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-[10px] font-mono">Epoch ${item.epoch}</span>
+          </td>
+        </tr>
+      `;
+    }
+
+    if (table === 'note_events') {
+      const nodeLabel = formatHostLabel(item.node_id);
+      return `
+        <tr class="hover:bg-slate-900/60 transition">
+          <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
+          <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
+            <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-sky-300 whitespace-nowrap font-mono">
+            <button onclick="selectRemoteHostFilter('${item.remote_host}')" class="hover:underline font-mono">${remoteLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-slate-300 whitespace-nowrap font-mono">
+            <button onclick="selectNodeFilter('${item.node_id}')" class="text-indigo-300 hover:underline font-mono">${nodeLabel}</button>
+          </td>
+          <td class="px-3.5 py-2 text-center whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px] font-mono">Epoch ${item.epoch}</span>
+          </td>
+          <td class="px-3.5 py-2 text-right font-mono text-slate-400 whitespace-nowrap">
+            <span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[10px]">mask: ${item.mask}</span>
+          </td>
+        </tr>
+      `;
+    }
+
+    if (table === 'node_identity') {
+      return `
+        <tr class="hover:bg-slate-900/60 transition">
+          <td class="px-3.5 py-2 text-sky-300 whitespace-nowrap font-mono font-semibold">
+            <button onclick="selectNodeFilter('${item.ip}')" class="hover:underline font-mono">${item.ip}</button>
+          </td>
+          <td class="px-3.5 py-2 text-white whitespace-nowrap font-mono">
+            <span class="px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-bold">${item.name}</span>
+          </td>
+        </tr>
+      `;
+    }
+
+    return '';
+  }).join('');
+}
+
+// -------------------------------------------------------------
+// Analytics & KPI Metrics Loading
 // -------------------------------------------------------------
 
 async function loadAnalytics() {
@@ -62,12 +454,13 @@ async function loadAnalytics() {
     // 2. Summary KPI Metrics
     const sm = data.summary || {};
     setElemText('stat-total', (sm.total_exchanges || 0).toLocaleString());
+    setElemText('stat-rebuttals', (sm.total_rebuttals || 0).toLocaleString());
     setElemText('stat-out', (sm.total_outgoing || 0).toLocaleString());
     setElemText('stat-in', (sm.total_incoming || 0).toLocaleString());
     setElemText('stat-hosts', (sm.unique_hosts || []).length);
     setElemText('stat-total-bytes', formatBytes(sm.total_data_bytes || 0));
     setElemText('stat-acc', (sm.total_accusations || 0).toLocaleString());
-    setElemText('stat-notes', sm.max_notes || 0);
+    setElemText('stat-notes', (sm.max_notes || 0).toLocaleString());
     setElemText('stat-bytes', `${sm.max_payload_bytes || 0} B`);
     setElemText('nodes-count-label', `${(sm.nodes_summary || []).length} nodes`);
 
@@ -84,6 +477,8 @@ async function loadAnalytics() {
       timelineChart.data.datasets[1].data = tl.incoming || [];
       timelineChart.update('none');
     }
+
+    await loadTableCounts();
   } catch (e) {
     console.error("Analytics error:", e);
   }
@@ -246,92 +641,6 @@ async function loadBytesTimeline() {
   }
 }
 
-async function loadExchanges() {
-  try {
-    const params = new URLSearchParams({
-      limit: state.limit,
-      offset: state.offset,
-      sort_order: state.sort_order,
-      has_accusations: state.has_accusations
-    });
-    if (state.host) params.append('host', state.host);
-    if (state.remote_host) params.append('remote_host', state.remote_host);
-    if (state.direction) params.append('direction', state.direction);
-    if (state.has_note) params.append('has_note', state.has_note);
-    if (state.search) params.append('search', state.search);
-
-    const res = await fetch(`/api/exchanges?${params}`);
-    const data = await res.json();
-    totalItems = data.total || 0;
-
-    // Update pagination
-    setElemText('record-count-badge', `${totalItems.toLocaleString()} total rows`);
-    const pageFrom = totalItems > 0 ? state.offset + 1 : 0;
-    const pageTo = Math.min(state.offset + state.limit, totalItems);
-    setElemText('pagination-info', `Showing ${pageFrom} - ${pageTo} of ${totalItems}`);
-
-    const prevBtn = document.getElementById('btn-page-prev');
-    const nextBtn = document.getElementById('btn-page-next');
-    if (prevBtn) prevBtn.disabled = state.offset <= 0;
-    if (nextBtn) nextBtn.disabled = state.offset + state.limit >= totalItems;
-
-    // Render table rows
-    const tbody = document.getElementById('exchanges-table-body');
-    if (!tbody) return;
-
-    if (!data.items || data.items.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">No matching gossip records.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = data.items.map(item => {
-      const isOut = item.direction === 'OUTGOING';
-      const dirBadge = isOut
-        ? '<span class="px-1.5 py-0.5 rounded bg-blue-950 text-blue-400 border border-blue-800 text-[10px]">OUT</span>'
-        : '<span class="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">IN</span>';
-
-      const noteBadge = item.has_note ? '<span class="text-emerald-400">✓</span>' : '<span class="text-slate-600">-</span>';
-      const accBadge = item.accusation_count > 0
-        ? `<span class="px-1.5 py-0.5 rounded bg-red-950 text-red-400 font-bold border border-red-800">${item.accusation_count}</span>`
-        : `<span class="text-slate-600">0</span>`;
-
-      let ts = item.timestamp.replace('T', ' ').split('+')[0];
-      if (ts.includes('.')) ts = ts.split('.')[0] + '.' + ts.split('.')[1].substring(0, 3);
-
-      const rLabel = formatHostLabel(item.remote_host);
-      const localLabel = formatHostLabel(item.host);
-
-      let extra = '-';
-      if (item.accused_nodes && item.accused_nodes.length > 0) {
-        extra = `<span class="text-red-400 truncate max-w-xs block font-mono text-[10px]">${JSON.stringify(item.accused_nodes)}</span>`;
-      } else if (item.rings && item.rings.length > 0) {
-        extra = `<span class="text-slate-400 text-[10px]">Rings: ${JSON.stringify(item.rings)}</span>`;
-      }
-
-      return `
-        <tr class="hover:bg-slate-900/60 transition">
-          <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
-          <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
-          <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
-            <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
-          </td>
-          <td class="px-3.5 py-2 text-slate-300 whitespace-nowrap font-mono">
-            <button onclick="selectRemoteHostFilter('${item.remote_host}')" class="text-sky-300 hover:underline font-mono">${rLabel}</button>
-            ${item.remote_port ? `<span class="text-slate-500 text-[10px]">:${item.remote_port}</span>` : ''}
-          </td>
-          <td class="px-3.5 py-2 text-center">${noteBadge}</td>
-          <td class="px-3.5 py-2 text-right text-slate-400">${item.data_bytes}</td>
-          <td class="px-3.5 py-2 text-right text-slate-400">${item.note_count}</td>
-          <td class="px-3.5 py-2 text-right">${accBadge}</td>
-          <td class="px-3.5 py-2">${extra}</td>
-        </tr>
-      `;
-    }).join('');
-  } catch (e) {
-    console.error("Exchanges error:", e);
-  }
-}
-
 // -------------------------------------------------------------
 // Interactive Filter Controls & Handlers
 // -------------------------------------------------------------
@@ -346,16 +655,19 @@ function selectNodeFilter(host) {
 
   if (select) select.value = state.host;
   if (state.host) {
-    if (badge) { badge.classList.remove('hidden'); badge.innerText = `Host: ${formatHostLabel(state.host)}`; }
-    if (chartNodeLabel) chartNodeLabel.innerText = formatHostLabel(state.host);
+    const lbl = formatHostLabel(state.host);
+    if (badge) { badge.classList.remove('hidden'); badge.innerText = `Host: ${lbl}`; }
+    if (chartNodeLabel) chartNodeLabel.innerText = lbl;
+    showToast(`Filtering by host: <strong>${lbl}</strong>`, 'info');
   } else {
     if (badge) badge.classList.add('hidden');
     if (chartNodeLabel) chartNodeLabel.innerText = "All Nodes";
+    showToast('Cleared host filter • Showing all nodes', 'info');
   }
 
   loadTimeline();
   loadBytesTimeline();
-  loadExchanges();
+  loadTableData();
 }
 
 function selectRemoteHostFilter(remoteHost) {
@@ -363,15 +675,16 @@ function selectRemoteHostFilter(remoteHost) {
   state.offset = 0;
   const select = document.getElementById('filter-remote-host');
   if (select) select.value = state.remote_host;
-  loadExchanges();
+  if (state.remote_host) {
+    showToast(`Filtering by remote host: <strong>${formatHostLabel(state.remote_host)}</strong>`, 'info');
+  }
+  loadTableData();
 }
 
 function onFilterChange() {
   state.host = document.getElementById('filter-host')?.value || "";
   state.remote_host = document.getElementById('filter-remote-host')?.value || "";
   state.direction = document.getElementById('filter-direction')?.value || "";
-  state.has_note = document.getElementById('filter-has-note')?.value || "";
-  state.has_accusations = document.getElementById('filter-acc-only')?.checked || false;
   state.offset = 0;
 
   const badge = document.getElementById('active-filter-badge');
@@ -386,7 +699,7 @@ function onFilterChange() {
 
   loadTimeline();
   loadBytesTimeline();
-  loadExchanges();
+  loadTableData();
 }
 
 function debounceFilter() {
@@ -394,7 +707,10 @@ function debounceFilter() {
   debounceTimer = setTimeout(() => {
     state.search = document.getElementById('filter-search')?.value.trim() || "";
     state.offset = 0;
-    loadExchanges();
+    if (state.search) {
+      showToast(`Searching for: <em>"${state.search}"</em>`, 'info');
+    }
+    loadTableData();
   }, 250);
 }
 
@@ -402,45 +718,45 @@ function resetAllFilters() {
   state.host = "";
   state.remote_host = "";
   state.direction = "";
-  state.has_note = "";
-  state.has_accusations = false;
   state.search = "";
   state.offset = 0;
 
-  const ids = ['filter-host', 'filter-remote-host', 'filter-direction', 'filter-has-note', 'filter-search'];
+  const ids = ['filter-host', 'filter-remote-host', 'filter-direction', 'filter-search'];
   ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
-  const acc = document.getElementById('filter-acc-only');
-  if (acc) acc.checked = false;
 
   const badge = document.getElementById('active-filter-badge');
   const chartNodeLabel = document.getElementById('chart-node-label');
   if (badge) badge.classList.add('hidden');
   if (chartNodeLabel) chartNodeLabel.innerText = "All Nodes";
 
+  showToast('All filters have been reset', 'info');
   loadTimeline();
   loadBytesTimeline();
-  loadExchanges();
+  loadTableData();
 }
 
 function toggleSortOrder() {
   state.sort_order = state.sort_order === "DESC" ? "ASC" : "DESC";
   const icon = document.getElementById('sort-order-icon');
   if (icon) icon.innerText = state.sort_order === "DESC" ? "↓" : "↑";
+  const label = document.getElementById('sort-order-label');
+  if (label) label.innerText = state.sort_order === "DESC" ? "Newest First" : "Oldest First";
   state.offset = 0;
-  loadExchanges();
+  showToast(`Sort order: <strong>${state.sort_order === "DESC" ? "Newest First" : "Oldest First"}</strong>`, 'info');
+  loadTableData();
 }
 
 function nextPage() {
   if (state.offset + state.limit < totalItems) {
     state.offset += state.limit;
-    loadExchanges();
+    loadTableData();
   }
 }
 
 function prevPage() {
   if (state.offset - state.limit >= 0) {
     state.offset -= state.limit;
-    loadExchanges();
+    loadTableData();
   }
 }
 
@@ -454,6 +770,7 @@ function setBytesDirection(dir) {
         : "px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition";
     }
   });
+  showToast(`Chart direction: <strong>${dir}</strong>`, 'info');
   loadBytesTimeline();
 }
 
@@ -481,16 +798,23 @@ function initRateChart() {
   });
 }
 
-async function refreshAll() {
+// Backwards compatibility alias
+const loadExchanges = loadTableData;
+
+async function refreshAll(manual = false) {
   await Promise.all([
     loadAnalytics(),
     loadBytesTimeline(),
-    loadExchanges()
+    loadTableData()
   ]);
+  if (manual) {
+    showToast('Telemetry refreshed successfully', 'success');
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   initRateChart();
+  renderTableHeader();
   refreshAll();
   setInterval(() => {
     const autoRef = document.getElementById('auto-refresh');

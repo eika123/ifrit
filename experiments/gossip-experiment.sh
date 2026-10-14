@@ -1,16 +1,44 @@
 #!/usr/bin/env bash
 
 # Pure experiment script: launches gossip nodes
-# Usage: ./gossip-experiment.sh [--build] [node_count]
+# Usage: ./gossip-experiment.sh [--build] [--rings N] [node_count]
 BUILD_FLAG=""
-NODES=3
-for arg in "$@"; do
-    if [[ "$arg" == "--build" || "$arg" == "-b" ]]; then
-        BUILD_FLAG="--build"
-    elif [[ "$arg" =~ ^[0-9]+$ ]]; then
-        NODES="$arg"
-    fi
+NODES="${NODES:-3}"
+RINGS="${RINGS:-3}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -b|--build)
+            BUILD_FLAG="--build"
+            shift
+            ;;
+        -r|--rings)
+            RINGS="$2"
+            shift 2
+            ;;
+        --rings=*)
+            RINGS="${1#*=}"
+            shift
+            ;;
+        -n|--nodes)
+            NODES="$2"
+            shift 2
+            ;;
+        --nodes=*)
+            NODES="${1#*=}"
+            shift
+            ;;
+        *)
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+                NODES="$1"
+            fi
+            shift
+            ;;
+    esac
 done
 
-echo "Starting gossip cluster with $NODES node(s) (build: ${BUILD_FLAG:-no})..."
+export RINGS="$RINGS"
+export NODES="$NODES"
+
+echo "Starting gossip cluster with $NODES node(s) (rings: $RINGS, build: ${BUILD_FLAG:-no})..."
 exec docker compose up $BUILD_FLAG --scale gossip-node="$NODES"
