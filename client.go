@@ -232,12 +232,12 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 type GossipSet[T comparable] = core.GossipSet[T]
 
 // NewGossipSet creates and initializes a new GossipSet bound to the specified Ifrit Client.
-func NewGossipSet[T comparable](c *Client, initial ...*set.Set[T]) GossipSet[T] {
+func NewGossipSet[T comparable](c *Client, initial *set.Set[T]) GossipSet[T] {
 	var n *core.Node
 	if c != nil {
 		n = c.node
 	}
-	return core.NewGossipSet[T](n, initial...)
+	return core.NewGossipSet(n, initial)
 }
 
 func (c *Client) SavePrivateKey() error {

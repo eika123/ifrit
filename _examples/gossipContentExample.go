@@ -53,7 +53,7 @@ func newApp() (*application, error) {
 
 	// Create thread-safe distributed gossip set bound to the Ifrit client.
 	// This automatically wires up gossip handlers and starts the background merge worker.
-	gSet := ifrit.NewGossipSet[user](c)
+	gSet := ifrit.NewGossipSet[user](c, nil)
 
 	// Register reactive listener for remote updates from peers
 	gSet.OnUpdate(func(newUsers []user, total int) {

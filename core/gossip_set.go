@@ -61,14 +61,11 @@ type gossipSet[T comparable] struct {
 // NewGossipSet creates and initializes a new GossipSet bound to the specified Ifrit Node.
 // It automatically registers gossip and response handlers on the node, launches the background
 // merge worker, and initializes the gossip payload.
-// If initial sets are provided, the first non-nil set is copied as the starting state.
-func NewGossipSet[T comparable](node *Node, initial ...*set.Set[T]) GossipSet[T] {
-	var s *set.Set[T]
-	if len(initial) > 0 && initial[0] != nil {
-		s = initial[0].Copy()
-	} else {
-		s = set.New[T](16)
+func NewGossipSet[T comparable](node *Node, initial *set.Set[T]) GossipSet[T] {
+	if initial == nil {
+		initial = set.New[T](16)
 	}
+	s := initial.Copy()
 
 	gs := &gossipSet[T]{
 		node:        node,

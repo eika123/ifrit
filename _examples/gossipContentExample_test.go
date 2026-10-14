@@ -36,7 +36,7 @@ func TestSetUnionMerging(t *testing.T) {
 }
 
 func TestApplicationGossipSetIntegration(t *testing.T) {
-	gSet := ifrit.NewGossipSet[user](nil)
+	gSet := ifrit.NewGossipSet[user](nil, nil)
 	defer gSet.Close()
 
 	app := &application{

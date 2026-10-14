@@ -18,7 +18,7 @@ type testItem struct {
 }
 
 func TestGossipSet_BasicOperations(t *testing.T) {
-	gs := NewGossipSet[testItem](nil)
+	gs := NewGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	assert.True(t, gs.Empty())
@@ -53,7 +53,7 @@ func TestGossipSet_BasicOperations(t *testing.T) {
 }
 
 func TestGossipSet_CopyIsolation(t *testing.T) {
-	gs := NewGossipSet[testItem](nil)
+	gs := NewGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	gs.AddElement(testItem{ID: "orig", Value: 1})
@@ -74,7 +74,7 @@ func TestGossipSet_CopyIsolation(t *testing.T) {
 }
 
 func TestGossipSet_RemoteMergeAndOnUpdate(t *testing.T) {
-	gs := NewGossipSet[testItem](nil)
+	gs := NewGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	gs.AddElement(testItem{ID: "local-1", Value: 10})
@@ -129,7 +129,7 @@ func TestGossipSet_RemoteMergeAndOnUpdate(t *testing.T) {
 }
 
 func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	gs := NewGossipSet[string](nil)
+	gs := NewGossipSet[string](nil, nil)
 	defer gs.Close()
 
 	var wg sync.WaitGroup
