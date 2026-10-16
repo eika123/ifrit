@@ -319,15 +319,23 @@ func (n *Node) Stop() {
 		return
 	}
 
-	if n.useViz {
+	if n.useViz && n.viz != nil {
 		n.viz.stop()
 	}
 
-	n.view.Stop()
-	n.fd.stop()
+	if n.view != nil {
+		n.view.Stop()
+	}
+	if n.fd != nil {
+		n.fd.stop()
+	}
 
-	n.dispatcher.Stop()
-	n.wg.Wait()
+	if n.dispatcher != nil {
+		n.dispatcher.Stop()
+	}
+	if n.wg != nil {
+		n.wg.Wait()
+	}
 }
 
 func (n *Node) LiveMembers() []string {

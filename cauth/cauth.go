@@ -446,8 +446,15 @@ func (c *Ca) certificateSigning(w http.ResponseWriter, r *http.Request) {
 	log.Info("Including known certificates in response", "amount", len(respStruct.KnownCerts))
 
 	b := new(bytes.Buffer)
-	json.NewEncoder(b).Encode(respStruct)
+	err = json.NewEncoder(b).Encode(respStruct)
+	if err != nil {
+		log.Error("Failed to encode certificate response", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	_, err = w.Write(b.Bytes())
 	if err != nil {
 		log.Error(err.Error())
