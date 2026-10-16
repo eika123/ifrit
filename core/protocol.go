@@ -74,7 +74,7 @@ func (c correct) Monitor(n *Node) {
 
 		err := n.fd.probe(p)
 		if err == errDead {
-			log.Debug("Successor dead, accusing", "succ", p.Addr, "ringNum", ringNum)
+			log.Debug("Monitor --> Successor dead, accusing", "succ", p.Addr, "ringNum", ringNum)
 			peerNote := p.Note()
 
 			// Will always have note for a peer in our liveView, except when the peer stems
@@ -83,7 +83,7 @@ func (c correct) Monitor(n *Node) {
 			// Not possible to accuse a peer without a note.
 			if peerNote == nil {
 				n.view.RemoveLive(p.Id)
-				log.Debug("Removing live peer due to not having note and being accused",
+				log.Debug("Monitor -- Removing live peer due to not having note and being accused",
 					"addr", p.Addr)
 				continue
 			}
@@ -100,11 +100,11 @@ func (c correct) Monitor(n *Node) {
 		}
 
 		if err == errInvalidPongSignature {
-			log.Debug("Invalid pong signature, successor is malicious (or this implementation is just buggy!)", "succ", p.Addr)
+			log.Debug("Monitor -- Invalid pong signature, successor is malicious (or this implementation is just buggy!)", "succ", p.Addr)
 		}
 
 		if err != nil && err != errInvalidPongSignature {
-			log.Error(err.Error(), "addr", p.Addr)
+			log.Error(err.Error(), "Monitor -- successor peer addr:", p.Addr)
 		}
 	}
 }

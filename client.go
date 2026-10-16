@@ -3,6 +3,7 @@ package ifrit
 import (
 	"crypto/x509/pkix"
 	"errors"
+	"os"
 	"time"
 
 	log "github.com/inconshreveable/log15"
@@ -253,11 +254,14 @@ func (c *Client) SaveCertificate() error {
 }
 
 func readConfig() error {
-	viper.SetConfigName("ifrit_config")
-	viper.AddConfigPath("/var/tmp")
-	viper.AddConfigPath(".")
-
-	viper.SetConfigType("yaml")
+	if envCfg := os.Getenv("IFRIT_CONFIG"); envCfg != "" {
+		viper.SetConfigFile(envCfg)
+	} else {
+		viper.SetConfigName("ifrit_config")
+		viper.AddConfigPath("/var/tmp")
+		viper.AddConfigPath(".")
+		viper.SetConfigType("yaml")
+	}
 
 	err := viper.ReadInConfig()
 	if err != nil {

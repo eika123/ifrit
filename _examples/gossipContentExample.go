@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ type application struct {
 	store       ifrit.ReconcilableStore[user]
 	exitChan    chan struct{}
 	hostname    string
+	port        int
 	counter     int
 }
 
@@ -41,11 +43,24 @@ func newApp() (*application, error) {
 		}
 	}
 
+	tcpPort := 9000
+	udpPort := 9001
+	if p := os.Getenv("IFRIT_TCP_PORT"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil {
+			tcpPort = v
+		}
+	}
+	if p := os.Getenv("IFRIT_UDP_PORT"); p != "" {
+		if v, err := strconv.Atoi(p); err == nil {
+			udpPort = v
+		}
+	}
+
 	c, err := ifrit.NewClient(&ifrit.Config{
 		New:      true,
 		Hostname: hostname,
-		TCPPort:  9000,
-		UDPPort:  9001,
+		TCPPort:  tcpPort,
+		UDPPort:  udpPort,
 	})
 	if err != nil {
 		return nil, err
@@ -59,6 +74,7 @@ func newApp() (*application, error) {
 		store:       store,
 		exitChan:    make(chan struct{}),
 		hostname:    hostname,
+		port:        tcpPort,
 	}
 
 	return app, nil
@@ -69,7 +85,10 @@ func (a *application) Start() {
 	// Start Ifrit gossip and failure detector
 	go a.ifritClient.Start()
 
-	ticker := time.NewTicker(time.Second * 15)
+	// Incorporate an initial user on startup so nodes have state to share immediately
+	a.addRandomUser()
+
+	ticker := time.NewTicker(time.Second * 10)
 	defer ticker.Stop()
 
 	for {
@@ -90,16 +109,16 @@ func (a *application) Start() {
 // The reconcilable store updates the local state and disseminates updates to peers.
 func (a *application) addRandomUser() {
 	a.counter++
-	userID := fmt.Sprintf("%s-%d", a.hostname, a.counter)
+	userID := fmt.Sprintf("%s:%d-%d", a.hostname, a.port, a.counter)
 	newUser := user{
 		ID:        userID,
 		FirstName: fmt.Sprintf("User-%d", a.counter),
 		LastName:  "Doe",
 		Address:   fmt.Sprintf("%s Street", a.hostname),
-		AddedBy:   a.hostname,
+		AddedBy:   fmt.Sprintf("%s:%d", a.hostname, a.port),
 	}
 
-	log.Info("Created new local user", "id", userID, "added_by", a.hostname)
+	log.Info("Created new local user", "id", userID, "added_by", newUser.AddedBy)
 
 	// AddElement handles mathematical insertion and deduplication
 	a.store.AddElement(newUser)

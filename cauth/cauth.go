@@ -121,6 +121,14 @@ func LoadCa(path string, numBootNodes, numRings uint32) (*Ca, error) {
 		}
 		certBlock, _ := pem.Decode(fp)
 		cert, err := x509.ParseCertificate(certBlock.Bytes)
+		if err != nil {
+			return nil, err
+		}
+
+		if pubKey, ok := cert.PublicKey.(*rsa.PublicKey); !ok || !c.privKey.PublicKey.Equal(pubKey) {
+			log.Warn("Ignoring group certificate that does not match CA private key", "file", fileName)
+			continue
+		}
 
 		g.groupCert = cert
 
@@ -135,6 +143,10 @@ func LoadCa(path string, numBootNodes, numRings uint32) (*Ca, error) {
 		// Add group object to CA
 		c.groups = append(c.groups, g)
 		log.Info("add group", "serial", g.groupCert.SerialNumber.String(), "numrings", g.numRings)
+	}
+
+	if len(c.groups) == 0 {
+		return nil, fmt.Errorf("no valid group certificates matching CA private key found in %s; re-initialize with --new", path)
 	}
 
 	return c, nil
@@ -337,9 +349,16 @@ func (c *Ca) certificateSigning(w http.ResponseWriter, r *http.Request) {
 	io.Copy(&body, r.Body)
 	r.Body.Close()
 
+	if len(c.groups) == 0 {
+		log.Error("No group configured on CA")
+		http.Error(w, "no group configured on CA", http.StatusInternalServerError)
+		return
+	}
+
 	reqCert, err := x509.ParseCertificateRequest(body.Bytes())
 	if err != nil {
 		log.Error(err.Error())
+		http.Error(w, fmt.Sprintf("invalid certificate request: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -363,18 +382,21 @@ func (c *Ca) certificateSigning(w http.ResponseWriter, r *http.Request) {
 
 	if len(reqCert.Subject.Locality) < 2 {
 		log.Error(errNoAddr.Error())
+		http.Error(w, errNoAddr.Error(), http.StatusBadRequest)
 		return
 	}
 
 	serialNumber, err := genSerialNumber()
 	if err != nil {
 		log.Error(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	ipAddr, err := net.ResolveIPAddr("ip4", strings.Split(reqCert.Subject.Locality[0], ":")[0])
 	if err != nil {
 		log.Error(err.Error())
+		http.Error(w, fmt.Sprintf("failed to resolve host IP: %v", err), http.StatusBadRequest)
 		return
 	}
 
@@ -397,12 +419,14 @@ func (c *Ca) certificateSigning(w http.ResponseWriter, r *http.Request) {
 	signedCert, err := x509.CreateCertificate(rand.Reader, newCert, g.groupCert, reqCert.PublicKey, c.privKey)
 	if err != nil {
 		log.Error(err.Error())
+		http.Error(w, fmt.Sprintf("failed to sign certificate: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	knownCert, err := x509.ParseCertificate(signedCert)
 	if err != nil {
 		log.Error(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	trusted := g.addKnownCert(knownCert)

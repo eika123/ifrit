@@ -457,6 +457,11 @@ func sendCertRequest(privKey *ecdsa.PrivateKey, caAddr string, pk pkix.Name, DNS
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ca certificate request failed (%s): %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
 	err = json.NewDecoder(resp.Body).Decode(&certs)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -94,6 +95,13 @@ func main() {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(1)
+		}
+
+		// Clean up any stale group certificates from previous runs so they don't mismatch
+		if staleGroups, globErr := filepath.Glob(filepath.Join(Config.Path, "g-*.pem")); globErr == nil {
+			for _, sg := range staleGroups {
+				_ = os.Remove(sg)
+			}
 		}
 
 		ca, err = cauth.NewCa(Config.Path)

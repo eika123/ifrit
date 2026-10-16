@@ -56,3 +56,5 @@ experiments/observer/bpf/vmlinux.h
 experiments/observer/filter_bpf.go
 experiments/observer/filter_bpf.o
 __pycache__
+ca
+gossipContentExample

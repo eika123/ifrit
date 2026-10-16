@@ -58,12 +58,15 @@ func (s *naiveGossipSet[T]) AddElements(elems ...T) int {
 	}
 
 	added := s.ReconcilableStore.AddElements(elems...)
-	if added > 0 && s.node != nil {
-		raw, err := json.Marshal(s.Elements())
-		if err == nil {
-			s.node.setExternalGossipContent(raw)
-		} else {
-			log.Error("Failed to marshal gossip set after AddElements", "err", err)
+	if added > 0 {
+		log.Debug("GossipSet updated", "added", added, "total", s.ReconcilableStore.Size())
+		if s.node != nil {
+			raw, err := json.Marshal(s.Elements())
+			if err == nil {
+				s.node.setExternalGossipContent(raw)
+			} else {
+				log.Error("Failed to marshal gossip set after AddElements", "err", err)
+			}
 		}
 	}
 
