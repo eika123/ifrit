@@ -54,6 +54,11 @@ func (w *Worm) doHostRequest(host string) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Error("Host request failed", "status", resp.StatusCode, "url", url)
+		return
+	}
+
 	buf, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Error(err.Error())
@@ -100,6 +105,11 @@ func (w *Worm) doStateRequest(host string, wg *sync.WaitGroup) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Error("State request failed", "status", resp.StatusCode, "url", url)
+		return
+	}
+
 	buf, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Error(err.Error())
@@ -128,6 +138,9 @@ func (w *Worm) vizUpdate(blockNum uint64, errors uint32) {
 	if err != nil {
 		log.Error(err.Error())
 	} else {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			log.Error("Viz update request failed", "status", resp.StatusCode, "url", url)
+		}
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}

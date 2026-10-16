@@ -100,21 +100,47 @@ func (v *viz) stop() {
 }
 
 func (v *viz) byzantineHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	io.Copy(ioutil.Discard, r.Body)
 	r.Body.Close()
+
+	if v.n == nil || v.n.fd == nil {
+		log.Error("Cannot activate byzantine mode: node or failure detector is not initialized")
+		http.Error(w, "node or failure detector not initialized", http.StatusInternalServerError)
+		return
+	}
 
 	log.Info("Got byzantine request, periodically not responding to pings!")
 
 	go v.periodicallyPause(time.Second * 20)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Byzantine mode activated: periodically not responding to pings\n"))
 }
 
 func (v *viz) shutdownHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	io.Copy(ioutil.Discard, r.Body)
 	r.Body.Close()
+
+	if v.n == nil {
+		log.Error("Cannot initiate shutdown: node is not initialized")
+		http.Error(w, "node not initialized", http.StatusInternalServerError)
+		return
+	}
 
 	log.Info("Received shutdown request!")
 
 	go v.n.Stop()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Node shutdown initiated\n"))
 }
 
 func (v *viz) periodicallyPause(d time.Duration) {
@@ -198,6 +224,9 @@ func (v *viz) updateReq(r io.Reader, c *http.Client) {
 	if err != nil {
 		log.Error(err.Error())
 	} else {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			log.Error("Viz update request returned error status", "status", resp.StatusCode, "addr", addr)
+		}
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}
@@ -223,6 +252,9 @@ func (v *viz) addToViz() {
 		if err != nil {
 			log.Error(err.Error())
 		} else {
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				log.Error("Viz add request returned error status", "status", resp.StatusCode, "addr", addr)
+			}
 			io.Copy(ioutil.Discard, resp.Body)
 			resp.Body.Close()
 		}
@@ -238,7 +270,10 @@ func (v *viz) remove() {
 
 	buff := new(bytes.Buffer)
 
-	json.NewEncoder(buff).Encode(removeMsg)
+	if err := json.NewEncoder(buff).Encode(removeMsg); err != nil {
+		log.Error("Failed to encode remove message", "err", err)
+		return
+	}
 
 	addr := fmt.Sprintf("http://%s/remove", v.addr)
 	req, err := http.NewRequest("POST", addr, bytes.NewReader(buff.Bytes()))
@@ -253,6 +288,9 @@ func (v *viz) remove() {
 	if err != nil {
 		log.Error(err.Error())
 	} else {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			log.Error("Viz remove request returned error status", "status", resp.StatusCode, "addr", addr)
+		}
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}

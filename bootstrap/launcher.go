@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -149,29 +150,42 @@ func (l *Launcher) shutDownApplications() {
 	}
 }
 
-func (l *Launcher) startApplication() {
+func (l *Launcher) startApplication() error {
 	l.applicationListMutex.Lock()
 	defer l.applicationListMutex.Unlock()
 
 	if l.clientFactory == nil {
 		log.Error("No client factory configured on Launcher")
-		return
+		return errors.New("no client factory configured on Launcher")
 	}
 
 	client, err := l.clientFactory()
 	if err != nil {
 		log.Error("Failed to create client application", "err", err)
-		return
+		return fmt.Errorf("failed to create client application: %w", err)
 	}
 
 	go client.Start()
 
 	l.applicationList = append(l.applicationList, client)
+	return nil
 }
 
 func (l *Launcher) addApplicationHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	io.Copy(ioutil.Discard, r.Body)
 	defer r.Body.Close()
 
-	l.startApplication()
+	if err := l.startApplication(); err != nil {
+		log.Error("Failed to start application via HTTP", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Application added and started\n"))
 }
