@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/hashicorp/go-set/v2"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core"
@@ -228,16 +227,21 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 	c.node.SetResponseHandler(responseHandler)
 }
 
-// GossipSet represents a distributed, convergent set synchronized across Ifrit nodes.
-type GossipSet[T comparable] = core.GossipSet[T]
+// ReconcilableStore defines the standard contract that all data stores must comply to.
+type ReconcilableStore[T comparable] = core.ReconcilableStore[T]
 
-// NewGossipSet creates and initializes a new GossipSet bound to the specified Ifrit Client.
-func NewGossipSet[T comparable](c *Client, initial *set.Set[T]) GossipSet[T] {
+// NewDigestSet creates a new empty ReconcilableStore backed by an in-memory digest set.
+func NewDigestSet[T comparable](hasher ...core.Hasher[T]) ReconcilableStore[T] {
+	return core.NewDigestSet[T](hasher...)
+}
+
+// NewNaiveGossipSet creates and initializes a push-based reconcilable store bound to the specified Ifrit Client.
+func NewNaiveGossipSet[T comparable](c *Client, initial ReconcilableStore[T]) ReconcilableStore[T] {
 	var n *core.Node
 	if c != nil {
 		n = c.node
 	}
-	return core.NewGossipSet(n, initial)
+	return core.NewNaiveGossipSet(n, initial)
 }
 
 func (c *Client) SavePrivateKey() error {

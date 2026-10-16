@@ -6,49 +6,51 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hashicorp/go-set/v2"
 	"github.com/joonnna/ifrit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSetUnionMerging(t *testing.T) {
-	s1 := set.New[user](10)
-	s1.Insert(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
-	s1.Insert(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"})
+	s1 := ifrit.NewDigestSet[user]()
+	s1.AddElement(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
+	s1.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"})
 
-	s2 := set.New[user](10)
-	s2.Insert(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"}) // Duplicate
-	s2.Insert(user{ID: "node2-1", FirstName: "User-1", AddedBy: "node2"})
+	s2 := ifrit.NewDigestSet[user]()
+	s2.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"}) // Duplicate
+	s2.AddElement(user{ID: "node2-1", FirstName: "User-1", AddedBy: "node2"})
 
-	// Verify mathematical set union
-	unionCol := s1.Union(s2)
-	assert.Equal(t, 3, unionCol.Size())
+	// Verify delta merging into an independent copy
+	merged := s1.Copy()
+	added := merged.AddElements(s2.Elements()...)
+	assert.Equal(t, 1, added) // Only s2's node2-1 is new
+	assert.Equal(t, 3, merged.Size())
+	assert.Equal(t, 2, s1.Size()) // s1 remains untouched
 
 	// Verify JSON serialization and deserialization
-	raw1, err := s1.MarshalJSON()
+	raw1, err := json.Marshal(s1)
 	require.NoError(t, err)
 
-	decoded := set.New[user](0)
+	decoded := ifrit.NewDigestSet[user]()
 	err = json.Unmarshal(raw1, decoded)
 	require.NoError(t, err)
 	assert.Equal(t, 2, decoded.Size())
 }
 
 func TestApplicationGossipSetIntegration(t *testing.T) {
-	gSet := ifrit.NewGossipSet[user](nil, nil)
+	gSet := ifrit.NewNaiveGossipSet[user](nil, nil)
 	defer gSet.Close()
 
 	app := &application{
-		gossipSet: gSet,
-		exitChan:  make(chan struct{}),
-		hostname:  "test-node",
+		store:    gSet,
+		exitChan: make(chan struct{}),
+		hostname: "test-node",
 	}
 
 	// Add local users
 	app.addRandomUser()
 	app.addRandomUser()
-	assert.Equal(t, 2, app.gossipSet.Size())
+	assert.Equal(t, 2, app.store.Size())
 
 	// Simulate 10 concurrent peers bombarding the node with overlapping sets
 	var wgPeers sync.WaitGroup
@@ -59,27 +61,27 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 		wgPeers.Add(1)
 		go func(peerIdx int) {
 			defer wgPeers.Done()
-			peerSet := set.New[user](itemsPerPeer)
+			peerSet := ifrit.NewDigestSet[user]()
 			for i := 0; i < itemsPerPeer; i++ {
-				peerSet.Insert(user{
+				peerSet.AddElement(user{
 					ID:        fmt.Sprintf("node-%d-item-%d", peerIdx, i),
 					FirstName: fmt.Sprintf("User-%d", i),
 					AddedBy:   fmt.Sprintf("node-%d", peerIdx),
 				})
 			}
 			// Add an overlap element shared across all peers
-			peerSet.Insert(user{
+			peerSet.AddElement(user{
 				ID:        "shared-user",
 				FirstName: "Shared",
 				AddedBy:   "common",
 			})
 
-			raw, err := peerSet.MarshalJSON()
+			raw, err := json.Marshal(peerSet)
 			if err == nil {
-				// Inject gossip bytes directly into the node's GossipSet
+				// Inject gossip bytes directly into the node's store
 				var items []user
 				_ = json.Unmarshal(raw, &items)
-				app.gossipSet.AddElements(items...)
+				app.store.AddElements(items...)
 			}
 		}(p)
 	}
@@ -88,9 +90,9 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 
 	// Total expected unique items: 2 local items + 10 peers * 5 items + 1 shared item = 53 items
 	expectedTotal := 2 + (peerCount * itemsPerPeer) + 1
-	assert.Equal(t, expectedTotal, app.gossipSet.Size())
+	assert.Equal(t, expectedTotal, app.store.Size())
 
-	// Verify Copy() snapshot returns an independent copy
-	snapshot := app.gossipSet.Copy()
-	assert.Equal(t, expectedTotal, snapshot.Size())
+	// Verify Elements() returns all elements
+	elems := app.store.Elements()
+	assert.Equal(t, expectedTotal, len(elems))
 }

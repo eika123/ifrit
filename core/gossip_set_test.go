@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-set/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +17,7 @@ type testItem struct {
 }
 
 func TestGossipSet_BasicOperations(t *testing.T) {
-	gs := NewGossipSet[testItem](nil, nil)
+	gs := NewNaiveGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	assert.True(t, gs.Empty())
@@ -44,16 +43,53 @@ func TestGossipSet_BasicOperations(t *testing.T) {
 	assert.Equal(t, 2, addedCount)
 	assert.Equal(t, 3, gs.Size())
 
-	// RawBytes
-	raw := gs.RawBytes()
+	// JSON serialization via Copy
+	raw, err := json.Marshal(gs.Copy())
+	require.NoError(t, err)
 	var decoded []testItem
-	err := json.Unmarshal(raw, &decoded)
+	err = json.Unmarshal(raw, &decoded)
 	require.NoError(t, err)
 	assert.Len(t, decoded, 3)
+
+	// Elements
+	elems := gs.Elements()
+	assert.Len(t, elems, 3)
+}
+
+func TestGossipSet_DigestAndReconciliationMethods(t *testing.T) {
+	gs := NewNaiveGossipSet[testItem](nil, nil)
+	defer gs.Close()
+
+	item1 := testItem{ID: "item-1", Value: 100}
+	item2 := testItem{ID: "item-2", Value: 200}
+	gs.AddElements(item1, item2)
+
+	digests := gs.Digests()
+	assert.Len(t, digests, 2)
+
+	// ContainsDigest and GetByDigest
+	hasher := DefaultHasher[testItem]()
+	d1 := hasher(item1)
+	d2 := hasher(item2)
+
+	assert.True(t, gs.ContainsDigest(d1))
+	assert.True(t, gs.ContainsDigest(d2))
+	assert.False(t, gs.ContainsDigest(9999999))
+
+	retrieved, found := gs.GetByDigest(d1)
+	assert.True(t, found)
+	assert.Equal(t, item1, retrieved)
+
+	_, foundNotFound := gs.GetByDigest(9999999)
+	assert.False(t, foundNotFound)
+
+	// Fingerprint
+	fp := gs.Fingerprint()
+	assert.Equal(t, d1^d2, fp)
 }
 
 func TestGossipSet_CopyIsolation(t *testing.T) {
-	gs := NewGossipSet[testItem](nil, nil)
+	gs := NewNaiveGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	gs.AddElement(testItem{ID: "orig", Value: 1})
@@ -64,72 +100,46 @@ func TestGossipSet_CopyIsolation(t *testing.T) {
 	assert.True(t, cp.Contains(testItem{ID: "orig", Value: 1}))
 
 	// Mutate the copied set directly
-	cp.Insert(testItem{ID: "mutated-outside", Value: 999})
-	cp.Remove(testItem{ID: "orig", Value: 1})
+	cp.AddElement(testItem{ID: "mutated-outside", Value: 999})
 
 	// Internal GossipSet state MUST remain unaffected
 	assert.Equal(t, 1, gs.Size())
 	assert.True(t, gs.Contains(testItem{ID: "orig", Value: 1}))
 	assert.False(t, gs.Contains(testItem{ID: "mutated-outside", Value: 999}))
+	assert.Equal(t, 2, cp.Size())
+	assert.True(t, cp.Contains(testItem{ID: "mutated-outside", Value: 999}))
 }
 
-func TestGossipSet_RemoteMergeAndOnUpdate(t *testing.T) {
-	gs := NewGossipSet[testItem](nil, nil)
+func TestGossipSet_RemoteMerge(t *testing.T) {
+	gs := NewNaiveGossipSet[testItem](nil, nil)
 	defer gs.Close()
 
 	gs.AddElement(testItem{ID: "local-1", Value: 10})
 
-	updateChan := make(chan struct {
-		newItems []testItem
-		total    int
-	}, 10)
-
-	gs.OnUpdate(func(newElements []testItem, total int) {
-		updateChan <- struct {
-			newItems []testItem
-			total    int
-		}{newElements, total}
-	})
-
 	// Prepare remote gossip payload
-	remoteSet := set.New[testItem](2)
-	remoteSet.Insert(testItem{ID: "local-1", Value: 10})  // duplicate
-	remoteSet.Insert(testItem{ID: "remote-1", Value: 20}) // new
-	remoteSet.Insert(testItem{ID: "remote-2", Value: 30}) // new
-	remoteBytes, err := remoteSet.MarshalJSON()
+	remoteSet := NewDigestSet[testItem]()
+	remoteSet.AddElement(testItem{ID: "local-1", Value: 10})  // duplicate
+	remoteSet.AddElement(testItem{ID: "remote-1", Value: 20}) // new
+	remoteSet.AddElement(testItem{ID: "remote-2", Value: 30}) // new
+	remoteBytes, err := json.Marshal(remoteSet)
 	require.NoError(t, err)
 
 	// Simulate receiving remote gossip
-	internalGS := gs.(*gossipSet[testItem])
+	internalGS := gs.(*naiveGossipSet[testItem])
 	reply, err := internalGS.handleGossip(remoteBytes)
 	require.NoError(t, err)
 	assert.NotEmpty(t, reply)
 
-	// Wait for merge callback
-	select {
-	case update := <-updateChan:
-		assert.Equal(t, 3, update.total)
-		assert.Len(t, update.newItems, 3)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for OnUpdate callback")
-	}
-
-	assert.Equal(t, 3, gs.Size())
-	assert.True(t, gs.Contains(testItem{ID: "remote-1", Value: 20}))
-	assert.True(t, gs.Contains(testItem{ID: "remote-2", Value: 30}))
-
-	// Sending the same remote bytes again should NOT trigger OnUpdate
-	_, _ = internalGS.handleGossip(remoteBytes)
-	select {
-	case <-updateChan:
-		t.Fatal("OnUpdate should not have been called for duplicate gossip")
-	case <-time.After(100 * time.Millisecond):
-		// Expected
-	}
+	// Verify merged state
+	assert.Eventually(t, func() bool {
+		return gs.Size() == 3 &&
+			gs.Contains(testItem{ID: "remote-1", Value: 20}) &&
+			gs.Contains(testItem{ID: "remote-2", Value: 30})
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	gs := NewGossipSet[string](nil, nil)
+	gs := NewNaiveGossipSet[string](nil, nil)
 	defer gs.Close()
 
 	var wg sync.WaitGroup
@@ -154,18 +164,18 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 		go func(remoteID int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				remSet := set.New[string](5)
+				remSet := NewDigestSet[string]()
 				for j := 0; j < 5; j++ {
-					remSet.Insert(fmt.Sprintf("remote-%d-%d-%d", remoteID, i, j))
+					remSet.AddElement(fmt.Sprintf("remote-%d-%d-%d", remoteID, i, j))
 				}
-				raw, _ := remSet.MarshalJSON()
-				internalGS := gs.(*gossipSet[string])
+				raw, _ := json.Marshal(remSet)
+				internalGS := gs.(*naiveGossipSet[string])
 				_, _ = internalGS.handleGossip(raw)
 			}
 		}(r)
 	}
 
-	// Concurrent readers using Copy(), Elements(), Size(), Contains()
+	// Concurrent readers using Copy(), Elements(), Size(), Contains(), Digests(), GetByDigest()
 	stopReaders := make(chan struct{})
 	for r := 0; r < readers; r++ {
 		wg.Add(1)
@@ -179,7 +189,9 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 					_ = gs.Copy()
 					_ = gs.Size()
 					_ = gs.Contains("some-item")
-					_ = gs.RawBytes()
+					_ = gs.Digests()
+					_ = gs.Fingerprint()
+					_ = gs.Elements()
 				}
 			}
 		}()

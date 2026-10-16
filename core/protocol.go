@@ -55,8 +55,8 @@ func (c correct) Gossip(n *Node) {
 		n.mergeAccusations(reply.GetAccusations())
 
 		if handler := n.getResponseHandler(); handler != nil {
-			if r := reply.GetExternalGossip(); r != nil {
-				handler(r)
+			if replyGossip := reply.GetExternalGossip(); replyGossip != nil {
+				handler(replyGossip)
 			}
 		}
 	}

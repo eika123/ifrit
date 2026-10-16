@@ -11,7 +11,7 @@ import (
 	"github.com/joonnna/ifrit"
 )
 
-// User representation where all fields are comparable for HashiCorp Set[T].
+// User representation where all fields are comparable.
 type user struct {
 	ID        string `json:"id"`
 	FirstName string `json:"first_name"`
@@ -21,10 +21,10 @@ type user struct {
 }
 
 // Application represents a gossip node managing a convergent Grow-only Set (G-Set)
-// of user records using Ifrit's high-level GossipSet abstraction.
+// of user records using Ifrit's pluggable ReconcilableStore abstraction.
 type application struct {
 	ifritClient *ifrit.Client
-	gossipSet   ifrit.GossipSet[user]
+	store       ifrit.ReconcilableStore[user]
 	exitChan    chan struct{}
 	hostname    string
 	counter     int
@@ -51,21 +51,12 @@ func newApp() (*application, error) {
 		return nil, err
 	}
 
-	// Create thread-safe distributed gossip set bound to the Ifrit client.
-	// This automatically wires up gossip handlers and starts the background merge worker.
-	gSet := ifrit.NewGossipSet[user](c, nil)
-
-	// Register reactive listener for remote updates from peers
-	gSet.OnUpdate(func(newUsers []user, total int) {
-		log.Info("Discovered new users from gossip peers",
-			"new_count", len(newUsers),
-			"total_users", total,
-		)
-	})
+	// Create thread-safe reconcilable store bound to the Ifrit client.
+	store := ifrit.NewNaiveGossipSet[user](c, nil)
 
 	app := &application{
 		ifritClient: c,
-		gossipSet:   gSet,
+		store:       store,
 		exitChan:    make(chan struct{}),
 		hostname:    hostname,
 	}
@@ -85,7 +76,7 @@ func (a *application) Start() {
 		select {
 		case <-a.exitChan:
 			log.Info("Shutting down application")
-			a.gossipSet.Close()
+			_ = a.store.Close()
 			a.ifritClient.Stop()
 			return
 
@@ -96,7 +87,7 @@ func (a *application) Start() {
 }
 
 // addRandomUser creates a new local user and incorporates it via AddElement.
-// The internal GossipSet updates the local set and publishes the new state to Ifrit gossip.
+// The reconcilable store updates the local state and disseminates updates to peers.
 func (a *application) addRandomUser() {
 	a.counter++
 	userID := fmt.Sprintf("%s-%d", a.hostname, a.counter)
@@ -110,19 +101,17 @@ func (a *application) addRandomUser() {
 
 	log.Info("Created new local user", "id", userID, "added_by", a.hostname)
 
-	// AddElement handles mathematical insertion, deduplication, and gossip publishing
-	a.gossipSet.AddElement(newUser)
+	// AddElement handles mathematical insertion and deduplication
+	a.store.AddElement(newUser)
 
-	// Demonstrate safe inspection via Copy() - application cannot mutate internal Ifrit state
-	snapshot := a.gossipSet.Copy()
-	log.Info("Current set snapshot", "size", snapshot.Size())
+	log.Info("Current store elements count", "size", a.store.Size())
 }
 
 func main() {
 	r := log.Root()
 	r.SetHandler(log.StreamHandler(os.Stdout, log.LogfmtFormat()))
 
-	log.Info("Starting Ifrit Gossip Content Node (GossipSet API)")
+	log.Info("Starting Ifrit Gossip Content Node (ReconcilableStore API)")
 
 	app, err := newApp()
 	if err != nil {
