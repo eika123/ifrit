@@ -44,7 +44,7 @@ func DefaultHasher[T any]() Hasher[T] {
 
 // DigestSet represents a reverse-index hash set that maps deterministic 64-bit digests
 // to items, enabling O(1) reverse lookup (GetByDigest) for set reconciliation protocols.
-type digestSet[T comparable] struct {
+type digestSet[T any] struct {
 	mu            sync.RWMutex
 	itemsByDigest map[uint64]T
 	hasher        Hasher[T]
@@ -63,10 +63,10 @@ type digestSet[T comparable] struct {
 	fingerprint uint64
 }
 
-var _ ReconcilableStore[string] = (*digestSet[string])(nil)
+var _ ReverseIndexStore[string] = (*digestSet[string])(nil)
 
 // newDigestSet creates an in-memory digestSet pointer for internal package use.
-func newDigestSet[T comparable](hasher ...Hasher[T]) *digestSet[T] {
+func newDigestSet[T any](hasher ...Hasher[T]) *digestSet[T] {
 	var h Hasher[T]
 	if len(hasher) > 0 && hasher[0] != nil {
 		h = hasher[0]
@@ -80,9 +80,9 @@ func newDigestSet[T comparable](hasher ...Hasher[T]) *digestSet[T] {
 	}
 }
 
-// NewDigestSet creates a new empty ReconcilableStore with an optional custom Hasher.
+// NewDigestSet creates a new empty ReverseIndexStore with an optional custom Hasher.
 // If no hasher is provided, DefaultHasher[T]() is used.
-func NewDigestSet[T comparable](hasher ...Hasher[T]) ReconcilableStore[T] {
+func NewDigestSet[T any](hasher ...Hasher[T]) ReverseIndexStore[T] {
 	return newDigestSet(hasher...)
 }
 
@@ -104,7 +104,7 @@ func (s *digestSet[T]) Insert(item T) (uint64, bool) {
 }
 
 // AddElement inserts an element into the set and returns true if newly added.
-// Satisfies ReconcilableStore[T].
+// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T]) AddElement(elem T) bool {
 	_, inserted := s.Insert(elem)
 	return inserted
@@ -134,7 +134,7 @@ func (s *digestSet[T]) InsertSlice(items []T) int {
 }
 
 // AddElements inserts multiple elements into the set and returns the count of newly added elements.
-// Satisfies ReconcilableStore[T].
+// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T]) AddElements(elems ...T) int {
 	return s.InsertSlice(elems)
 }
@@ -239,6 +239,8 @@ func (s *digestSet[T]) Digests() []uint64 {
 }
 
 // Slice returns all elements currently in the set as a slice.
+// The items are deep copied, so mutations on the returned slice will not
+// affect the original set.
 func (s *digestSet[T]) Slice() []T {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -251,14 +253,14 @@ func (s *digestSet[T]) Slice() []T {
 }
 
 // Elements returns all elements currently in the set as a slice.
-// Satisfies ReconcilableStore[T].
+// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T]) Elements() []T {
 	return s.Slice()
 }
 
 // Copy creates an independent, deep clone of the DigestSet.
 // Mutations on the returned copy will not affect the original set.
-func (s *digestSet[T]) Copy() ReconcilableStore[T] {
+func (s *digestSet[T]) Copy() ReverseIndexStore[T] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -275,7 +277,7 @@ func (s *digestSet[T]) Copy() ReconcilableStore[T] {
 	return cp
 }
 
-// Close satisfies ReconcilableStore (and io.Closer). For in-memory DigestSet,
+// Close satisfies ReverseIndexStore (and io.Closer). For in-memory DigestSet,
 // this is a no-op returning nil.
 func (s *digestSet[T]) Close() error {
 	return nil

@@ -1,9 +1,9 @@
 package core
 
-// ReconcilableStore defines the standard contract that all data stores must comply to
+// ReverseIndexStore defines the standard contract that all data stores must comply to
 // in order to participate in set reconciliation. It provides set operations,
 // deterministic 64-bit fingerprinting, and O(1) reverse lookup by digest.
-type ReconcilableStore[T comparable] interface {
+type ReverseIndexStore[T any] interface {
 	// AddElement adds an element to the store. Returns true if the element was newly added.
 	AddElement(elem T) bool
 
@@ -34,10 +34,11 @@ type ReconcilableStore[T comparable] interface {
 	Empty() bool
 
 	// Elements returns all elements currently in the store as a slice.
+	// The slice shoudl be a deep copy
 	Elements() []T
 
 	// Copy returns an independent, deep copy of the set at this point in time.
-	Copy() ReconcilableStore[T]
+	Copy() ReverseIndexStore[T]
 
 	// Close finalizes the store, flushing any pending data or releasing resources.
 	// In-memory stores may safely stub this as a no-op returning nil.

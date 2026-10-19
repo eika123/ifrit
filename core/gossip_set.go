@@ -8,7 +8,7 @@ import (
 )
 
 type naiveGossipSet[T comparable] struct {
-	ReconcilableStore[T]
+	ReverseIndexStore[T]
 
 	node        *Node
 	inboundChan chan []byte
@@ -16,19 +16,19 @@ type naiveGossipSet[T comparable] struct {
 	closeOnce   sync.Once
 }
 
-var _ ReconcilableStore[string] = (*naiveGossipSet[string])(nil)
+var _ ReverseIndexStore[string] = (*naiveGossipSet[string])(nil)
 
-// NewNaiveGossipSet creates and initializes a push-based ReconcilableStore bound to the specified Ifrit Node.
+// NewNaiveGossipSet creates and initializes a push-based ReverseIndexStore bound to the specified Ifrit Node.
 // It automatically registers gossip and response handlers on the node, launches the background
 // merge worker, and initializes the gossip payload.
-func NewNaiveGossipSet[T comparable](node *Node, initial ReconcilableStore[T]) ReconcilableStore[T] {
+func NewNaiveGossipSet[T comparable](node *Node, initial ReverseIndexStore[T]) ReverseIndexStore[T] {
 	if initial == nil {
 		initial = NewDigestSet[T]()
 	}
 	s := initial.Copy()
 
 	gs := &naiveGossipSet[T]{
-		ReconcilableStore: s,
+		ReverseIndexStore: s,
 		node:              node,
 		inboundChan:       make(chan []byte, 256),
 		exitChan:          make(chan struct{}),
@@ -57,9 +57,9 @@ func (s *naiveGossipSet[T]) AddElements(elems ...T) int {
 		return 0
 	}
 
-	added := s.ReconcilableStore.AddElements(elems...)
+	added := s.ReverseIndexStore.AddElements(elems...)
 	if added > 0 {
-		log.Debug("GossipSet updated", "added", added, "total", s.ReconcilableStore.Size())
+		log.Debug("GossipSet updated", "added", added, "total", s.ReverseIndexStore.Size())
 		if s.node != nil {
 			raw, err := json.Marshal(s.Elements())
 			if err == nil {
@@ -77,7 +77,7 @@ func (s *naiveGossipSet[T]) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.exitChan)
 	})
-	return s.ReconcilableStore.Close()
+	return s.ReverseIndexStore.Close()
 }
 
 func (s *naiveGossipSet[T]) MarshalJSON() ([]byte, error) {

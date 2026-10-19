@@ -194,9 +194,9 @@ func TestDigestSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 	assert.Equal(t, writers*itemsPerWriter, s.Size())
 }
 
-func TestDigestSet_OpaqueReconcilableStoreFactory(t *testing.T) {
-	// Verify NewDigestSet returns ReconcilableStore interface
-	var store ReconcilableStore[userItem] = NewDigestSet[userItem]()
+func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
+	// Verify NewDigestSet returns ReverseIndexStore interface
+	var store ReverseIndexStore[userItem] = NewDigestSet[userItem]()
 	defer store.Close()
 
 	assert.True(t, store.Empty())

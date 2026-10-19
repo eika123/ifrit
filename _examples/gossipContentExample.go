@@ -22,10 +22,10 @@ type user struct {
 }
 
 // Application represents a gossip node managing a convergent Grow-only Set (G-Set)
-// of user records using Ifrit's pluggable ReconcilableStore abstraction.
+// of user records using Ifrit's pluggable ReverseIndexStore abstraction.
 type application struct {
 	ifritClient *ifrit.Client
-	store       ifrit.ReconcilableStore[user]
+	store       ifrit.ReverseIndexStore[user]
 	exitChan    chan struct{}
 	hostname    string
 	port        int
@@ -130,7 +130,7 @@ func main() {
 	r := log.Root()
 	r.SetHandler(log.StreamHandler(os.Stdout, log.LogfmtFormat()))
 
-	log.Info("Starting Ifrit Gossip Content Node (ReconcilableStore API)")
+	log.Info("Starting Ifrit Gossip Content Node (ReverseIndexStore API)")
 
 	app, err := newApp()
 	if err != nil {

@@ -228,16 +228,16 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 	c.node.SetResponseHandler(responseHandler)
 }
 
-// ReconcilableStore defines the standard contract that all data stores must comply to.
-type ReconcilableStore[T comparable] = core.ReconcilableStore[T]
+// ReverseIndexStore defines the standard contract that all data stores must comply to.
+type ReverseIndexStore[T comparable] = core.ReverseIndexStore[T]
 
-// NewDigestSet creates a new empty ReconcilableStore backed by an in-memory digest set.
-func NewDigestSet[T comparable](hasher ...core.Hasher[T]) ReconcilableStore[T] {
+// NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
+func NewDigestSet[T comparable](hasher ...core.Hasher[T]) ReverseIndexStore[T] {
 	return core.NewDigestSet[T](hasher...)
 }
 
 // NewNaiveGossipSet creates and initializes a push-based reconcilable store bound to the specified Ifrit Client.
-func NewNaiveGossipSet[T comparable](c *Client, initial ReconcilableStore[T]) ReconcilableStore[T] {
+func NewNaiveGossipSet[T comparable](c *Client, initial ReverseIndexStore[T]) ReverseIndexStore[T] {
 	var n *core.Node
 	if c != nil {
 		n = c.node
