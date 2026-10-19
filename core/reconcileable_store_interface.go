@@ -44,3 +44,12 @@ type ReverseIndexStore[T any] interface {
 	// In-memory stores may safely stub this as a no-op returning nil.
 	Close() error
 }
+
+type ReconcilerSession[S any] interface {
+	ProcessIncomingMessage(msg []byte) error
+	GenerateNextMessage() ([]byte, error)
+
+	Done() bool
+	RemoteDigests() []S // Elements the peer has that we need to fetch
+	LocalDigests() []S  // Elements we have that the peer is missing
+}
