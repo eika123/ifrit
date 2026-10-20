@@ -1,5 +1,7 @@
 package core
 
+import "sync"
+
 // ReverseIndexStore defines the standard contract that all data stores must comply to
 // in order to participate in set reconciliation. It provides set operations,
 // deterministic 64-bit fingerprinting, and O(1) reverse lookup by digest.
@@ -52,4 +54,17 @@ type ReconcilerSession[S any] interface {
 	Done() bool
 	RemoteDigests() []S // Elements the peer has that we need to fetch
 	LocalDigests() []S  // Elements we have that the peer is missing
+}
+
+// SessionFactory creates a new reconciliation session backed by a store snapshot/view
+type SessionFactory[S any] func(store ReverseIndexStore[S]) ReconcilerSession[S]
+
+type reconcilerGossipSet[T any] struct {
+	ReverseIndexStore[T]
+
+	sessionFactory SessionFactory[T]
+	node           *Node
+	inboundChan    chan []byte
+	exitChan       chan struct{}
+	closeOnce      sync.Once
 }

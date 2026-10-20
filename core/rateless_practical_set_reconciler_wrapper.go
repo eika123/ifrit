@@ -45,7 +45,6 @@ func (d DigestSymbol) Hash() uint64 {
 }
 
 // -----------------------------------------------------------------------------
-
 type RIBLTSession[S sym[S]] struct {
 	store   ReverseIndexStore[S]
 	encoder riblt.Encoder[S]
@@ -58,6 +57,7 @@ type RIBLTSession[S sym[S]] struct {
 	receivedSymbols int
 }
 
+// Session factory for rateless practical set reconciliation
 func NewRIBLTSession[S sym[S]](store ReverseIndexStore[S],
 	symbolSize uint32,
 	encodeSymbol func(S) []byte,
@@ -99,6 +99,7 @@ func hashDigestsToDigests[S sym[S]](h []riblt.HashedSymbol[S]) []S {
 	}
 	return res
 }
+
 func (s *RIBLTSession[S]) RemoteDigests() []S { return hashDigestsToDigests(s.decoder.Remote()) }
 func (s *RIBLTSession[S]) LocalDigests() []S  { return hashDigestsToDigests(s.decoder.Local()) }
 
