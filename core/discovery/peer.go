@@ -224,8 +224,8 @@ func (p *Peer) AddAccusation(accused, accuser string, epoch uint64, ringNum uint
 }
 
 func (p *Peer) RemoveAccusation(a *Accusation) {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
+	p.accuseMutex.Lock()
+	defer p.accuseMutex.Unlock()
 
 	if _, ok := p.accusations[a.ringNum]; !ok {
 		log.Debug("Tried to remove accusation from invalid ring number", "ringnum", a.ringNum)
@@ -236,8 +236,8 @@ func (p *Peer) RemoveAccusation(a *Accusation) {
 }
 
 func (p *Peer) RemoveRingAccusation(ringNum uint32) {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
+	p.accuseMutex.Lock()
+	defer p.accuseMutex.Unlock()
 
 	if _, ok := p.accusations[ringNum]; !ok {
 		log.Debug("Tried to remove accusation from invalid ring number", "ringnum", ringNum)

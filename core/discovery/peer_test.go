@@ -9,7 +9,9 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/assert"
@@ -577,7 +579,90 @@ func (suite *PeerTestSuite) TestClearAccusations() {
 	for i = 1; i <= suite.numRings; i++ {
 		assert.Nil(suite.T(), suite.p.accusations[i], "Accusation was not removed after clearing all accusations.")
 	}
+}
 
+func (suite *PeerTestSuite) TestConcurrentAccusationRemovalAndRead() {
+	p := suite.p
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Pre-populate some accusations
+	for i := uint32(1); i <= suite.numRings; i++ {
+		p.accusations[i] = &Accusation{ringNum: i, epoch: 1}
+	}
+
+	// Concurrent remover 1
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := uint32(1); i <= suite.numRings; i++ {
+					p.RemoveRingAccusation(i)
+				}
+			}
+		}
+	}()
+
+	// Concurrent remover 2
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := uint32(1); i <= suite.numRings; i++ {
+					p.RemoveAccusation(&Accusation{ringNum: i})
+				}
+			}
+		}
+	}()
+
+	// Concurrent adder
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := uint32(1); i <= suite.numRings; i++ {
+					p.accuseMutex.Lock()
+					p.accusations[i] = &Accusation{ringNum: i, epoch: 1}
+					p.accuseMutex.Unlock()
+				}
+			}
+		}
+	}()
+
+	// Concurrent readers
+	for r := 0; r < 3; r++ {
+		wg.Add(1)
+		go func(readerId int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_ = p.AllAccusations()
+					_ = p.IsAccused()
+					_ = p.AnyAccusation()
+					_ = p.RingAccusation(1)
+				}
+			}
+		}(r)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 func (suite *PeerTestSuite) TestRingAccusation() {
