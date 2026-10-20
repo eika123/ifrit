@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"math"
 	"math/big"
@@ -17,9 +18,10 @@ import (
 	"testing"
 	"time"
 
+	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/protobuf"
+	proto "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/net/context"
@@ -364,7 +366,34 @@ func (suite *HandlerTestSuite) TestMergeViews() {
 		require.ElementsMatchf(suite.T(), t.accs, accs,
 			"Invalid accusation output for test %d.", i)
 	}
+}
 
+func (suite *HandlerTestSuite) TestMergeViews_FullViewAntiEntropyWithBinaryIds() {
+	node := suite.n
+
+	// node.view already contains 100 peers generated with random 32-byte SubjectKeyIds
+	state := node.view.State()
+
+	// 1. Verify protobuf serialization succeeds without invalid UTF-8 error
+	stateBytes, err := gpb.Marshal(state)
+	require.NoError(suite.T(), err, "Protobuf marshal must succeed with binary peer IDs")
+
+	var unmarshaled proto.State
+	err = gpb.Unmarshal(stateBytes, &unmarshaled)
+	require.NoError(suite.T(), err)
+
+	// Also simulate that remote peer already knows local node's latest note epoch
+	unmarshaled.ExistingHosts[hex.EncodeToString([]byte(node.self.Id))] = node.self.Note().ToPbMsg().GetEpoch()
+
+	// 2. Since unmarshaled state already contains all peers in node.view with matching epochs,
+	// anti-entropy must NOT re-transmit any certificates or notes!
+	reply := &proto.StateResponse{}
+	node.mergeViews(unmarshaled.GetExistingHosts(), reply)
+
+	require.Empty(suite.T(), reply.GetCertificates(),
+		"Anti-entropy failed: certificates were redundantly re-transmitted due to ID corruption!")
+	require.Empty(suite.T(), reply.GetNotes(),
+		"Anti-entropy failed: notes were redundantly re-transmitted due to ID corruption!")
 }
 
 func (suite *HandlerTestSuite) TestMergeNotes() {

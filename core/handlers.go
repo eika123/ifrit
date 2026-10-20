@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io"
 
@@ -197,15 +198,26 @@ func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 }
 
 func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {
+	lookupEpoch := func(rawId string) (uint64, bool) {
+		if epoch, ok := given[hex.EncodeToString([]byte(rawId))]; ok {
+			return epoch, true
+		}
+		if epoch, ok := given[rawId]; ok {
+			return epoch, true
+		}
+		return 0, false
+	}
+
 	for _, p := range n.view.Full() {
-		if _, ok := given[p.Id]; !ok {
+		epoch, ok := lookupEpoch(p.Id)
+		if !ok {
 			reply.Certificates = append(reply.Certificates,
 				&pb.Certificate{Raw: p.Certificate()})
 
 			if note := p.Note(); note != nil {
 				reply.Notes = append(reply.Notes, note.ToPbMsg())
 			}
-		} else if note := p.Note(); note != nil && note.IsMoreRecent(given[p.Id]) {
+		} else if note := p.Note(); note != nil && note.IsMoreRecent(epoch) {
 			reply.Notes = append(reply.Notes, note.ToPbMsg())
 		}
 
@@ -219,7 +231,7 @@ func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {
 
 	localNote := n.self.Note()
 
-	if epoch, exists := given[n.self.Id]; !exists || localNote.IsMoreRecent(epoch) {
+	if epoch, exists := lookupEpoch(n.self.Id); !exists || localNote.IsMoreRecent(epoch) {
 		reply.Notes = append(reply.Notes, localNote.ToPbMsg())
 	}
 }

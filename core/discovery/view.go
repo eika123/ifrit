@@ -3,9 +3,9 @@ package discovery
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"math/bits"
-	"strings"
 	"sync"
 	"time"
 
@@ -615,7 +615,7 @@ func (v *View) State() *proto.State {
 	}
 
 	for _, p := range v.viewMap {
-		id := strings.ToValidUTF8(p.Id, "")
+		id := hex.EncodeToString([]byte(p.Id))
 		if note := p.Note(); note != nil {
 			ret.ExistingHosts[id] = note.epoch
 		} else {

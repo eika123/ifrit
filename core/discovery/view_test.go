@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"testing"
@@ -725,7 +726,7 @@ func (suite *ViewTestSuite) TestState() {
 
 		require.Equal(suite.T(), i+1, len(hosts), "Peers not added to state message.")
 
-		epoch, ok := hosts[p.Id]
+		epoch, ok := hosts[hex.EncodeToString([]byte(p.Id))]
 		require.True(suite.T(), ok, "Peer not added to state message.")
 
 		if hasNote {
