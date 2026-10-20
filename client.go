@@ -233,7 +233,7 @@ type ReverseIndexStore[T comparable] = core.ReverseIndexStore[T]
 
 // NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 func NewDigestSet[T comparable](hasher ...core.Hasher[T]) ReverseIndexStore[T] {
-	return core.NewDigestSet[T](hasher...)
+	return core.NewDigestSet(hasher...)
 }
 
 // NewNaiveGossipSet creates and initializes a push-based reconcilable store bound to the specified Ifrit Client.
