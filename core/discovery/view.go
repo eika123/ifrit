@@ -82,7 +82,7 @@ type signer interface {
 //   - Requires initialized and valid certificate manager / certificates (cert).
 //   - Requires a cryptoService / signer capable of signing protobuf Notes.
 //   - Requires a connectionManager / commService to manage connection lifecycles.
-//   - Viper configuration must be loaded (keys: "dead_timeout", "view_update_interval").
+//   - Viper configuration must be loaded (keys: "removal_timeout", "view_update_interval").
 func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer) (*View, error) {
 	var i, mask uint32
 
@@ -102,6 +102,16 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
+	removalTimeout := viper.GetFloat64("removal_timeout")
+	if removalTimeout <= 0 {
+		removalTimeout = 60.0
+	}
+
+	updateInterval := viper.GetInt32("view_update_interval")
+	if updateInterval <= 0 {
+		updateInterval = 10
+	}
+
 	v := &View{
 		rings:           rings,
 		viewMap:         make(map[string]*Peer),
@@ -115,9 +125,8 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		exitChan:        make(chan bool, 1),
 		s:               s,
 
-		removalTimeout: viper.GetFloat64("dead_timeout"),
-		updateTimeout: time.Second * time.Duration(viper.
-			GetInt32("view_update_interval")),
+		removalTimeout: removalTimeout,
+		updateTimeout:  time.Second * time.Duration(updateInterval),
 	}
 
 	for i = 0; i < numRings; i++ {

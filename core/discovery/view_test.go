@@ -14,6 +14,7 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -868,6 +869,68 @@ func (suite *ViewTestSuite) TestHasBit() {
 		mask = setBit(mask, i)
 		require.True(suite.T(), hasBit(mask, i), "Should return true on set bit.")
 	}
+}
+
+func (suite *ViewTestSuite) TestRemovalTimeoutConfiguration() {
+	defer viper.Reset()
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	require.NoError(suite.T(), err)
+	cert := validCert("timeoutPeer", privKey.Public())
+
+	// 1. Default when unset should be 60.0 and 10s interval
+	viper.Reset()
+	vDefault, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), 60.0, vDefault.removalTimeout)
+	assert.Equal(suite.T(), 10*time.Second, vDefault.updateTimeout)
+
+	// 2. Configured removal_timeout
+	viper.Reset()
+	viper.Set("removal_timeout", 45.0)
+	viper.Set("view_update_interval", 15)
+	vRemoval, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), 45.0, vRemoval.removalTimeout)
+	assert.Equal(suite.T(), 15*time.Second, vRemoval.updateTimeout)
+}
+
+func (suite *ViewTestSuite) TestCheckTimeoutsSuspicionWindow() {
+	// Ensure default removalTimeout is in effect
+	require.Equal(suite.T(), 60.0, suite.v.removalTimeout)
+
+	accused := &Peer{
+		Id:   "accusedPeer",
+		Addr: "accusedAddr",
+	}
+	suite.v.liveMap[accused.Id] = accused
+
+	accuser := &Peer{
+		Id: "accuserPeer",
+	}
+
+	note := &Note{
+		id: accused.Id,
+	}
+
+	// Recent accusation (within the 60-second window)
+	suite.v.timeoutMap[accused.Id] = &timeout{
+		accused:   accused,
+		observer:  accuser,
+		lastNote:  note,
+		timeStamp: time.Now(),
+	}
+
+	// First tick should NOT evict the peer
+	suite.v.checkTimeouts()
+	assert.Contains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should not be evicted immediately on tick")
+	assert.Contains(suite.T(), suite.v.liveMap, accused.Id, "Peer should remain in liveMap during suspicion window")
+
+	// Expire timeout by setting timestamp past 60s
+	suite.v.timeoutMap[accused.Id].timeStamp = time.Now().Add(-65 * time.Second)
+	suite.v.checkTimeouts()
+	assert.NotContains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should be evicted after removal_timeout expires")
+	assert.NotContains(suite.T(), suite.v.liveMap, accused.Id, "Peer should be removed from liveMap after timeout")
 }
 
 func validCert(id string, pub crypto.PublicKey) *x509.Certificate {
