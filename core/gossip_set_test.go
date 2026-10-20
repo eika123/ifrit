@@ -118,7 +118,8 @@ func TestGossipSet_RemoteMerge(t *testing.T) {
 
 	// Prepare remote gossip payload
 	hasher := DefaultHasher[testItem]()
-	remoteSet := NewDigestSet[testItem, DigestSymbol](hasher)
+	remoteSet, err := NewDigestSet[testItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 	remoteSet.AddElement(testItem{ID: "local-1", Value: 10})  // duplicate
 	remoteSet.AddElement(testItem{ID: "remote-1", Value: 20}) // new
 	remoteSet.AddElement(testItem{ID: "remote-2", Value: 30}) // new
@@ -166,7 +167,8 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 		go func(remoteID int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				remSet := NewDigestSet[string](hasher)
+				remSet, err := NewDigestSet[string, DigestSymbol](hasher)
+				require.NoError(t, err)
 				for j := 0; j < 5; j++ {
 					remSet.AddElement(fmt.Sprintf("remote-%d-%d-%d", remoteID, i, j))
 				}

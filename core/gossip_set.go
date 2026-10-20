@@ -23,7 +23,11 @@ var _ ReverseIndexStore[string, DigestSymbol] = (*naiveGossipSet[string, DigestS
 // merge worker, and initializes the gossip payload.
 func NewNaiveGossipSet[T comparable](node *Node, initial ReverseIndexStore[T, DigestSymbol]) ReverseIndexStore[T, DigestSymbol] {
 	if initial == nil {
-		initial = NewDigestSet[T, DigestSymbol](DefaultHasher[T]())
+		var err error
+		initial, err = NewDigestSet[T, DigestSymbol](DefaultHasher[T]())
+		if err != nil {
+			panic(err)
+		}
 	}
 	s := initial.Copy()
 

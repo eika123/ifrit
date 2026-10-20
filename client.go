@@ -231,13 +231,22 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
 type ReverseIndexStore[T comparable] = core.ReverseIndexStore[T, core.DigestSymbol]
 
-// NewCustomDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
-func NewCustomDigestSet[T comparable, S core.Symbol[S]](hasher core.Hasher[T, S]) core.ReverseIndexStore[T, S] {
-	return core.NewDigestSet(hasher)
+var ErrNilHasher = core.ErrNilHasher
+
+// DefaultHasher returns a deterministic 64-bit FNV-1a hasher for type T.
+func DefaultHasher[T any]() core.Hasher[T, core.DigestSymbol] {
+	return core.DefaultHasher[T]()
 }
 
 // NewCustomDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
-func NewDigestSet[T comparable](hasher core.Hasher[T, core.DigestSymbol]) ReverseIndexStore[T] {
+// Returns (nil, ErrNilHasher) if hasher is nil.
+func NewCustomDigestSet[T comparable, S core.Symbol[S]](hasher core.Hasher[T, S]) (core.ReverseIndexStore[T, S], error) {
+	return core.NewDigestSet(hasher)
+}
+
+// NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
+// Returns (nil, ErrNilHasher) if hasher is nil.
+func NewDigestSet[T comparable](hasher core.Hasher[T, core.DigestSymbol]) (ReverseIndexStore[T], error) {
 	return core.NewDigestSet(hasher)
 }
 

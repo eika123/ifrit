@@ -22,7 +22,8 @@ func (u userItem) IDGetter() string {
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	var hasher = DefaultHasher[userItem]()
-	s := newDigestSet[userItem](hasher)
+	s, err := newDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 
 	assert.True(t, s.Empty())
 	assert.Equal(t, 0, s.Size())
@@ -63,8 +64,10 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing.T) {
 
 	var hasher = DefaultHasher[userItem]()
-	s1 := newDigestSet[userItem](hasher)
-	s2 := newDigestSet[userItem](hasher)
+	s1, err := newDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
+	s2, err := newDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 
 	u1 := userItem{ID: "user-1", FirstName: "One"}
 	u2 := userItem{ID: "user-2", FirstName: "Two"}
@@ -91,7 +94,8 @@ func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing
 
 func TestDigestSet_CopyIsolation(t *testing.T) {
 	var hasher = DefaultHasher[string]()
-	s := newDigestSet[string](hasher)
+	s, err := newDigestSet[string, DigestSymbol](hasher)
+	require.NoError(t, err)
 	s.Insert("alpha")
 	s.Insert("beta")
 
@@ -108,11 +112,13 @@ func TestDigestSet_CopyIsolation(t *testing.T) {
 
 func TestDigestSet_DeltaMergingAndSymmetricDifference(t *testing.T) {
 	var hasher = DefaultHasher[string]()
-	s1 := newDigestSet[string](hasher)
+	s1, err := newDigestSet[string, DigestSymbol](hasher)
+	require.NoError(t, err)
 	s1.Insert("alpha")
 	s1.Insert("beta")
 
-	s2 := newDigestSet[string](hasher)
+	s2, err := newDigestSet[string, DigestSymbol](hasher)
+	require.NoError(t, err)
 	s2.Insert("beta")
 	s2.Insert("gamma")
 
@@ -135,7 +141,8 @@ func TestDigestSet_DeltaMergingAndSymmetricDifference(t *testing.T) {
 
 func TestDigestSet_JSONSerialization(t *testing.T) {
 	hasher := DefaultHasher[userItem]()
-	s := newDigestSet[userItem](hasher)
+	s, err := newDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 	u1 := userItem{ID: "u1", FirstName: "User1"}
 	u2 := userItem{ID: "u2", FirstName: "User2"}
 	s.Insert(u1)
@@ -144,7 +151,8 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 	raw, err := s.MarshalJSON()
 	require.NoError(t, err)
 
-	decoded := newDigestSet[userItem](hasher)
+	decoded, err := newDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 	err = json.Unmarshal(raw, decoded)
 	require.NoError(t, err)
 
@@ -156,7 +164,8 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 
 func TestDigestSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 	hasher := DefaultHasher[string]()
-	s := newDigestSet[string](hasher)
+	s, err := newDigestSet[string, DigestSymbol](hasher)
+	require.NoError(t, err)
 	const writers = 8
 	const readers = 8
 	const itemsPerWriter = 100
@@ -204,7 +213,8 @@ func TestDigestSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
 	// Verify NewDigestSet returns ReverseIndexStore interface
 	var hasher = DefaultHasher[userItem]()
-	var store ReverseIndexStore[userItem, DigestSymbol] = NewDigestSet[userItem, DigestSymbol](hasher)
+	store, err := NewDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
 	defer store.Close()
 
 	assert.True(t, store.Empty())
@@ -246,3 +256,61 @@ func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, decoded, 2)
 }
+
+func TestDigestSet_NilHasherErrors(t *testing.T) {
+	// 1. Explicit nil hasher in NewDigestSet returns ErrNilHasher
+	store, err := NewDigestSet[userItem, DigestSymbol](nil)
+	assert.ErrorIs(t, err, ErrNilHasher)
+	assert.Nil(t, store)
+
+	// 2. newDigestSet with nil hasher returns ErrNilHasher
+	internalStore, err := newDigestSet[userItem, DigestSymbol](nil)
+	assert.ErrorIs(t, err, ErrNilHasher)
+	assert.Nil(t, internalStore)
+}
+
+func TestDigestSet_UnmarshalJSONNilHasher(t *testing.T) {
+	items := []userItem{
+		{ID: "user-1", FirstName: "Alice"},
+		{ID: "user-2", FirstName: "Bob"},
+	}
+	raw, err := json.Marshal(items)
+	require.NoError(t, err)
+
+	// 1. Unmarshaling into a zero-initialized digestSet struct with nil hasher MUST return ErrNilHasher
+	var ds digestSet[userItem, DigestSymbol]
+	err = json.Unmarshal(raw, &ds)
+	assert.ErrorIs(t, err, ErrNilHasher)
+
+	// 2. Unmarshaling into an initialized set succeeds
+	hasher := DefaultHasher[userItem]()
+	initialized, err := NewDigestSet[userItem, DigestSymbol](hasher)
+	require.NoError(t, err)
+	err = json.Unmarshal(raw, initialized)
+	require.NoError(t, err)
+	assert.Equal(t, 2, initialized.Size())
+	assert.True(t, initialized.Contains(items[0]))
+	assert.True(t, initialized.Contains(items[1]))
+}
+
+func TestDigestSet_ZeroValueStructPanicsOnMutations(t *testing.T) {
+	var ds digestSet[string, DigestSymbol]
+
+	// Read operations on empty nil-map zero struct
+	assert.True(t, ds.Empty())
+	assert.Equal(t, 0, ds.Size())
+	assert.Empty(t, ds.Digests())
+	assert.Empty(t, ds.Elements())
+
+	// Mutation operations without hasher MUST panic with ErrNilHasher
+	assert.PanicsWithError(t, ErrNilHasher.Error(), func() {
+		ds.AddElement("hello")
+	})
+	assert.PanicsWithError(t, ErrNilHasher.Error(), func() {
+		ds.Contains("hello")
+	})
+	assert.PanicsWithError(t, ErrNilHasher.Error(), func() {
+		ds.Remove("hello")
+	})
+}
+

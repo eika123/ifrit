@@ -6,12 +6,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDigestSymbol_Reconciliation(t *testing.T) {
 	hasher := DefaultHasher[DigestSymbol]()
-	aliceStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
-	bobStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	aliceStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
+	bobStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
 
 	// Alice has elements 1, 2, 3, 4
 	for _, e := range []DigestSymbol{1, 2, 3, 4} {
@@ -58,8 +61,10 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 
 func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 	hasher := DefaultHasher[DigestSymbol]()
-	aliceStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
-	bobStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	aliceStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
+	bobStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30} {
 		aliceStore.AddElement(e)
@@ -101,8 +106,10 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 
 func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 	hasher := DefaultHasher[DigestSymbol]()
-	aliceStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
-	bobStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	aliceStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
+	bobStore, err := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30, 40, 50} {
 		aliceStore.AddElement(e)

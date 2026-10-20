@@ -12,11 +12,14 @@ import (
 )
 
 func TestSetUnionMerging(t *testing.T) {
-	s1 := ifrit.NewDigestSet[user]()
+	hasher := ifrit.DefaultHasher[user]()
+	s1, err := ifrit.NewDigestSet(hasher)
+	require.NoError(t, err)
 	s1.AddElement(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
 	s1.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"})
 
-	s2 := ifrit.NewDigestSet[user]()
+	s2, err := ifrit.NewDigestSet(hasher)
+	require.NoError(t, err)
 	s2.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"}) // Duplicate
 	s2.AddElement(user{ID: "node2-1", FirstName: "User-1", AddedBy: "node2"})
 
@@ -31,7 +34,8 @@ func TestSetUnionMerging(t *testing.T) {
 	raw1, err := json.Marshal(s1)
 	require.NoError(t, err)
 
-	decoded := ifrit.NewDigestSet[user]()
+	decoded, err := ifrit.NewDigestSet(hasher)
+	require.NoError(t, err)
 	err = json.Unmarshal(raw1, decoded)
 	require.NoError(t, err)
 	assert.Equal(t, 2, decoded.Size())
@@ -61,7 +65,8 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 		wgPeers.Add(1)
 		go func(peerIdx int) {
 			defer wgPeers.Done()
-			peerSet := ifrit.NewDigestSet[user]()
+			peerSet, err := ifrit.NewDigestSet(ifrit.DefaultHasher[user]())
+			require.NoError(t, err)
 			for i := 0; i < itemsPerPeer; i++ {
 				peerSet.AddElement(user{
 					ID:        fmt.Sprintf("node-%d-item-%d", peerIdx, i),

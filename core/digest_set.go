@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sync"
@@ -71,31 +72,46 @@ type digestSet[T any, S Symbol[S]] struct {
 	fingerprint S
 }
 
-// var _ ReverseIndexStore[string, DigestSymbol] = (*digestSet[string, DigestSymbol])(nil)
+var ErrNilHasher = errors.New("hasher cannot be nil")
 
 // newDigestSet creates an in-memory digestSet pointer for internal package use.
-func newDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) *digestSet[T, S] {
-	var h Hasher[T, S]
-	h = hasher
+// An explicit, non-nil Hasher must be provided to compute element digests.
+// Returns ErrNilHasher if hasher is nil. Callers MUST check and handle this error;
+// attempting to ignore the error or invoke mutation/lookup methods on an uninitialized
+// or nil-hasher set will result in a panic (ErrNilHasher).
+func newDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (*digestSet[T, S], error) {
+	if hasher == nil {
+		return nil, ErrNilHasher
+	}
 	return &digestSet[T, S]{
 		itemsByDigest: make(map[S]T),
-		hasher:        h,
-	}
+		hasher:        hasher,
+	}, nil
 }
 
-// NewDigestSet creates a new empty ReverseIndexStore with an optional custom Hasher.
-// If no hasher is provided, DefaultHasher[T]() is used.
-func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) ReverseIndexStore[T, S] {
+// NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
+// An explicit, non-nil Hasher must be provided to compute element digests.
+// Returns ErrNilHasher if hasher is nil. Callers MUST check and handle this error;
+// attempting to ignore the error or invoke mutation/lookup methods on an uninitialized
+// or nil-hasher set will result in a panic (ErrNilHasher).
+func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (ReverseIndexStore[T, S], error) {
 	return newDigestSet(hasher)
 }
 
 // Insert adds an element to the set.
 // Returns the element's digest of type S and true if the element was new and inserted.
 func (s *digestSet[T, S]) Insert(item T) (S, bool) {
-	d := s.hasher(item)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	if s.itemsByDigest == nil {
+		s.itemsByDigest = make(map[S]T)
+	}
+
+	d := s.hasher(item)
 
 	if _, exists := s.itemsByDigest[d]; exists {
 		return d, false
@@ -123,6 +139,13 @@ func (s *digestSet[T, S]) InsertSlice(items []T) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	if s.itemsByDigest == nil {
+		s.itemsByDigest = make(map[S]T, len(items))
+	}
+
 	added := 0
 	for _, item := range items {
 		d := s.hasher(item)
@@ -145,10 +168,17 @@ func (s *digestSet[T, S]) AddElements(elems ...T) int {
 // Remove removes an element from the set.
 // Returns true if the element was present and removed.
 func (s *digestSet[T, S]) Remove(item T) bool {
-	d := s.hasher(item)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	if s.itemsByDigest == nil {
+		return false
+	}
+
+	d := s.hasher(item)
 
 	if _, exists := s.itemsByDigest[d]; !exists {
 		return false
@@ -176,11 +206,17 @@ func (s *digestSet[T, S]) RemoveByDigest(digest S) bool {
 
 // Contains returns true if the element is present in the set.
 func (s *digestSet[T, S]) Contains(item T) bool {
-	d := s.hasher(item)
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	if s.itemsByDigest == nil {
+		return false
+	}
+
+	d := s.hasher(item)
 	_, exists := s.itemsByDigest[d]
 	return exists
 }
@@ -292,6 +328,7 @@ func (s *digestSet[T, S]) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON populates the set from a JSON array of elements.
+// The receiver must already be initialized with a non-nil hasher; returns ErrNilHasher otherwise.
 func (s *digestSet[T, S]) UnmarshalJSON(data []byte) error {
 	var items []T
 	if err := json.Unmarshal(data, &items); err != nil {
@@ -301,12 +338,13 @@ func (s *digestSet[T, S]) UnmarshalJSON(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.hasher == nil {
+		return ErrNilHasher
+	}
+
 	if s.itemsByDigest == nil {
 		s.itemsByDigest = make(map[S]T, len(items))
 	}
-	// if s.hasher == nil {
-	// 	s.hasher = DefaultHasher[T, S]()
-	// }
 
 	for _, item := range items {
 		d := s.hasher(item)
