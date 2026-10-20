@@ -68,8 +68,7 @@ func newRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
 		decodeSymbol: decodeSymbol,
 	}
 
-	session.newEncoder()
-	session.newDecoder()
+	session.initCodecs()
 
 	return session
 }
@@ -95,19 +94,15 @@ func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
 
 // NewSession implements SessionFactory[S]
 func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) ReconcilerSession[T, S] {
-	return newRIBLTSession(store, f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
+	return newRIBLTSession(store.Copy(), f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
 }
 
-func (session *RIBLTSession[T, S]) newEncoder() {
+func (session *RIBLTSession[T, S]) initCodecs() {
+	digests := session.store.Digests()
 	session.encoder = riblt.Encoder[S]{}
-	for _, dig := range session.store.Digests() {
-		session.encoder.AddSymbol(dig)
-	}
-}
-
-func (session *RIBLTSession[T, S]) newDecoder() {
 	session.decoder = riblt.Decoder[S]{}
-	for _, dig := range session.store.Digests() {
+	for _, dig := range digests {
+		session.encoder.AddSymbol(dig)
 		session.decoder.AddSymbol(dig)
 	}
 }
