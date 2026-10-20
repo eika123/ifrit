@@ -21,10 +21,12 @@ func (u userItem) IDGetter() string {
 }
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
-	s := newDigestSet[userItem]()
+	var hasher = DefaultHasher[userItem]()
+	s := newDigestSet[userItem](hasher)
+
 	assert.True(t, s.Empty())
 	assert.Equal(t, 0, s.Size())
-	assert.Equal(t, uint64(0), s.Fingerprint())
+	assert.Equal(t, DigestSymbol(0), s.Fingerprint())
 
 	u1 := userItem{ID: "alice", FirstName: "Alice", LastName: "Smith"}
 	d1, added := s.Insert(u1)
@@ -59,8 +61,10 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 }
 
 func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing.T) {
-	s1 := newDigestSet[userItem]()
-	s2 := newDigestSet[userItem]()
+
+	var hasher = DefaultHasher[userItem]()
+	s1 := newDigestSet[userItem](hasher)
+	s2 := newDigestSet[userItem](hasher)
 
 	u1 := userItem{ID: "user-1", FirstName: "One"}
 	u2 := userItem{ID: "user-2", FirstName: "Two"}
@@ -86,7 +90,8 @@ func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing
 }
 
 func TestDigestSet_CopyIsolation(t *testing.T) {
-	s := newDigestSet[string]()
+	var hasher = DefaultHasher[string]()
+	s := newDigestSet[string](hasher)
 	s.Insert("alpha")
 	s.Insert("beta")
 
@@ -102,18 +107,18 @@ func TestDigestSet_CopyIsolation(t *testing.T) {
 }
 
 func TestDigestSet_DeltaMergingAndSymmetricDifference(t *testing.T) {
-	s1 := newDigestSet[string]()
+	var hasher = DefaultHasher[string]()
+	s1 := newDigestSet[string](hasher)
 	s1.Insert("alpha")
 	s1.Insert("beta")
 
-	s2 := newDigestSet[string]()
+	s2 := newDigestSet[string](hasher)
 	s2.Insert("beta")
 	s2.Insert("gamma")
 
 	// Symmetric difference XOR property:
 	// A = {alpha, beta}, B = {beta, gamma}
 	// dA ^ dB = h(alpha) ^ h(gamma)
-	hasher := DefaultHasher[string]()
 	expectedDiffFP := hasher("alpha") ^ hasher("gamma")
 	actualDiffFP := s1.Fingerprint() ^ s2.Fingerprint()
 	assert.Equal(t, expectedDiffFP, actualDiffFP)
@@ -129,7 +134,8 @@ func TestDigestSet_DeltaMergingAndSymmetricDifference(t *testing.T) {
 }
 
 func TestDigestSet_JSONSerialization(t *testing.T) {
-	s := newDigestSet[userItem]()
+	hasher := DefaultHasher[userItem]()
+	s := newDigestSet[userItem](hasher)
 	u1 := userItem{ID: "u1", FirstName: "User1"}
 	u2 := userItem{ID: "u2", FirstName: "User2"}
 	s.Insert(u1)
@@ -138,7 +144,7 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 	raw, err := s.MarshalJSON()
 	require.NoError(t, err)
 
-	decoded := newDigestSet[userItem]()
+	decoded := newDigestSet[userItem](hasher)
 	err = json.Unmarshal(raw, decoded)
 	require.NoError(t, err)
 
@@ -149,7 +155,8 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 }
 
 func TestDigestSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	s := newDigestSet[string]()
+	hasher := DefaultHasher[string]()
+	s := newDigestSet[string](hasher)
 	const writers = 8
 	const readers = 8
 	const itemsPerWriter = 100
@@ -196,7 +203,8 @@ func TestDigestSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 
 func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
 	// Verify NewDigestSet returns ReverseIndexStore interface
-	var store ReverseIndexStore[userItem] = NewDigestSet[userItem]()
+	var hasher = DefaultHasher[userItem]()
+	var store ReverseIndexStore[userItem, DigestSymbol] = NewDigestSet[userItem, DigestSymbol](hasher)
 	defer store.Close()
 
 	assert.True(t, store.Empty())

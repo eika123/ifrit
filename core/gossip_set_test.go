@@ -117,7 +117,8 @@ func TestGossipSet_RemoteMerge(t *testing.T) {
 	gs.AddElement(testItem{ID: "local-1", Value: 10})
 
 	// Prepare remote gossip payload
-	remoteSet := NewDigestSet[testItem]()
+	hasher := DefaultHasher[testItem]()
+	remoteSet := NewDigestSet[testItem, DigestSymbol](hasher)
 	remoteSet.AddElement(testItem{ID: "local-1", Value: 10})  // duplicate
 	remoteSet.AddElement(testItem{ID: "remote-1", Value: 20}) // new
 	remoteSet.AddElement(testItem{ID: "remote-2", Value: 30}) // new
@@ -125,7 +126,7 @@ func TestGossipSet_RemoteMerge(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate receiving remote gossip
-	internalGS := gs.(*naiveGossipSet[testItem])
+	internalGS := gs.(*naiveGossipSet[testItem, DigestSymbol])
 	reply, err := internalGS.handleGossip(remoteBytes)
 	require.NoError(t, err)
 	assert.NotEmpty(t, reply)
@@ -158,18 +159,19 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 		}(w)
 	}
 
+	hasher := DefaultHasher[string]()
 	// Concurrent remote gossip injections
 	for r := 0; r < 4; r++ {
 		wg.Add(1)
 		go func(remoteID int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				remSet := NewDigestSet[string]()
+				remSet := NewDigestSet[string](hasher)
 				for j := 0; j < 5; j++ {
 					remSet.AddElement(fmt.Sprintf("remote-%d-%d-%d", remoteID, i, j))
 				}
 				raw, _ := json.Marshal(remSet)
-				internalGS := gs.(*naiveGossipSet[string])
+				internalGS := gs.(*naiveGossipSet[string, DigestSymbol])
 				_, _ = internalGS.handleGossip(raw)
 			}
 		}(r)

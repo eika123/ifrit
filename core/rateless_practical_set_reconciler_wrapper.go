@@ -45,8 +45,8 @@ func (d DigestSymbol) Hash() uint64 {
 }
 
 // -----------------------------------------------------------------------------
-type RIBLTSession[S sym[S]] struct {
-	store   ReverseIndexStore[S]
+type RIBLTSession[T any, S Symbol[S]] struct {
+	store   ReverseIndexStore[T, S]
 	encoder riblt.Encoder[S]
 	decoder riblt.Decoder[S]
 
@@ -57,12 +57,11 @@ type RIBLTSession[S sym[S]] struct {
 	receivedSymbols int
 }
 
-// Session factory for rateless practical set reconciliation
-func NewRIBLTSession[S sym[S]](store ReverseIndexStore[S],
+func newRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
 	symbolSize uint32,
 	encodeSymbol func(S) []byte,
-	decodeSymbol func([]byte) S) *RIBLTSession[S] {
-	session := &RIBLTSession[S]{
+	decodeSymbol func([]byte) S) *RIBLTSession[T, S] {
+	session := &RIBLTSession[T, S]{
 		store:        store,
 		symbolSize:   symbolSize,
 		encodeSymbol: encodeSymbol,
@@ -75,20 +74,41 @@ func NewRIBLTSession[S sym[S]](store ReverseIndexStore[S],
 	return session
 }
 
-func (s *RIBLTSession[S]) newEncoder() {
-	s.encoder = riblt.Encoder[S]{}
+type RIBLTSessionFactory[T any, S Symbol[S]] struct {
+	SymbolSize   uint32
+	EncodeSymbol func(S) []byte
+	DecodeSymbol func([]byte) S
+}
 
-	d := s.store.Elements()
-	for _, item := range d {
-		s.encoder.AddSymbol(item)
+// A factory of factories for RIBLT; use this to construct your applications session factory when using rIBLT
+func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
+	symbolSize uint32,
+	encode func(S) []byte,
+	decode func([]byte) S,
+) *RIBLTSessionFactory[T, S] {
+	return &RIBLTSessionFactory[T, S]{
+		SymbolSize:   symbolSize,
+		EncodeSymbol: encode,
+		DecodeSymbol: decode,
 	}
 }
 
-func (s *RIBLTSession[S]) newDecoder() {
-	s.decoder = riblt.Decoder[S]{}
-	d := s.store.Elements()
-	for _, item := range d {
-		s.decoder.AddSymbol(item)
+// NewSession implements SessionFactory[S]
+func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) ReconcilerSession[T, S] {
+	return newRIBLTSession(store, f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
+}
+
+func (session *RIBLTSession[T, S]) newEncoder() {
+	session.encoder = riblt.Encoder[S]{}
+	for _, dig := range session.store.Digests() {
+		session.encoder.AddSymbol(dig)
+	}
+}
+
+func (session *RIBLTSession[T, S]) newDecoder() {
+	session.decoder = riblt.Decoder[S]{}
+	for _, dig := range session.store.Digests() {
+		session.decoder.AddSymbol(dig)
 	}
 }
 
@@ -100,14 +120,14 @@ func hashDigestsToDigests[S sym[S]](h []riblt.HashedSymbol[S]) []S {
 	return res
 }
 
-func (s *RIBLTSession[S]) RemoteDigests() []S { return hashDigestsToDigests(s.decoder.Remote()) }
-func (s *RIBLTSession[S]) LocalDigests() []S  { return hashDigestsToDigests(s.decoder.Local()) }
+func (s *RIBLTSession[T, S]) RemoteDigests() []S { return hashDigestsToDigests(s.decoder.Remote()) }
+func (s *RIBLTSession[T, S]) LocalDigests() []S  { return hashDigestsToDigests(s.decoder.Local()) }
 
-func (s *RIBLTSession[S]) Done() bool {
+func (s *RIBLTSession[T, S]) Done() bool {
 	return s.receivedSymbols > 0 && s.decoder.Decoded()
 }
 
-func (s *RIBLTSession[S]) GenerateNextMessage() ([]byte, error) {
+func (s *RIBLTSession[T, S]) GenerateNextMessage() ([]byte, error) {
 	codedSymbol := s.encoder.ProduceNextCodedSymbol()
 
 	buf := make([]byte, s.symbolSize+16)
@@ -117,7 +137,8 @@ func (s *RIBLTSession[S]) GenerateNextMessage() ([]byte, error) {
 	return buf, nil
 }
 
-func (s *RIBLTSession[S]) ProcessIncomingMessage(msg []byte) error {
+// assumes message is a single incoming coded symbol
+func (s *RIBLTSession[T, S]) ProcessIncomingMessage(msg []byte) error {
 	expectedLen := s.symbolSize + 16
 	if uint32(len(msg)) < expectedLen {
 		return fmt.Errorf("message too short: expected at least %d bytes, got %d", expectedLen, len(msg))

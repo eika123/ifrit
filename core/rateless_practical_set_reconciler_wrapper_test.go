@@ -8,8 +8,9 @@ import (
 )
 
 func TestDigestSymbol_Reconciliation(t *testing.T) {
-	aliceStore := NewDigestSet[DigestSymbol]()
-	bobStore := NewDigestSet[DigestSymbol]()
+	hasher := DefaultHasher[DigestSymbol]()
+	aliceStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	bobStore := NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 
 	// Alice has elements 1, 2, 3, 4
 	for _, e := range []DigestSymbol{1, 2, 3, 4} {
@@ -30,9 +31,10 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 	decodeDigest := func(buf []byte) DigestSymbol {
 		return DigestSymbol(binary.LittleEndian.Uint64(buf))
 	}
-
-	aliceSession := NewRIBLTSession(aliceStore, 8, encodeDigest, decodeDigest)
-	bobSession := NewRIBLTSession(bobStore, 8, encodeDigest, decodeDigest)
+	symbolSize := uint32(8)
+	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](symbolSize, encodeDigest, decodeDigest)
+	aliceSession := sessionFactory.NewSession(aliceStore)
+	bobSession := sessionFactory.NewSession(bobStore)
 
 	cost := 0
 	for !bobSession.Done() {
