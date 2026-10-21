@@ -336,6 +336,10 @@ func (n *Node) Stop() {
 	if n.wg != nil {
 		n.wg.Wait()
 	}
+
+	if n.comm != nil {
+		n.comm.Stop()
+	}
 }
 
 func (n *Node) LiveMembers() []string {

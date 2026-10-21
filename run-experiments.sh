@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+RED=$'\033[1;31m'
+YELLOW=$'\033[1;33m'
+NC=$'\033[0m'
 
 # Locate optional pluggable chaos manager
 CHAOS_MANAGER=""
@@ -152,7 +155,7 @@ while [[ "$1" == --* || "$1" == -* ]]; do
                     shift
                 else
                     if [ $# -lt 2 ]; then
-                        echo "Error: Chaos option '$1' requires a value." >&2
+                        echo "${RED}Error:${NC} Chaos option '$1' requires a value." >&2
                         exit 1
                     fi
                     CHAOS_ARGS+=("$1" "$2")
@@ -162,7 +165,7 @@ while [[ "$1" == --* || "$1" == -* ]]; do
                 CHAOS_ARGS+=("$1")
                 shift
             else
-                echo "Error: Unknown option '$1'" >&2
+                echo "${RED}Error:${NC} Unknown option '$1'" >&2
                 echo "" >&2
                 show_help >&2
                 exit 1
@@ -211,8 +214,8 @@ fi
 EXPERIMENT_SCRIPT="$1"
 
 if [ -z "$EXPERIMENT_SCRIPT" ]; then
-    echo "Error: You must specify which experiment-script to run!"
-    echo "Usage: $0 [--docker-activate] [-t <duration>] [-f <compose-file>] <experiment-script.sh> [script_args...]"
+    echo "${RED}Error:${NC} You must specify which experiment-script to run!" >&2
+    echo "Usage: $0 [--docker-activate] [-t <duration>] [-f <compose-file>] <experiment-script.sh> [script_args...]" >&2
     exit 1
 fi
 
@@ -224,7 +227,7 @@ if [ -f "$EXPERIMENT_SCRIPT" ]; then
 elif [ -f "experiments/$EXPERIMENT_SCRIPT" ]; then
     SCRIPT_PATH="./experiments/$EXPERIMENT_SCRIPT"
 else
-    echo "Error: Could not find experiment script '$EXPERIMENT_SCRIPT' (checked . and ./experiments)"
+    echo "${RED}Error:${NC} Could not find experiment script '$EXPERIMENT_SCRIPT' (checked . and ./experiments)" >&2
     exit 1
 fi
 
@@ -240,7 +243,7 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "sqlite3 was not found on the system. Installing..."
     sudo apt-get update && sudo apt-get install -y sqlite3
     if [ $? -ne 0 ]; then
-        echo "Could not install sqlite3. Aborting experiment."
+        echo "${RED}Error:${NC} Could not install sqlite3. Aborting experiment." >&2
         exit 1
     fi
 fi
@@ -531,14 +534,36 @@ fi
 docker compose stop -t $TEARDOWN_GRACE_PERIOD >/dev/null 2>&1 || true
 docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 
-# Fold any remaining WAL files into their .db files and remove -wal/-shm clutter
-if command -v sqlite3 >/dev/null 2>&1; then
-    for db in "$OUTPUT_DIR"/telemetry_*.db; do
-        if [ -f "$db" ]; then
-            sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
-            rm -f "${db}-wal" "${db}-shm"
-        fi
+# Check if any uncheckpointed WAL files remain from telemetry or node databases.
+# In a clean shutdown, each node closes its telemetry connection and folds its own WAL.
+# Remaining WAL files indicate a node crashed, was killed abruptly, or failed to invoke Stop().
+remaining_wals=()
+for wal in "$OUTPUT_DIR"/*-wal; do
+    if [ -f "$wal" ]; then
+        remaining_wals+=("$wal")
+    fi
+done
+
+if [ ${#remaining_wals[@]} -gt 0 ]; then
+    echo "${YELLOW}⚠️  [WARNING]${NC} Uncheckpointed SQLite WAL file(s) detected after container teardown:"
+    for wal in "${remaining_wals[@]}"; do
+        wal_size=$(wc -c < "$wal" 2>/dev/null || stat -c%s "$wal" 2>/dev/null || echo "unknown")
+        echo "    - $(basename "$wal") (size: ${wal_size} bytes)"
     done
+    echo "    This indicates one or more nodes did not shut down cleanly or failed to close their telemetry database."
+    echo "    Attempting recovery via fallback wal_checkpoint..."
+
+    if command -v sqlite3 >/dev/null 2>&1; then
+        for wal in "${remaining_wals[@]}"; do
+            db="${wal%-wal}"
+            if [ -f "$db" ]; then
+                sqlite3 "$db" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+            fi
+            rm -f "$wal" "${db}-shm"
+        done
+    else
+        echo "    ${YELLOW}[NOTICE]${NC} 'sqlite3' CLI not found on host; leaving WAL files in place for python merge script."
+    fi
 fi
 
 # Automatically merge per-node telemetry databases into a unified database
@@ -581,7 +606,7 @@ if [ -n "$PLOT_SCRIPT" ]; then
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         
         if ! command -v uv >/dev/null 2>&1; then
-            echo "Could not install or find 'uv'. Skipping plotting."
+            echo "${YELLOW}⚠️  [WARNING]${NC} Could not install or find 'uv'. Skipping plotting."
             return 0 2>/dev/null || exit 0
         fi
     fi
@@ -607,7 +632,7 @@ if [ -n "$PLOT_SCRIPT" ]; then
         uv run --python "$VENV_DIR" python3 "$NET_PLOT_SCRIPT" -d "$TELEMETRY_DB_FILE" -o "$TELEMETRY_PLOT_FILE"
     fi
 else
-    echo "Could not find plot_resource_usage.py in experiments/ or ., skipping plot generation."
+    echo "${YELLOW}⚠️  [WARNING]${NC} Could not find plot_resource_usage.py in experiments/ or ., skipping plot generation."
 fi
 
 # Cleanup runs automatically here via trap EXIT

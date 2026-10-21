@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"math/big"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,7 +74,20 @@ func (suite *NodeTestSuite) TestGossip() {
 			require.NoError(suite.T(), n.view.Compare(n2.view), "Views are not equal.")
 		}
 	}
+}
 
+func (suite *NodeTestSuite) TestStopStopsComm() {
+	cs := &commStub{}
+	priv, err := genKeys()
+	require.NoError(suite.T(), err)
+	cert := genCert(priv, 10)
+
+	n, err := NewNode(cs, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(suite.T(), err)
+
+	require.False(suite.T(), cs.isStopped(), "Comm should not be stopped yet")
+	n.Stop()
+	require.True(suite.T(), cs.isStopped(), "Node.Stop() must call comm.Stop()")
 }
 
 type clientStub struct {
@@ -112,11 +126,25 @@ func (ss *serverStub) ShutDown() {
 }
 
 type commStub struct {
+	mu      sync.Mutex
+	started bool
+	stopped bool
 }
 
-// StreamMessenger implements [commService].
+func (cs *commStub) isStarted() bool {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.started
+}
+
+func (cs *commStub) isStopped() bool {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.stopped
+}
+
 func (cs *commStub) StreamMessenger(string, chan []byte, chan []byte) error {
-	panic("unimplemented")
+	return nil
 }
 
 func (cs *commStub) Register(p pb.GossipServer) {
@@ -130,9 +158,15 @@ func (cs *commStub) Addr() string {
 }
 
 func (cs *commStub) Start() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.started = true
 }
 
 func (cs *commStub) Stop() {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.stopped = true
 }
 
 func (cs *commStub) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) {
