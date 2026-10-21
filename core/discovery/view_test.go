@@ -55,7 +55,7 @@ func (suite *ViewTestSuite) TestNewView() {
 
 	var numRings uint32 = 10
 
-	expectedByz := uint32((float64(numRings) / 2.0) - 1)
+	expectedByz := (numRings - 1) / 2
 
 	v, err := NewView(numRings, cert, &cmStub{}, &signerStub{})
 	require.NoError(suite.T(), err, "Failed to create view.")
@@ -68,6 +68,10 @@ func (suite *ViewTestSuite) TestNewView() {
 	v3, err := NewView(1, cert, &cmStub{}, &signerStub{})
 	require.NoError(suite.T(), err, "Failed to create view.")
 	require.Equal(suite.T(), uint32(0), v3.maxByz, "Max byzantine should be zero with 1 ring.")
+
+	v4, err := NewView(3, cert, &cmStub{}, &signerStub{})
+	require.NoError(suite.T(), err, "Failed to create view.")
+	require.Equal(suite.T(), uint32(1), v4.maxByz, "Max byzantine should be 1 with 3 rings (k=2t+1).")
 
 	_, err = NewView(0, cert, &cmStub{}, &signerStub{})
 	require.Error(suite.T(), err, "Should return error with 0 rings.")

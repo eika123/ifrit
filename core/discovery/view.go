@@ -87,9 +87,9 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 	var i, mask uint32
 
 	// max tolerable corrupt nodes, i.e t in k=2t+1, where t is the max number of corrupt nodes.
-	maxByz := (float64(numRings) / 2.0) - 1
-	if maxByz < 0 {
-		maxByz = 0
+	var maxByz uint32
+	if numRings > 1 {
+		maxByz = (numRings - 1) / 2
 	}
 
 	self, err := newPeer(cert, numRings)
@@ -117,7 +117,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		viewMap:         make(map[string]*Peer),
 		liveMap:         make(map[string]*Peer),
 		timeoutMap:      make(map[string]*timeout),
-		maxByz:          uint32(maxByz),
+		maxByz:          maxByz,
 		currGossipRing:  1,
 		currMonitorRing: 1,
 		self:            self,
