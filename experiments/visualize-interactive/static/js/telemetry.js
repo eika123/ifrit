@@ -6,6 +6,8 @@ let nodeBytesCharts = {};
 let nodeNames = {};
 let totalItems = 0;
 let debounceTimer = null;
+let lastRenderedBytesRole = null;
+let lastRenderedBytesDir = null;
 
 // Centralized reactive state
 const state = {
@@ -13,9 +15,11 @@ const state = {
   host: "",
   remote_host: "",
   direction: "",
+  role: "",
   search: "",
   sort_order: "DESC",
   bytes_direction: "OUTGOING",
+  bytes_role: "ALL",
   offset: 0,
   limit: 50
 };
@@ -33,8 +37,11 @@ const TABLE_CONFIGS = {
     subtitle: "Application gossip payloads transferred between nodes",
     hasDirection: true,
     hasRemote: true,
+    hasRole: true,
     columns: [
       { key: "timestamp", label: "Timestamp", sortable: true },
+      { key: "role", label: "Role", sortable: false },
+      { key: "exchange_type", label: "Type", sortable: false },
       { key: "direction", label: "Dir", sortable: false },
       { key: "host", label: "Local Host", sortable: false },
       { key: "host_port", label: "Port", sortable: false },
@@ -207,6 +214,16 @@ function switchTable(tableName) {
   const remoteCont = document.getElementById('filter-remote-container');
   if (remoteCont) remoteCont.style.display = cfg.hasRemote ? '' : 'none';
 
+  const roleCont = document.getElementById('filter-role-container');
+  if (roleCont) {
+    roleCont.style.display = cfg.hasRole ? '' : 'none';
+    if (!cfg.hasRole) {
+      state.role = "";
+      const roleSel = document.getElementById('filter-role');
+      if (roleSel) roleSel.value = "";
+    }
+  }
+
   showToast(`Switched view to <strong>${cfg.title}</strong>`, 'info');
   loadTableData();
 }
@@ -272,6 +289,7 @@ async function loadTableData() {
     if (state.host) params.append('host', state.host);
     if (state.remote_host) params.append('remote_host', state.remote_host);
     if (state.direction) params.append('direction', state.direction);
+    if (state.role) params.append('role', state.role);
     if (state.search) params.append('search', state.search);
 
     const res = await fetch(`/api/table_data?${params}`);
@@ -321,9 +339,24 @@ function renderTableRows(items, total) {
 
     if (table === 'gossip_exchange') {
       const bytes = item.payload_data_size ?? item.data_bytes ?? 0;
+      const isClient = item.role === 'CLIENT';
+      const roleBadge = isClient
+        ? '<span class="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 text-[10px] font-semibold tracking-wider">CLIENT</span>'
+        : '<span class="px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 text-[10px] font-semibold tracking-wider">SERVER</span>';
+
+      const typeBadges = {
+        'Client Req': '<span class="px-1.5 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800 text-[10px]">Client Req</span>',
+        'Client Resp': '<span class="px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 text-[10px]">Client Resp</span>',
+        'Server Req': '<span class="px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 text-[10px]">Server Req</span>',
+        'Server Resp': '<span class="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 text-[10px]">Server Resp</span>'
+      };
+      const typeBadge = typeBadges[item.exchange_type] || `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px]">${item.exchange_type || '-'}</span>`;
+
       return `
         <tr class="hover:bg-slate-900/60 transition">
           <td class="px-3.5 py-2 text-slate-400 whitespace-nowrap font-mono">${ts}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${roleBadge}</td>
+          <td class="px-3.5 py-2 whitespace-nowrap">${typeBadge}</td>
           <td class="px-3.5 py-2 whitespace-nowrap">${dirBadge}</td>
           <td class="px-3.5 py-2 text-indigo-300 font-medium whitespace-nowrap">
             <button onclick="selectNodeFilter('${item.host}')" class="hover:underline font-mono text-left">${localLabel}</button>
@@ -457,8 +490,14 @@ async function loadAnalytics() {
     setElemText('stat-rebuttals', (sm.total_rebuttals || 0).toLocaleString());
     setElemText('stat-out', (sm.total_outgoing || 0).toLocaleString());
     setElemText('stat-in', (sm.total_incoming || 0).toLocaleString());
+    setElemText('stat-cli-exchanges', (sm.total_client_exchanges || 0).toLocaleString());
+    setElemText('stat-srv-exchanges', (sm.total_server_exchanges || 0).toLocaleString());
     setElemText('stat-hosts', (sm.unique_hosts || []).length);
     setElemText('stat-total-bytes', formatBytes(sm.total_data_bytes || 0));
+    setElemText('stat-bytes-out', formatBytes(sm.total_outgoing_bytes || 0));
+    setElemText('stat-bytes-in', formatBytes(sm.total_incoming_bytes || 0));
+    setElemText('stat-cli-bytes', formatBytes(sm.total_client_bytes || 0));
+    setElemText('stat-srv-bytes', formatBytes(sm.total_server_bytes || 0));
     setElemText('stat-acc', (sm.total_accusations || 0).toLocaleString());
     setElemText('stat-notes', (sm.max_notes || 0).toLocaleString());
     setElemText('stat-bytes', `${sm.max_payload_bytes || 0} B`);
@@ -473,8 +512,10 @@ async function loadAnalytics() {
     const tl = data.timeline || {};
     if (timelineChart) {
       timelineChart.data.labels = (tl.labels || []).map(l => l.split('T')[1] || l);
-      timelineChart.data.datasets[0].data = tl.outgoing || [];
-      timelineChart.data.datasets[1].data = tl.incoming || [];
+      timelineChart.data.datasets[0].data = tl.client || [];
+      timelineChart.data.datasets[1].data = tl.server || [];
+      timelineChart.data.datasets[2].data = tl.outgoing || [];
+      timelineChart.data.datasets[3].data = tl.incoming || [];
       timelineChart.update('none');
     }
 
@@ -525,6 +566,10 @@ function renderNodeDeck(nodes) {
           <span>↑${n.outgoing_count} ↓${n.incoming_count}</span>
           <span class="${n.total_accusations_received > 0 ? 'text-red-300 font-bold' : ''}">${n.active_peers_count} peers</span>
         </div>
+        <div class="flex items-center justify-between w-full text-[9px] mt-1 opacity-90 font-mono border-t border-slate-800/80 pt-1">
+          <span class="${isSelected ? 'text-indigo-200 font-semibold' : 'text-indigo-400'}">Cli: ${n.client_count || 0}</span>
+          <span class="${isSelected ? 'text-amber-200 font-semibold' : 'text-amber-400'}">Srv: ${n.server_count || 0}</span>
+        </div>
       </button>
     `;
   }).join('');
@@ -532,13 +577,23 @@ function renderNodeDeck(nodes) {
 
 async function loadTimeline() {
   try {
-    const url = `/api/timeseries?buckets=50${state.host ? '&host=' + encodeURIComponent(state.host) : ''}`;
+    const params = new URLSearchParams({ buckets: 50 });
+    if (state.host) params.append('host', state.host);
+    if (state.role) params.append('role', state.role);
+    const url = `/api/timeseries?${params}`;
     const res = await fetch(url);
     const data = await res.json();
     if (timelineChart) {
-      timelineChart.data.labels = data.labels.map(l => l.split('T')[1] || l.split(' ')[1] || l);
-      timelineChart.data.datasets[0].data = data.outgoing;
-      timelineChart.data.datasets[1].data = data.incoming;
+      timelineChart.data.labels = (data.labels || []).map(l => l.split('T')[1] || l.split(' ')[1] || l);
+      if (timelineChart.data.datasets.length >= 4) {
+        timelineChart.data.datasets[0].data = data.client || [];
+        timelineChart.data.datasets[1].data = data.server || [];
+        timelineChart.data.datasets[2].data = data.outgoing || [];
+        timelineChart.data.datasets[3].data = data.incoming || [];
+      } else {
+        timelineChart.data.datasets[0].data = data.outgoing || [];
+        timelineChart.data.datasets[1].data = data.incoming || [];
+      }
       timelineChart.update('none');
     }
   } catch (e) {
@@ -546,15 +601,64 @@ async function loadTimeline() {
   }
 }
 
+function makeSafeId(str) {
+  return String(str || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function createBytesChart(canvasId, timestamps, bytes, color, label) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  return new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: (timestamps || []).map(t => t.split('T')[1] || t),
+      datasets: [{
+        label: label,
+        borderColor: color,
+        backgroundColor: `${color}18`,
+        data: bytes || [],
+        tension: 0.25,
+        fill: true,
+        borderWidth: 2,
+        pointRadius: 2.5,
+        pointHoverRadius: 5
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${label}: ${formatBytes(ctx.raw)} (${ctx.raw} B)`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 6, font: { size: 8 } }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b', font: { size: 8 }, callback: v => formatBytes(v) }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+}
+
 async function loadBytesTimeline() {
   try {
-    const res = await fetch(`/api/bytes_per_node?direction=${encodeURIComponent(state.bytes_direction)}&buckets=50`);
+    const params = new URLSearchParams({
+      direction: state.bytes_direction,
+      role: state.bytes_role,
+      buckets: 50
+    });
+    const res = await fetch(`/api/bytes_per_node?${params}`);
     const data = await res.json();
     const container = document.getElementById('node-bytes-stack');
     if (!container) return;
 
     const nodes = data.nodes || {};
     const totals = data.total_per_node || {};
+    const clientTotals = data.client_totals || {};
+    const serverTotals = data.server_totals || {};
     const hostList = Object.keys(nodes);
 
     if (hostList.length === 0) {
@@ -565,14 +669,65 @@ async function loadBytesTimeline() {
     const displayHosts = state.host ? hostList.filter(h => h === state.host) : hostList;
     const existingHosts = Array.from(container.querySelectorAll('.node-byte-card')).map(c => c.getAttribute('data-host'));
 
-    // Rebuild cards if host filter set changed
-    if (JSON.stringify(existingHosts) !== JSON.stringify(displayHosts)) {
+    const needsRebuild = (
+      JSON.stringify(existingHosts) !== JSON.stringify(displayHosts) ||
+      lastRenderedBytesRole !== state.bytes_role ||
+      lastRenderedBytesDir !== state.bytes_direction
+    );
+
+    if (needsRebuild) {
+      lastRenderedBytesRole = state.bytes_role;
+      lastRenderedBytesDir = state.bytes_direction;
+
       Object.values(nodeBytesCharts).forEach(ch => { try { ch.destroy(); } catch (_) { } });
       nodeBytesCharts = {};
 
       container.innerHTML = displayHosts.map((host, idx) => {
         const color = NODE_COLORS[idx % NODE_COLORS.length];
         const displayName = formatHostLabel(host);
+        const safeHost = makeSafeId(host);
+        const hostData = nodes[host] || {};
+        const cliData = hostData.client || { timestamps: [], bytes: [], total: 0 };
+        const srvData = hostData.server || { timestamps: [], bytes: [], total: 0 };
+
+        const showClient = state.bytes_role === 'ALL' || state.bytes_role === 'CLIENT';
+        const showServer = state.bytes_role === 'ALL' || state.bytes_role === 'SERVER';
+        const gridCols = (showClient && showServer) ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1';
+
+        const clientHtml = showClient ? `
+          <div class="bg-slate-900/60 rounded-lg p-3 border border-indigo-950/70 flex flex-col justify-between">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-indigo-400"></span>
+                <span class="text-xs font-semibold text-indigo-300 font-mono">Client Role</span>
+                <span class="text-[10px] text-slate-400 font-mono">(Dialer &rarr; :9000)</span>
+              </div>
+              <div class="flex items-center gap-2 text-[10px] font-mono">
+                <span id="badge-cli-count-${safeHost}" class="text-slate-400">${(cliData.bytes || []).length} exchanges</span>
+                <span id="badge-cli-total-${safeHost}" class="px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-200 border border-indigo-800 font-semibold">${formatBytes(clientTotals[host] || cliData.total)}</span>
+              </div>
+            </div>
+            <div class="h-28 w-full"><canvas id="chart-client-${safeHost}"></canvas></div>
+          </div>
+        ` : '';
+
+        const serverHtml = showServer ? `
+          <div class="bg-slate-900/60 rounded-lg p-3 border border-amber-950/70 flex flex-col justify-between">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                <span class="text-xs font-semibold text-amber-300 font-mono">Server Role</span>
+                <span class="text-[10px] text-slate-400 font-mono">(Responder &larr; inbound)</span>
+              </div>
+              <div class="flex items-center gap-2 text-[10px] font-mono">
+                <span id="badge-srv-count-${safeHost}" class="text-slate-400">${(srvData.bytes || []).length} exchanges</span>
+                <span id="badge-srv-total-${safeHost}" class="px-1.5 py-0.5 rounded bg-amber-950 text-amber-200 border border-amber-800 font-semibold">${formatBytes(serverTotals[host] || srvData.total)}</span>
+              </div>
+            </div>
+            <div class="h-28 w-full"><canvas id="chart-server-${safeHost}"></canvas></div>
+          </div>
+        ` : '';
+
         return `
           <div class="node-byte-card glass-card rounded-xl p-4 border border-slate-800" data-host="${host}">
             <div class="flex items-center justify-between mb-2">
@@ -583,57 +738,67 @@ async function loadBytesTimeline() {
                   ${state.host === host ? '(Filtered)' : 'Filter Table'}
                 </button>
               </div>
-              <div class="text-xs font-mono text-slate-400 flex items-center gap-3">
-                <span>Total: <strong class="text-sky-300">${formatBytes(totals[host])}</strong></span>
+              <div class="text-xs font-mono text-slate-400 flex items-center gap-2">
+                <span>Total: <strong id="node-total-${safeHost}" class="text-sky-300">${formatBytes(totals[host])}</strong></span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/80 font-mono">Cli: ${formatBytes(clientTotals[host] || cliData.total)}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800/80 font-mono">Srv: ${formatBytes(serverTotals[host] || srvData.total)}</span>
                 <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 uppercase font-mono">${state.bytes_direction}</span>
               </div>
             </div>
-            <div class="h-28 w-full"><canvas id="chart-host-${host}"></canvas></div>
+            <div class="grid ${gridCols} gap-3 mt-3">
+              ${clientHtml}
+              ${serverHtml}
+            </div>
           </div>
         `;
       }).join('');
 
-      displayHosts.forEach((host, idx) => {
-        const canvas = document.getElementById(`chart-host-${host}`);
-        if (!canvas) return;
-        const color = NODE_COLORS[idx % NODE_COLORS.length];
-        const hostData = nodes[host] || { timestamps: [], bytes: [] };
+      displayHosts.forEach(host => {
+        const safeHost = makeSafeId(host);
+        const hostData = nodes[host] || {};
+        const cliData = hostData.client || { timestamps: [], bytes: [] };
+        const srvData = hostData.server || { timestamps: [], bytes: [] };
 
-        nodeBytesCharts[host] = new Chart(canvas.getContext('2d'), {
-          type: 'line',
-          data: {
-            labels: (hostData.timestamps || []).map(t => t.split('T')[1] || t),
-            datasets: [{
-              borderColor: color,
-              backgroundColor: `${color}18`,
-              data: hostData.bytes || [],
-              tension: 0.25,
-              fill: true,
-              borderWidth: 2,
-              pointRadius: 2
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: { ticks: { color: '#64748b', maxTicksLimit: 6, font: { size: 8 } }, grid: { color: '#1e293b' } },
-              y: { ticks: { color: '#64748b', font: { size: 8 }, callback: v => formatBytes(v) }, grid: { color: '#1e293b' } }
-            }
-          }
-        });
+        const showClient = state.bytes_role === 'ALL' || state.bytes_role === 'CLIENT';
+        const showServer = state.bytes_role === 'ALL' || state.bytes_role === 'SERVER';
+
+        if (showClient) {
+          const cliChart = createBytesChart(`chart-client-${safeHost}`, cliData.timestamps, cliData.bytes, '#818cf8', 'Client');
+          if (cliChart) nodeBytesCharts[`${host}-client`] = cliChart;
+        }
+
+        if (showServer) {
+          const srvChart = createBytesChart(`chart-server-${safeHost}`, srvData.timestamps, srvData.bytes, '#fbbf24', 'Server');
+          if (srvChart) nodeBytesCharts[`${host}-server`] = srvChart;
+        }
       });
     } else {
-      // Update charts in-place
+      // Update charts and badge texts in-place
       displayHosts.forEach(host => {
-        const ch = nodeBytesCharts[host];
-        if (ch) {
-          const hostData = nodes[host] || { timestamps: [], bytes: [] };
-          ch.data.labels = (hostData.timestamps || []).map(t => t.split('T')[1] || t);
-          ch.data.datasets[0].data = hostData.bytes || [];
-          ch.update('none');
+        const safeHost = makeSafeId(host);
+        const hostData = nodes[host] || {};
+        const cliData = hostData.client || { timestamps: [], bytes: [], total: 0 };
+        const srvData = hostData.server || { timestamps: [], bytes: [], total: 0 };
+
+        const cliChart = nodeBytesCharts[`${host}-client`];
+        if (cliChart) {
+          cliChart.data.labels = (cliData.timestamps || []).map(t => t.split('T')[1] || t);
+          cliChart.data.datasets[0].data = cliData.bytes || [];
+          cliChart.update('none');
         }
+
+        const srvChart = nodeBytesCharts[`${host}-server`];
+        if (srvChart) {
+          srvChart.data.labels = (srvData.timestamps || []).map(t => t.split('T')[1] || t);
+          srvChart.data.datasets[0].data = srvData.bytes || [];
+          srvChart.update('none');
+        }
+
+        setElemText(`node-total-${safeHost}`, formatBytes(totals[host]));
+        setElemText(`badge-cli-count-${safeHost}`, `${(cliData.bytes || []).length} exchanges`);
+        setElemText(`badge-cli-total-${safeHost}`, formatBytes(clientTotals[host] || cliData.total));
+        setElemText(`badge-srv-count-${safeHost}`, `${(srvData.bytes || []).length} exchanges`);
+        setElemText(`badge-srv-total-${safeHost}`, formatBytes(serverTotals[host] || srvData.total));
       });
     }
   } catch (e) {
@@ -685,6 +850,7 @@ function onFilterChange() {
   state.host = document.getElementById('filter-host')?.value || "";
   state.remote_host = document.getElementById('filter-remote-host')?.value || "";
   state.direction = document.getElementById('filter-direction')?.value || "";
+  state.role = document.getElementById('filter-role')?.value || "";
   state.offset = 0;
 
   const badge = document.getElementById('active-filter-badge');
@@ -718,10 +884,11 @@ function resetAllFilters() {
   state.host = "";
   state.remote_host = "";
   state.direction = "";
+  state.role = "";
   state.search = "";
   state.offset = 0;
 
-  const ids = ['filter-host', 'filter-remote-host', 'filter-direction', 'filter-search'];
+  const ids = ['filter-host', 'filter-remote-host', 'filter-direction', 'filter-role', 'filter-search'];
   ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
 
   const badge = document.getElementById('active-filter-badge');
@@ -760,14 +927,28 @@ function prevPage() {
   }
 }
 
+function setBytesRole(role) {
+  state.bytes_role = role;
+  ['all', 'client', 'server'].forEach(k => {
+    const btn = document.getElementById(`btn-role-${k}`);
+    if (btn) {
+      btn.className = (role.toLowerCase() === k || (k === 'all' && role === 'ALL'))
+        ? "px-2.5 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm"
+        : "px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition";
+    }
+  });
+  showToast(`Role filter: <strong>${role}</strong>`, 'info');
+  loadBytesTimeline();
+}
+
 function setBytesDirection(dir) {
   state.bytes_direction = dir;
   ['outgoing', 'incoming', 'all'].forEach(k => {
     const btn = document.getElementById(`btn-dir-${k}`);
     if (btn) {
       btn.className = (dir.toLowerCase() === k || (k === 'all' && dir === 'ALL'))
-        ? "px-3 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm"
-        : "px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition";
+        ? "px-2.5 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm"
+        : "px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition";
     }
   });
   showToast(`Chart direction: <strong>${dir}</strong>`, 'info');
@@ -782,8 +963,10 @@ function initRateChart() {
     data: {
       labels: [],
       datasets: [
-        { label: 'Outgoing', borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.12)', data: [], tension: 0.3, fill: true, borderWidth: 2, pointRadius: 1 },
-        { label: 'Incoming', borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.12)', data: [], tension: 0.3, fill: true, borderWidth: 2, pointRadius: 1 }
+        { label: 'Client (Dialer)', borderColor: '#818cf8', backgroundColor: 'rgba(129, 140, 248, 0.15)', data: [], tension: 0.3, fill: true, borderWidth: 2, pointRadius: 1 },
+        { label: 'Server (Responder)', borderColor: '#fbbf24', backgroundColor: 'rgba(251, 191, 36, 0.15)', data: [], tension: 0.3, fill: true, borderWidth: 2, pointRadius: 1 },
+        { label: 'Outgoing (Sent)', borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.10)', data: [], tension: 0.3, fill: false, borderWidth: 1.5, borderDash: [4, 4], pointRadius: 1 },
+        { label: 'Incoming (Recv)', borderColor: '#34d399', backgroundColor: 'rgba(52, 211, 153, 0.10)', data: [], tension: 0.3, fill: false, borderWidth: 1.5, borderDash: [4, 4], pointRadius: 1 }
       ]
     },
     options: {

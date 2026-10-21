@@ -101,6 +101,7 @@
         <div class="text-[11px] text-slate-400 font-medium truncate">Total Exchanges</div>
         <div id="stat-total" class="text-xl font-bold font-mono text-white mt-1">0</div>
         <div class="text-[10px] text-slate-500 mt-0.5 truncate"><span id="stat-out">0</span> Out / <span id="stat-in">0</span> In</div>
+        <div class="text-[9px] text-indigo-400 font-mono mt-0.5 truncate"><span id="stat-cli-exchanges">0</span> Cli / <span id="stat-srv-exchanges">0</span> Srv</div>
       </div>
       <div class="glass-card rounded-xl p-3.5">
         <div class="text-[11px] text-slate-400 font-medium truncate">Rebuttals Logged</div>
@@ -115,7 +116,8 @@
       <div class="glass-card rounded-xl p-3.5">
         <div class="text-[11px] text-slate-400 font-medium truncate">Total Data Transferred</div>
         <div id="stat-total-bytes" class="text-xl font-bold font-mono text-sky-400 mt-1">0 B</div>
-        <div class="text-[10px] text-slate-500 mt-0.5 truncate">All nodes combined</div>
+        <div class="text-[10px] text-slate-500 mt-0.5 truncate"><span id="stat-bytes-out">0 B</span> Out / <span id="stat-bytes-in">0 B</span> In</div>
+        <div class="text-[9px] text-sky-400 font-mono mt-0.5 truncate"><span id="stat-cli-bytes">0 B</span> Cli / <span id="stat-srv-bytes">0 B</span> Srv</div>
       </div>
       <div class="glass-card rounded-xl p-3.5">
         <div class="text-[11px] text-slate-400 font-medium truncate">Accusations Logged</div>
@@ -195,23 +197,47 @@
               class="text-xs font-mono px-2 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800/60">External
               Gossip</span>
           </h2>
-          <p class="text-xs text-slate-400 mt-0.5">Individual volume curves across experiment time buckets</p>
+          <p class="text-xs text-slate-400 mt-0.5">Individual volume curves across experiment time buckets. <span class="text-slate-500">Dual graphs displayed for each node: <strong class="text-indigo-300">Client Role</strong> (dialer) and <strong class="text-amber-300">Server Role</strong> (responder) to isolate monotonic store progression.</span></p>
         </div>
 
-        <!-- Direction Buttons -->
-        <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
-          <button id="btn-dir-outgoing" onclick="setBytesDirection('OUTGOING')"
-            class="px-3 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm">
-            Outgoing (Sent)
-          </button>
-          <button id="btn-dir-incoming" onclick="setBytesDirection('INCOMING')"
-            class="px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
-            Incoming (Recv)
-          </button>
-          <button id="btn-dir-all" onclick="setBytesDirection('ALL')"
-            class="px-3 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
-            Both
-          </button>
+        <!-- Filter Controls: Role and Direction -->
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Role Buttons -->
+          <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+            <span class="text-[10px] text-slate-400 px-1 font-mono uppercase font-semibold">View:</span>
+            <button id="btn-role-all" onclick="setBytesRole('ALL')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm"
+              title="Display two graphs for each node (Client and Server roles side-by-side)">
+              Dual Roles (Side-by-Side)
+            </button>
+            <button id="btn-role-client" onclick="setBytesRole('CLIENT')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition"
+              title="Isolate Client exchanges (dialing daemon port 9000)">
+              Client Only
+            </button>
+            <button id="btn-role-server" onclick="setBytesRole('SERVER')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition"
+              title="Isolate Server exchanges (responding to peer connections)">
+              Server Only
+            </button>
+          </div>
+
+          <!-- Direction Buttons -->
+          <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
+            <span class="text-[10px] text-slate-400 px-1 font-mono uppercase font-semibold">Dir:</span>
+            <button id="btn-dir-outgoing" onclick="setBytesDirection('OUTGOING')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md bg-indigo-600 text-white transition shadow-sm">
+              Outgoing (Sent)
+            </button>
+            <button id="btn-dir-incoming" onclick="setBytesDirection('INCOMING')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
+              Incoming (Recv)
+            </button>
+            <button id="btn-dir-all" onclick="setBytesDirection('ALL')"
+              class="px-2.5 py-1 text-xs font-medium rounded-md text-slate-400 hover:text-white transition">
+              Both
+            </button>
+          </div>
         </div>
       </div>
 
@@ -283,6 +309,17 @@
             <select id="filter-remote-host" onchange="onFilterChange()"
               class="bg-slate-900 text-xs text-sky-300 font-mono border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-sky-500">
               <option value="">All Remote Hosts</option>
+            </select>
+          </div>
+
+          <!-- Role Filter Dropdown -->
+          <div id="filter-role-container" class="flex items-center gap-1.5">
+            <label class="text-[11px] text-slate-400">Role:</label>
+            <select id="filter-role" onchange="onFilterChange()"
+              class="bg-slate-900 text-xs text-amber-300 font-mono border border-slate-700 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-amber-500">
+              <option value="">All Roles</option>
+              <option value="CLIENT">Client (port 9000)</option>
+              <option value="SERVER">Server (ephemeral)</option>
             </select>
           </div>
 

@@ -141,10 +141,10 @@ func TestTelemetryLoggerTablesAndInserts(t *testing.T) {
 }
 
 type recordingLogger struct {
-	gossipEvents    []GossipEvent
-	rebuttalEvents  []RebuttalEvent
+	gossipEvents     []GossipEvent
+	rebuttalEvents   []RebuttalEvent
 	accusationEvents []AccusationEvent
-	noteEvents      []NoteEvent
+	noteEvents       []NoteEvent
 }
 
 func (r *recordingLogger) OnGossipExchange(event GossipEvent) {
@@ -197,7 +197,7 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 
 	// 2. Regular Gossip message (ExistingHosts != nil)
 	gossipReq := &pb.State{
-		ExistingHosts: map[string]uint64{"peerA": 1},
+		ExistingHosts:  map[string]uint64{"peerA": 1},
 		ExternalGossip: []byte("application data payload"),
 	}
 	respWithAcc := &pb.StateResponse{
@@ -277,3 +277,52 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 	assert.Equal(t, uint32(1), rec.rebuttalEvents[0].Mask)
 }
 
+func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
+	// Client interceptor receives a response containing ExternalGossip
+	clientRec := &recordingLogger{}
+	clientInterceptor := gossipClientInterceptorFactory(clientRec)
+
+	req := &pb.State{
+		ExistingHosts:  map[string]uint64{"peerA": 1},
+		ExternalGossip: []byte("request payload (100)"),
+	}
+	resp := &pb.StateResponse{
+		ExternalGossip: []byte("response payload (200)"),
+	}
+
+	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
+		return nil
+	}
+
+	// call to clientInterceptor mimics a network exchange -- the interceptor placed in middleware by the
+	// comm.newClient(...) method and is called for each network call.
+	err := clientInterceptor(context.Background(), "/proto.gossip/Spread", req, resp, nil, invoker)
+	require.NoError(t, err)
+
+	require.Len(t, clientRec.gossipEvents, 2)
+	assert.Equal(t, "OUTGOING", clientRec.gossipEvents[0].Direction)
+	assert.Equal(t, len("request payload (100)"), clientRec.gossipEvents[0].PayloadDataSize)
+	assert.Equal(t, "INCOMING", clientRec.gossipEvents[1].Direction)
+	assert.Equal(t, len("response payload (200)"), clientRec.gossipEvents[1].PayloadDataSize)
+
+	// Server interceptor handles a request and returns a response containing ExternalGossip
+	serverRec := &recordingLogger{}
+	serverInterceptor := gossipServerInterceptorFactory(serverRec)
+
+	handler := func(ctx context.Context, req any) (any, error) {
+		return resp, nil
+	}
+
+	info := &grpc.UnaryServerInfo{
+		FullMethod: "/proto.gossip/Spread",
+	}
+
+	_, err = serverInterceptor(context.Background(), req, info, handler)
+	require.NoError(t, err)
+
+	require.Len(t, serverRec.gossipEvents, 2)
+	assert.Equal(t, "INCOMING", serverRec.gossipEvents[0].Direction)
+	assert.Equal(t, len("request payload (100)"), serverRec.gossipEvents[0].PayloadDataSize)
+	assert.Equal(t, "OUTGOING", serverRec.gossipEvents[1].Direction)
+	assert.Equal(t, len("response payload (200)"), serverRec.gossipEvents[1].PayloadDataSize)
+}

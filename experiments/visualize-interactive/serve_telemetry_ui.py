@@ -31,6 +31,19 @@ if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 DB_TARGET = ""  # Set at startup: file or directory
+DAEMON_PORT = os.environ.get("DAEMON_PORT", "9000")
+
+
+def get_role_clause(role: Optional[str], daemon_port: str = DAEMON_PORT) -> tuple[Optional[str], list]:
+    """Return SQL WHERE condition and parameters to filter by client or server role."""
+    if not role or role.upper() == "ALL":
+        return None, []
+    d_int = int(daemon_port) if daemon_port.isdigit() else daemon_port
+    if role.upper() == "CLIENT":
+        return "(remote_port = ? OR remote_port = ?)", [daemon_port, d_int]
+    if role.upper() == "SERVER":
+        return "(remote_port != ? AND remote_port != ? AND remote_port != '')", [daemon_port, d_int]
+    return None, []
 
 
 def resolve_db_path() -> str:
@@ -72,6 +85,12 @@ class NodeStats(BaseModel):
     outgoing_count: int
     incoming_count: int
     total_data_bytes: int
+    outgoing_bytes: int = 0
+    incoming_bytes: int = 0
+    client_count: int = 0
+    server_count: int = 0
+    client_bytes: int = 0
+    server_bytes: int = 0
     total_accusations_sent: int
     total_accusations_received: int
     active_peers_count: int
@@ -82,6 +101,10 @@ class SummaryStats(BaseModel):
     total_exchanges: int = 0
     total_outgoing: int = 0
     total_incoming: int = 0
+    total_client_exchanges: int = 0
+    total_server_exchanges: int = 0
+    total_client_bytes: int = 0
+    total_server_bytes: int = 0
     total_accusations: int = 0
     total_rebuttals: int = 0
     unique_hosts: List[str] = []
@@ -90,6 +113,8 @@ class SummaryStats(BaseModel):
     max_notes: int = 0
     max_payload_bytes: int = 0
     total_data_bytes: int = 0
+    total_outgoing_bytes: int = 0
+    total_incoming_bytes: int = 0
     min_timestamp: Optional[str] = None
     max_timestamp: Optional[str] = None
     nodes_summary: List[NodeStats] = []
@@ -98,8 +123,10 @@ class SummaryStats(BaseModel):
 # -------------------------------------------------------------------------
 # Fetch data sets from DB 
 # -------------------------------------------------------------------------
+# Fetch data sets from DB 
+# -------------------------------------------------------------------------
 @app.get("/api/analytics")
-async def get_analytics(host: Optional[str] = None, buckets: int = 50):
+async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, buckets: int = 50):
     target = resolve_db_path()
     exists = os.path.exists(target)
     status_info = {
@@ -115,6 +142,8 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
             "summary": SummaryStats().model_dump(),
             "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
         }
+
+    d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
 
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         # Check table
@@ -143,9 +172,15 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
                 SUM({acc_cnt_col}),
                 MAX({note_cnt_col}),
                 MAX(COALESCE({data_col}, 0)),
-                SUM(COALESCE({data_col}, 0)),
+                SUM(CASE WHEN direction = 'OUTGOING' THEN COALESCE({data_col}, 0) ELSE 0 END),
                 MIN(timestamp),
-                MAX(timestamp)
+                MAX(timestamp),
+                SUM(CASE WHEN direction = 'INCOMING' THEN COALESCE({data_col}, 0) ELSE 0 END),
+                SUM(COALESCE({data_col}, 0)),
+                SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN 1 ELSE 0 END),
+                SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN COALESCE({data_col}, 0) ELSE 0 END),
+                SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN COALESCE({data_col}, 0) ELSE 0 END)
             FROM gossip_exchange
         """)
         row = await cursor_totals.fetchone()
@@ -191,7 +226,13 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
                 SUM(CASE WHEN direction = 'INCOMING' THEN {acc_cnt_col} ELSE 0 END) as acc_sent,
                 SUM(CASE WHEN direction = 'OUTGOING' THEN {acc_cnt_col} ELSE 0 END) as acc_received,
                 COUNT(DISTINCT CASE WHEN direction = 'OUTGOING' THEN remote_host ELSE NULL END) as active_peers,
-                MAX(timestamp) as last_seen
+                MAX(timestamp) as last_seen,
+                SUM(CASE WHEN direction = 'OUTGOING' THEN COALESCE({data_col}, 0) ELSE 0 END) as outgoing_bytes,
+                SUM(CASE WHEN direction = 'INCOMING' THEN COALESCE({data_col}, 0) ELSE 0 END) as incoming_bytes,
+                SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN 1 ELSE 0 END) as client_count,
+                SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN 1 ELSE 0 END) as server_count,
+                SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN COALESCE({data_col}, 0) ELSE 0 END) as client_bytes,
+                SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN COALESCE({data_col}, 0) ELSE 0 END) as server_bytes
             FROM gossip_exchange
             WHERE host IS NOT NULL AND host != ''
             GROUP BY host
@@ -209,6 +250,12 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
                 total_accusations_received=nr[6] or 0,
                 active_peers_count=nr[7] or 0,
                 last_seen=str(nr[8]) if nr[8] else None,
+                outgoing_bytes=nr[9] or 0,
+                incoming_bytes=nr[10] or 0,
+                client_count=nr[11] or 0,
+                server_count=nr[12] or 0,
+                client_bytes=nr[13] or 0,
+                server_bytes=nr[14] or 0,
             ).model_dump()
             for nr in nodes_rows
         ]
@@ -237,6 +284,10 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
             "total_exchanges": row[0] or 0,
             "total_outgoing": row[1] or 0,
             "total_incoming": row[2] or 0,
+            "total_client_exchanges": row[11] or 0,
+            "total_server_exchanges": row[12] or 0,
+            "total_client_bytes": row[13] or 0,
+            "total_server_bytes": row[14] or 0,
             "total_accusations": total_accs,
             "total_rebuttals": total_rebuttals,
             "unique_hosts": host_names,
@@ -245,20 +296,34 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
             "max_notes": max_notes,
             "max_payload_bytes": row[5] or 0,
             "total_data_bytes": row[6] or 0,
+            "total_outgoing_bytes": row[6] or 0,
+            "total_incoming_bytes": row[9] or 0,
             "min_timestamp": str(row[7]) if row[7] is not None else None,
             "max_timestamp": str(row[8]) if row[8] is not None else None,
             "nodes_summary": nodes_list,
         }
 
         # 5. Timeline Bucket Aggregation
-        where_tl = "WHERE host = ?" if host else ""
-        params_tl = [host, buckets] if host else [buckets]
+        where_parts_tl = []
+        params_tl = []
+        if host:
+            where_parts_tl.append("host = ?")
+            params_tl.append(host)
+        role_c, role_p = get_role_clause(role)
+        if role_c:
+            where_parts_tl.append(role_c)
+            params_tl.extend(role_p)
+        where_tl = ("WHERE " + " AND ".join(where_parts_tl)) if where_parts_tl else ""
+        params_tl.append(buckets)
+
         cursor_tl = await db.execute(f"""
             SELECT 
                 substr(timestamp, 1, 19) as ts_bucket,
                 SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END) as out_cnt,
                 SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END) as in_cnt,
-                SUM(COALESCE({data_col}, 0)) as total_bytes
+                SUM(COALESCE({data_col}, 0)) as total_bytes,
+                SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN 1 ELSE 0 END) as cli_cnt,
+                SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN 1 ELSE 0 END) as srv_cnt
             FROM gossip_exchange
             {where_tl}
             GROUP BY ts_bucket
@@ -272,6 +337,8 @@ async def get_analytics(host: Optional[str] = None, buckets: int = 50):
             "outgoing": [r[1] or 0 for r in tl_rows],
             "incoming": [r[2] or 0 for r in tl_rows],
             "bytes": [r[3] or 0 for r in tl_rows],
+            "client": [r[4] or 0 for r in tl_rows],
+            "server": [r[5] or 0 for r in tl_rows],
         }
 
     return {
@@ -294,15 +361,26 @@ async def get_summary():
     return data["summary"]
 
 
-# Standalone timeline endpoint for when the user selects a host
+# Standalone timeline endpoint for when the user selects a host or role
 @app.get("/api/timeseries")
-async def get_timeseries(host: Optional[str] = None, buckets: int = 50):
+async def get_timeseries(host: Optional[str] = None, role: Optional[str] = None, buckets: int = 50):
     target = resolve_db_path()
     if not os.path.exists(target):
-        return {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
+        return {"labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": []}
 
-    where = "WHERE host = ?" if host else ""
-    params = [host, buckets] if host else [buckets]
+    d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
+
+    where_parts = []
+    params = []
+    if host:
+        where_parts.append("host = ?")
+        params.append(host)
+    role_c, role_p = get_role_clause(role)
+    if role_c:
+        where_parts.append(role_c)
+        params.extend(role_p)
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    params.append(buckets)
 
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
@@ -315,7 +393,9 @@ async def get_timeseries(host: Optional[str] = None, buckets: int = 50):
                     substr(timestamp, 1, 19) as ts_bucket,
                     SUM(CASE WHEN direction = 'OUTGOING' THEN 1 ELSE 0 END) as out_cnt,
                     SUM(CASE WHEN direction = 'INCOMING' THEN 1 ELSE 0 END) as in_cnt,
-                    SUM(COALESCE({data_col}, 0)) as total_bytes
+                    SUM(COALESCE({data_col}, 0)) as total_bytes,
+                    SUM(CASE WHEN (remote_port = '{DAEMON_PORT}' OR remote_port = {d_int}) THEN 1 ELSE 0 END) as cli_cnt,
+                    SUM(CASE WHEN (remote_port != '{DAEMON_PORT}' AND remote_port != {d_int} AND remote_port != '') THEN 1 ELSE 0 END) as srv_cnt
                 FROM gossip_exchange
                 {where}
                 GROUP BY ts_bucket
@@ -324,13 +404,15 @@ async def get_timeseries(host: Optional[str] = None, buckets: int = 50):
             """, params)
             rows = await cursor.fetchall()
         except Exception:
-            return {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
+            return {"labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": []}
 
     return {
         "labels": [r[0] for r in rows],
         "outgoing": [r[1] or 0 for r in rows],
         "incoming": [r[2] or 0 for r in rows],
         "bytes": [r[3] or 0 for r in rows],
+        "client": [r[4] or 0 for r in rows],
+        "server": [r[5] or 0 for r in rows],
     }
 
 
@@ -365,6 +447,7 @@ async def get_table_data(
     host: Optional[str] = None,
     remote_host: Optional[str] = None,
     direction: Optional[str] = None,
+    role: Optional[str] = None,
     search: Optional[str] = None,
 ):
     target = resolve_db_path()
@@ -404,6 +487,12 @@ async def get_table_data(
             if direction and "direction" in columns:
                 where.append("direction = ?")
                 params.append(direction)
+
+            if role and "remote_port" in columns:
+                role_clause, role_params = get_role_clause(role)
+                if role_clause:
+                    where.append(role_clause)
+                    params.extend(role_params)
 
             if search:
                 searchable = [c for c in columns if c in ("host", "remote_host", "accuser", "accused", "node_id", "name", "ip", "accused_nodes")]
@@ -448,6 +537,14 @@ async def get_table_data(
                         item_dict["data_bytes"] = item_dict["payload_data_size"]
                     elif "data_bytes" in item_dict and "payload_data_size" not in item_dict:
                         item_dict["payload_data_size"] = item_dict["data_bytes"]
+                    r_port = str(item_dict.get("remote_port", "") or "")
+                    is_client = (r_port == str(DAEMON_PORT))
+                    dirn = item_dict.get("direction", "")
+                    item_dict["role"] = "CLIENT" if is_client else ("SERVER" if r_port else "UNKNOWN")
+                    if is_client:
+                        item_dict["exchange_type"] = "Client Req" if dirn == "OUTGOING" else "Client Resp"
+                    else:
+                        item_dict["exchange_type"] = "Server Req" if dirn == "INCOMING" else "Server Resp"
                 items.append(item_dict)
 
             return {
@@ -466,6 +563,7 @@ async def get_exchanges(
     peer: Optional[str] = None,
     remote_host: Optional[str] = None,
     direction: Optional[str] = None,
+    role: Optional[str] = None,
     has_accusations: bool = False,
     has_note: Optional[str] = None,
     search: Optional[str] = None,
@@ -481,6 +579,7 @@ async def get_exchanges(
         host=host,
         remote_host=remote_host or peer,
         direction=direction,
+        role=role,
         search=search,
     )
 
@@ -490,16 +589,29 @@ async def get_exchanges(
 # -------------------------------------------------------------------------
 
 @app.get("/api/bytes_per_node")
-async def get_bytes_per_node(direction: Optional[str] = "OUTGOING"):
+async def get_bytes_per_node(
+    direction: Optional[str] = "OUTGOING",
+    role: Optional[str] = "ALL"
+):
     target = resolve_db_path()
     if not os.path.exists(target):
-        return {"nodes": {}, "total_per_node": {}, "direction": direction}
+        return {
+            "nodes": {},
+            "total_per_node": {},
+            "client_totals": {},
+            "server_totals": {},
+            "direction": direction,
+            "role": role,
+        }
+
+    d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
 
     where_parts = ["host != ''"]
     params_q = []
     if direction in ("OUTGOING", "INCOMING"):
         where_parts.append("direction = ?")
         params_q.append(direction)
+
     where_sql = "WHERE " + " AND ".join(where_parts)
 
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
@@ -508,34 +620,76 @@ async def get_bytes_per_node(direction: Optional[str] = "OUTGOING"):
             hosts = [h[0] for h in await c_hosts.fetchall()]
 
             cursor = await db.execute(f"""
-                SELECT timestamp, host, COALESCE(payload_data_size, data_bytes, 0)
+                SELECT timestamp, host, remote_port, COALESCE(payload_data_size, data_bytes, 0)
                 FROM gossip_exchange
                 {where_sql}
                 ORDER BY timestamp ASC
             """, params_q)
             rows = await cursor.fetchall()
-
-            c_totals = await db.execute(f"""
-                SELECT host, SUM(COALESCE(payload_data_size, data_bytes, 0)) as b
-                FROM gossip_exchange
-                {where_sql}
-                GROUP BY host
-                ORDER BY b DESC
-            """, params_q)
-            totals = {r[0]: r[1] or 0 for r in await c_totals.fetchall()}
         except Exception:
-            return {"nodes": {}, "total_per_node": {}, "direction": direction}
+            return {
+                "nodes": {},
+                "total_per_node": {},
+                "client_totals": {},
+                "server_totals": {},
+                "direction": direction,
+                "role": role,
+            }
 
-    node_data: Dict[str, Dict[str, Any]] = {h: {"timestamps": [], "bytes": []} for h in hosts}
-    for ts, h, b in rows:
-        if h in node_data:
-            node_data[h]["timestamps"].append(str(ts))
+    node_data: Dict[str, Dict[str, Any]] = {
+        h: {
+            "timestamps": [],
+            "bytes": [],
+            "client": {"timestamps": [], "bytes": [], "total": 0},
+            "server": {"timestamps": [], "bytes": [], "total": 0},
+            "total": 0,
+        }
+        for h in hosts
+    }
+    client_totals = {h: 0 for h in hosts}
+    server_totals = {h: 0 for h in hosts}
+    all_totals = {h: 0 for h in hosts}
+
+    for ts, h, r_port, b in rows:
+        if h not in node_data:
+            continue
+        ts_str = str(ts)
+        r_port_str = str(r_port or "")
+        is_client = (r_port_str == str(DAEMON_PORT) or (r_port_str.isdigit() and int(r_port_str) == d_int))
+
+        if is_client:
+            node_data[h]["client"]["timestamps"].append(ts_str)
+            node_data[h]["client"]["bytes"].append(b)
+            node_data[h]["client"]["total"] += b
+            client_totals[h] += b
+        elif r_port_str != "":
+            node_data[h]["server"]["timestamps"].append(ts_str)
+            node_data[h]["server"]["bytes"].append(b)
+            node_data[h]["server"]["total"] += b
+            server_totals[h] += b
+
+        # Populate top-level fields according to role filter
+        include_top = True
+        if role == "CLIENT" and not is_client:
+            include_top = False
+        elif role == "SERVER" and is_client:
+            include_top = False
+
+        if include_top:
+            node_data[h]["timestamps"].append(ts_str)
             node_data[h]["bytes"].append(b)
+            all_totals[h] += b
+
+    for h in hosts:
+        node_data[h]["total"] = all_totals[h]
 
     return {
         "nodes": node_data,
-        "total_per_node": totals,
+        "total_per_node": all_totals,
+        "client_totals": client_totals,
+        "server_totals": server_totals,
         "direction": direction,
+        "role": role,
     }
 
 

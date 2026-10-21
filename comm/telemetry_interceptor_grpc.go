@@ -157,6 +157,20 @@ func logSpreadExchange(
 		})
 	}
 
+	// 3. Response gossip logging: log application payload returned in StateResponse
+	respPayloadSize := len(stateResp.GetExternalGossip())
+	if respPayloadSize > 0 {
+		telemetryLogger.OnGossipExchange(GossipEvent{
+			Timestamp:       now,
+			Direction:       responseDir,
+			Host:            host,
+			HostPort:        "",
+			RemoteHost:      remoteHost,
+			RemotePort:      remotePort,
+			PayloadDataSize: respPayloadSize,
+		})
+	}
+
 	for _, acc := range stateResp.GetAccusations() {
 		telemetryLogger.OnAccusation(AccusationEvent{
 			Timestamp:  now,
