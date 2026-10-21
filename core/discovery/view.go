@@ -297,11 +297,8 @@ func (v *View) MyNeighbours() []*Peer {
 // Prerequisites / Expected Services:
 //   - Expected to be called by the periodic gossip loop (Node.gossipLoop) on each gossip round.
 func (v *View) GossipPartners() []*Peer {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
-
-	// Only one goroutine accesses gossip ring variable,
-	// only take read lock for live view.
+	v.liveMutex.Lock()
+	defer v.liveMutex.Unlock()
 	defer v.incrementGossipRing()
 
 	return v.rings.myRingNeighbours(v.currGossipRing)
@@ -314,13 +311,10 @@ func (v *View) GossipPartners() []*Peer {
 //   - Expected to be called by the periodic failure detector / monitoring loop (Node.monitorLoop).
 //   - The failure detector service (PingService / commService) will probe the returned peer.
 func (v *View) MonitorTarget() (*Peer, uint32) {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.liveMutex.Lock()
+	defer v.liveMutex.Unlock()
 
 	ringNum := v.currMonitorRing
-
-	// Only one goroutine accesses monitor ring variable,
-	// only take read lock for live view.
 	defer v.incrementMonitorRing()
 
 	return v.rings.myRingSuccessor(v.currMonitorRing), ringNum
