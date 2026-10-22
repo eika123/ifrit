@@ -46,9 +46,9 @@ func (d DigestSymbol) Hash() uint64 {
 
 // -----------------------------------------------------------------------------
 type RIBLTSession[T any, S Symbol[S]] struct {
-	store   ReverseIndexStore[T, S]
-	encoder riblt.Encoder[S]
-	decoder riblt.Decoder[S]
+	storeDigests []S
+	encoder      riblt.Encoder[S]
+	decoder      riblt.Decoder[S]
 
 	// encodeSymbol encodes a symbol to a byte slice.
 	encodeSymbol    func(S) []byte
@@ -57,12 +57,12 @@ type RIBLTSession[T any, S Symbol[S]] struct {
 	receivedSymbols int
 }
 
-func newRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
+func newRIBLTSession[T any, S Symbol[S]](storeDigests []S,
 	symbolSize uint32,
 	encodeSymbol func(S) []byte,
 	decodeSymbol func([]byte) S) *RIBLTSession[T, S] {
 	session := &RIBLTSession[T, S]{
-		store:        store,
+		storeDigests: storeDigests,
 		symbolSize:   symbolSize,
 		encodeSymbol: encodeSymbol,
 		decodeSymbol: decodeSymbol,
@@ -94,14 +94,13 @@ func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
 
 // NewSession implements SessionFactory[S]
 func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) ReconcilerSession[T, S] {
-	return newRIBLTSession(store.Copy(), f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
+	return newRIBLTSession[T](store.Digests(), f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
 }
 
 func (session *RIBLTSession[T, S]) initCodecs() {
-	digests := session.store.Digests()
 	session.encoder = riblt.Encoder[S]{}
 	session.decoder = riblt.Decoder[S]{}
-	for _, dig := range digests {
+	for _, dig := range session.storeDigests {
 		session.encoder.AddSymbol(dig)
 		session.decoder.AddSymbol(dig)
 	}
