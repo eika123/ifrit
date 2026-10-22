@@ -56,24 +56,23 @@ func main() {
 	clientIfrit.RegisterMsgHandler(msgHandler)
 	go clientIfrit.Start()
 
-	for {
-		if len(clientIfrit.Members()) == 0 {
-			continue
-		}
+	go func() {
+		for {
+			if len(clientIfrit.Members()) == 0 {
+				time.Sleep(15 * time.Millisecond)
+				continue
+			}
 
-		addr := clientIfrit.Members()[0]
-		ch := clientIfrit.SendTo(addr, []byte("HellO!"))
+			addr := clientIfrit.Members()[0]
+			ch := clientIfrit.SendTo(addr, []byte("HellO!"))
 
-		time.Sleep(3 * time.Second)
-		select {
-		case msg := <-ch:
+			time.Sleep(3 * time.Second)
+			msg := <-ch
 			if msg != nil {
 				fmt.Println("Got response from client:", msg)
-			} else {
-				break
 			}
 		}
-	}
+	}()
 
 	channel := make(chan os.Signal, 2)
 	signal.Notify(channel, os.Interrupt, syscall.SIGTERM)
