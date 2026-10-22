@@ -533,8 +533,13 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 	}
 
 	for i, t := range tests {
+		origSign := t.acc.GetSignature()
 		require.Equalf(suite.T(), t.out, node.evalAccusation(t.acc, t.accuser, t.accused),
 			"Invalid output for test %d.", i)
+		if origSign != nil {
+			require.NotNilf(suite.T(), t.acc.GetSignature(),
+				"evalAccusation must restore accusation signature for test %d.", i)
+		}
 
 		if t.accused != nil {
 			require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.accused.Id),
@@ -685,8 +690,13 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		node.view.RemoveLive(peer2.Id)
 		node.view.RemoveLive(peer3.Id)
 
+		origSign := t.note.GetSignature()
 		require.Equalf(suite.T(), t.out, node.evalNote(t.note),
 			"Invalid output for test %d.", i)
+		if origSign != nil {
+			require.NotNilf(suite.T(), t.note.GetSignature(),
+				"evalNote must restore note signature for test %d.", i)
+		}
 		require.Equalf(suite.T(), t.isAccused, t.noteHolder.IsAccused(),
 			"Invalid accusation state for test %d.", i)
 		require.Equalf(suite.T(), t.isAlive, node.view.IsAlive(t.noteHolder.Id),

@@ -331,6 +331,7 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) 
 
 	a.Signature = nil
 	bytes, err := proto.Marshal(a)
+	a.Signature = sign
 	if err != nil {
 		return err
 	}
@@ -427,6 +428,7 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 
 	newNote.Signature = nil
 	bytes, err := proto.Marshal(newNote)
+	newNote.Signature = sign
 	if err != nil {
 		return err
 	}
