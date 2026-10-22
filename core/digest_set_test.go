@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"testing"
 
@@ -11,13 +12,35 @@ import (
 )
 
 type userItem struct {
-	ID        string `json:"id"`
+	UserID    string `json:"id"`
 	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
+	LastName  string `json:"last_name,omitempty"`
 }
 
-func (u userItem) IDGetter() string {
-	return u.ID
+func (u userItem) ID() string {
+	return u.UserID
+}
+
+
+type itemWithUint64Digest struct {
+	val uint64
+}
+
+func (i itemWithUint64Digest) Digest() uint64 {
+	return i.val
+}
+
+type itemWithSymbolDigest struct {
+	val DigestSymbol
+}
+
+func (i itemWithSymbolDigest) Digest() DigestSymbol {
+	return i.val
+}
+
+type itemPlain struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
 }
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
@@ -29,7 +52,7 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	assert.Equal(t, 0, s.Size())
 	assert.Equal(t, DigestSymbol(0), s.Fingerprint())
 
-	u1 := userItem{ID: "alice", FirstName: "Alice", LastName: "Smith"}
+	u1 := userItem{UserID: "alice", FirstName: "Alice", LastName: "Smith"}
 	d1, added := s.Insert(u1)
 	assert.True(t, added)
 	assert.NotZero(t, d1)
@@ -51,8 +74,8 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	assert.Equal(t, 1, s.Size())
 
 	// Batch insert
-	u2 := userItem{ID: "bob", FirstName: "Bob", LastName: "Jones"}
-	u3 := userItem{ID: "charlie", FirstName: "Charlie", LastName: "Brown"}
+	u2 := userItem{UserID: "bob", FirstName: "Bob", LastName: "Jones"}
+	u3 := userItem{UserID: "charlie", FirstName: "Charlie", LastName: "Brown"}
 	addedCount := s.AddElements(u1, u2, u3)
 	assert.Equal(t, 2, addedCount)
 	assert.Equal(t, 3, s.Size())
@@ -69,9 +92,9 @@ func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing
 	s2, err := newDigestSet[userItem, DigestSymbol](hasher)
 	require.NoError(t, err)
 
-	u1 := userItem{ID: "user-1", FirstName: "One"}
-	u2 := userItem{ID: "user-2", FirstName: "Two"}
-	u3 := userItem{ID: "user-3", FirstName: "Three"}
+	u1 := userItem{UserID: "user-1", FirstName: "One"}
+	u2 := userItem{UserID: "user-2", FirstName: "Two"}
+	u3 := userItem{UserID: "user-3", FirstName: "Three"}
 
 	// Insert in different orders
 	s1.Insert(u1)
@@ -87,7 +110,7 @@ func TestDigestSet_DeterministicFingerprintAndCrossMachineEquivalence(t *testing
 	assert.Equal(t, s1.Size(), s2.Size())
 
 	// Divergence: adding an extra item must change the fingerprint
-	u4 := userItem{ID: "user-4", FirstName: "Four"}
+	u4 := userItem{UserID: "user-4", FirstName: "Four"}
 	s1.Insert(u4)
 	assert.NotEqual(t, s1.Fingerprint(), s2.Fingerprint())
 }
@@ -143,8 +166,8 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 	hasher := DefaultHasher[userItem]()
 	s, err := newDigestSet[userItem, DigestSymbol](hasher)
 	require.NoError(t, err)
-	u1 := userItem{ID: "u1", FirstName: "User1"}
-	u2 := userItem{ID: "u2", FirstName: "User2"}
+	u1 := userItem{UserID: "u1", FirstName: "User1"}
+	u2 := userItem{UserID: "u2", FirstName: "User2"}
 	s.Insert(u1)
 	s.Insert(u2)
 
@@ -220,13 +243,13 @@ func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
 	assert.True(t, store.Empty())
 	assert.Equal(t, 0, store.Size())
 
-	u1 := userItem{ID: "alice", FirstName: "Alice"}
+	u1 := userItem{UserID: "alice", FirstName: "Alice"}
 	assert.True(t, store.AddElement(u1))
 	assert.False(t, store.AddElement(u1)) // duplicate
 	assert.Equal(t, 1, store.Size())
 	assert.True(t, store.Contains(u1))
 
-	u2 := userItem{ID: "bob", FirstName: "Bob"}
+	u2 := userItem{UserID: "bob", FirstName: "Bob"}
 	assert.Equal(t, 1, store.AddElements(u1, u2))
 	assert.Equal(t, 2, store.Size())
 
@@ -237,14 +260,14 @@ func TestDigestSet_OpaqueReverseIndexStoreFactory(t *testing.T) {
 
 	retrieved, found := store.GetByDigest(digests[0])
 	assert.True(t, found)
-	assert.NotEmpty(t, retrieved.ID)
+	assert.NotEmpty(t, retrieved.ID())
 
 	// Copy isolation through interface
 	cp := store.Copy()
 	assert.Equal(t, store.Size(), cp.Size())
 	assert.Equal(t, store.Fingerprint(), cp.Fingerprint())
 
-	cp.AddElement(userItem{ID: "charlie", FirstName: "Charlie"})
+	cp.AddElement(userItem{UserID: "charlie", FirstName: "Charlie"})
 	assert.Equal(t, 3, cp.Size())
 	assert.Equal(t, 2, store.Size())
 
@@ -271,8 +294,8 @@ func TestDigestSet_NilHasherErrors(t *testing.T) {
 
 func TestDigestSet_UnmarshalJSONNilHasher(t *testing.T) {
 	items := []userItem{
-		{ID: "user-1", FirstName: "Alice"},
-		{ID: "user-2", FirstName: "Bob"},
+		{UserID: "user-1", FirstName: "Alice"},
+		{UserID: "user-2", FirstName: "Bob"},
 	}
 	raw, err := json.Marshal(items)
 	require.NoError(t, err)
@@ -312,5 +335,57 @@ func TestDigestSet_ZeroValueStructPanicsOnMutations(t *testing.T) {
 	assert.PanicsWithError(t, ErrNilHasher.Error(), func() {
 		ds.Remove("hello")
 	})
+}
+
+func TestDefaultHasher(t *testing.T) {
+	// 1. DigestSymbol fast path
+	dsHasher := DefaultHasher[DigestSymbol]()
+	sym := DigestSymbol(0x12345678deadbeef)
+	assert.Equal(t, sym, dsHasher(sym))
+
+	// 2. Custom Digest() uint64 interface
+	u64Hasher := DefaultHasher[itemWithUint64Digest]()
+	assert.Equal(t, DigestSymbol(42), u64Hasher(itemWithUint64Digest{val: 42}))
+
+	// 3. Custom Digest() DigestSymbol interface
+	symHasher := DefaultHasher[itemWithSymbolDigest]()
+	assert.Equal(t, DigestSymbol(99), symHasher(itemWithSymbolDigest{val: 99}))
+
+	// 4. Custom ID() string interface (exercised by userItem)
+	userHasher := DefaultHasher[userItem]()
+	u := userItem{UserID: "test-user-id", FirstName: "Test"}
+	hID := fnv.New64a()
+	_, _ = hID.Write([]byte("test-user-id"))
+	assert.Equal(t, DigestSymbol(hID.Sum64()), userHasher(u))
+
+	// Ensure ID() path takes precedence over JSON serialization:
+	// If it used JSON serialization, it would hash the full JSON string instead of just the ID.
+	jsonBytes, err := json.Marshal(u)
+	require.NoError(t, err)
+	hJSON := fnv.New64a()
+	_, _ = hJSON.Write(jsonBytes)
+	assert.NotEqual(t, DigestSymbol(hJSON.Sum64()), userHasher(u), "DefaultHasher must use ID() fast-path rather than JSON fallback")
+
+	// 5. Native string
+	strHasher := DefaultHasher[string]()
+	hStr := fnv.New64a()
+	_, _ = hStr.Write([]byte("hello-world"))
+	assert.Equal(t, DigestSymbol(hStr.Sum64()), strHasher("hello-world"))
+
+	// 6. Plain struct fallback to deterministic JSON serialization
+	plainHasher := DefaultHasher[itemPlain]()
+	p := itemPlain{Name: "Alice", Age: 30}
+	pBytes, err := json.Marshal(p)
+	require.NoError(t, err)
+	hPlain := fnv.New64a()
+	_, _ = hPlain.Write(pBytes)
+	assert.Equal(t, DigestSymbol(hPlain.Sum64()), plainHasher(p))
+
+	// 7. Non-marshalable fallback to fmt.Sprintf("%v", item)
+	ch := make(chan int)
+	chHasher := DefaultHasher[chan int]()
+	hCh := fnv.New64a()
+	_, _ = hCh.Write([]byte(fmt.Sprintf("%v", ch)))
+	assert.Equal(t, DigestSymbol(hCh.Sum64()), chHasher(ch))
 }
 
