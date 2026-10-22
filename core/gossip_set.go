@@ -7,7 +7,7 @@ import (
 	log "github.com/inconshreveable/log15"
 )
 
-type naiveGossipSet[T comparable, S Symbol[S]] struct {
+type naiveGossipSet[T any, S Symbol[S]] struct {
 	ReverseIndexStore[T, S]
 
 	node        *Node
@@ -21,7 +21,7 @@ var _ ReverseIndexStore[string, DigestSymbol] = (*naiveGossipSet[string, DigestS
 // NewNaiveGossipSet creates and initializes a push-based ReverseIndexStore bound to the specified Ifrit Node.
 // It automatically registers gossip and response handlers on the node, launches the background
 // merge worker, and initializes the gossip payload.
-func NewNaiveGossipSet[T comparable](node *Node, initial ReverseIndexStore[T, DigestSymbol]) ReverseIndexStore[T, DigestSymbol] {
+func NewNaiveGossipSet[T any](node *Node, initial ReverseIndexStore[T, DigestSymbol]) ReverseIndexStore[T, DigestSymbol] {
 	if initial == nil {
 		var err error
 		initial, err = NewDigestSet[T, DigestSymbol](DefaultHasher[T]())

@@ -2,9 +2,9 @@ package core
 
 import "encoding/json"
 
-type NaiveSessionFactory[T comparable, S Symbol[S]] struct{}
+type NaiveSessionFactory[T any, S Symbol[S]] struct{}
 
-func NewNaiveSessionFactory[T comparable, S Symbol[S]]() *NaiveSessionFactory[T, S] {
+func NewNaiveSessionFactory[T any, S Symbol[S]]() *NaiveSessionFactory[T, S] {
 	return &NaiveSessionFactory[T, S]{}
 }
 
@@ -16,7 +16,7 @@ func (f *NaiveSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) Re
 // Implements the Reconciler interface, @see Reconciler in protocol.go
 // performs a naive set reconciliation protocol by sending the entire set
 // to resolve differences.
-type NaiveExchangeSession[T comparable, S Symbol[S]] struct {
+type NaiveExchangeSession[T any, S Symbol[S]] struct {
 	store  ReverseIndexStore[T, S]
 	done   bool
 	remote []S
