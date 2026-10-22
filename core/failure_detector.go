@@ -26,6 +26,7 @@ type pingService interface {
 	Ping(string, *pb.Ping) (*pb.Pong, error)
 	Start()
 	Stop()
+	PongContent(nonce []byte, fingerprint []byte) []byte
 }
 
 func newFd(ps pingService, cs cryptoService, maxPing uint32) *failureDetector {
@@ -46,7 +47,8 @@ func (fd *failureDetector) validPong(pong *pb.Pong, pingMsg *pb.Ping, dest *disc
 		return false
 	}
 
-	return fd.cs.Verify(pong.GetNonce(), sign.GetR(), sign.GetS(), dest.PublicKey())
+	content := fd.ps.PongContent(pong.GetNonce(), pong.GetFingerprint())
+	return fd.cs.Verify(content, sign.GetR(), sign.GetS(), dest.PublicKey())
 }
 
 func (fd *failureDetector) probe(dest *discovery.Peer) error {

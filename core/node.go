@@ -195,7 +195,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 	n.comm.Register(n)
 
-	if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() uint64) }); ok {
+	if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintProvider(n.self.Fingerprint)
 	}
 
@@ -248,11 +248,11 @@ func (n *Node) Verify(r, s, content []byte, id string) bool {
 	return n.cs.Verify(content, r, s, p.PublicKey())
 }
 
-func (n *Node) SetFingerprint(fp uint64) {
+func (n *Node) SetFingerprint(fp []byte) {
 	n.self.SetFingerprint(fp)
 }
 
-func (n *Node) Fingerprint() uint64 {
+func (n *Node) Fingerprint() []byte {
 	return n.self.Fingerprint()
 }
 

@@ -26,6 +26,14 @@ func (s *mockPingService) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 	return nil, errors.New("connection timeout")
 }
 
+func (s *mockPingService) PongContent(nonce []byte, fingerprint []byte) []byte {
+	content := make([]byte, 0, len(nonce)+len(fingerprint))
+	content = append(content, nonce...)
+	content = append(content, fingerprint...)
+	return content
+}
+
+
 func createTestPeer() (*discovery.Peer, *cryptoStub, error) {
 	priv, err := genKeys()
 	if err != nil {
@@ -53,8 +61,9 @@ func setupFDTest(t *testing.T) (*failureDetector, *mockPingService, *cryptoStub,
 func TestFailureDetector_ProbeSuccess(t *testing.T) {
 	fd, ps, cs, destPeer := setupFDTest(t)
 
+	expectedFP := []byte{0x12, 0x34, 0x56, 0x78}
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(p.GetNonce())
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), expectedFP))
 		if err != nil {
 			return nil, err
 		}
@@ -64,7 +73,7 @@ func TestFailureDetector_ProbeSuccess(t *testing.T) {
 				R: r,
 				S: s,
 			},
-			Fingerprint: 0x12345678,
+			Fingerprint: expectedFP,
 		}, nil
 	}
 
@@ -113,7 +122,7 @@ func TestFailureDetector_ProbeRecoveryResetsCount(t *testing.T) {
 
 	// Followed by a successful probe
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(p.GetNonce())
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), nil))
 		require.NoError(t, err)
 		return &pb.Pong{
 			Nonce: p.GetNonce(),
@@ -146,12 +155,38 @@ func TestFailureDetector_ProbeInvalidSignature(t *testing.T) {
 	assert.Equal(t, uint32(1), destPeer.NumPing())
 }
 
+func TestFailureDetector_ProbeTamperedFingerprint(t *testing.T) {
+	fd, ps, cs, destPeer := setupFDTest(t)
+
+	originalFP := []byte("sha256-hash-original-fp-32bytes")
+	tamperedFP := []byte("sha256-hash-tampered-fp-32bytes")
+
+	// Legitimate responder signed originalFP with the nonce
+	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), originalFP))
+		require.NoError(t, err)
+		return &pb.Pong{
+			Nonce: p.GetNonce(),
+			Signature: &pb.Signature{
+				R: r,
+				S: s,
+			},
+			// MITM attacker alters fingerprint in transit
+			Fingerprint: tamperedFP,
+		}, nil
+	}
+
+	err := fd.probe(destPeer)
+	assert.Equal(t, errInvalidPongSignature, err, "tampered fingerprint must fail signature verification")
+	assert.Equal(t, uint32(1), destPeer.NumPing())
+}
+
 func TestFailureDetector_ProbeMismatchedNonce(t *testing.T) {
 	fd, ps, cs, destPeer := setupFDTest(t)
 
 	wrongNonce := []byte("different-nonce-bytes-1234567890")
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(wrongNonce)
+		r, s, err := cs.Sign(ps.PongContent(wrongNonce, nil))
 		require.NoError(t, err)
 		return &pb.Pong{
 			Nonce: wrongNonce,

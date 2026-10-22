@@ -57,7 +57,7 @@ type Peer struct {
 
 	nPingMutex sync.RWMutex
 
-	fingerprint      uint64
+	fingerprint      []byte
 	fingerprintMutex sync.RWMutex
 }
 
@@ -388,14 +388,14 @@ func (p *Peer) NumPing() uint32 {
 	return p.nPing
 }
 
-func (p *Peer) Fingerprint() uint64 {
+func (p *Peer) Fingerprint() []byte {
 	p.fingerprintMutex.RLock()
 	defer p.fingerprintMutex.RUnlock()
 
 	return p.fingerprint
 }
 
-func (p *Peer) SetFingerprint(fp uint64) {
+func (p *Peer) SetFingerprint(fp []byte) {
 	p.fingerprintMutex.Lock()
 	defer p.fingerprintMutex.Unlock()
 

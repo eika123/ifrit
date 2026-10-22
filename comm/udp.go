@@ -20,7 +20,7 @@ type UDPServer struct {
 	pongSigner
 	timeout time.Duration
 
-	fpProvider func() uint64
+	fpProvider func() []byte
 	fpMutex    sync.RWMutex
 }
 
@@ -102,7 +102,9 @@ func (us *UDPServer) Start() {
 				continue
 			}
 
-			r, s, err := us.Sign(ping.GetNonce())
+			fp := us.getFingerprint()
+			content := us.PongContent(ping.GetNonce(), fp)
+			r, s, err := us.Sign(content)
 			if err != nil {
 				log.Error(err.Error())
 				continue
@@ -114,7 +116,7 @@ func (us *UDPServer) Start() {
 					R: r,
 					S: s,
 				},
-				Fingerprint: us.getFingerprint(),
+				Fingerprint: fp,
 			}
 
 			resp, err := proto.Marshal(pong)
@@ -133,23 +135,23 @@ func (us *UDPServer) Start() {
 	}
 }
 
-func (us *UDPServer) SetFingerprintProvider(f func() uint64) {
+func (us *UDPServer) SetFingerprintProvider(f func() []byte) {
 	us.fpMutex.Lock()
 	defer us.fpMutex.Unlock()
 	us.fpProvider = f
 }
 
-func (us *UDPServer) SetFingerprint(fp uint64) {
-	us.SetFingerprintProvider(func() uint64 { return fp })
+func (us *UDPServer) SetFingerprint(fp []byte) {
+	us.SetFingerprintProvider(func() []byte { return fp })
 }
 
-func (us *UDPServer) getFingerprint() uint64 {
+func (us *UDPServer) getFingerprint() []byte {
 	us.fpMutex.RLock()
 	defer us.fpMutex.RUnlock()
 	if us.fpProvider != nil {
 		return us.fpProvider()
 	}
-	return 0
+	return nil
 }
 
 func (us *UDPServer) Addr() string {
@@ -164,3 +166,16 @@ func (us *UDPServer) Stop() {
 	close(us.exitChan)
 	us.conn.Close()
 }
+
+// PongContent returns the canonical serialized semantic content of a Pong message (nonce and fingerprint).
+func PongContent(nonce []byte, fingerprint []byte) []byte {
+	content := make([]byte, 0, len(nonce)+len(fingerprint))
+	content = append(content, nonce...)
+	content = append(content, fingerprint...)
+	return content
+}
+
+func (us *UDPServer) PongContent(nonce []byte, fingerprint []byte) []byte {
+	return PongContent(nonce, fingerprint)
+}
+

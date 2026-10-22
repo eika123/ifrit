@@ -194,6 +194,10 @@ func (ps *pingStub) Ping(addr string, m *pb.Ping) (*pb.Pong, error) {
 	return &pb.Pong{}, nil
 }
 
+func (ps *pingStub) PongContent(nonce []byte, fingerprint []byte) []byte {
+	return nil
+}
+
 // TODO we need to decide upon stubs or not stubs etc, not just copy stuff, this is really ugly
 type cryptoStub struct {
 	priv *ecdsa.PrivateKey
