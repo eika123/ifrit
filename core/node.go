@@ -195,6 +195,10 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 	n.comm.Register(n)
 
+	if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() uint64) }); ok {
+		fpSetter.SetFingerprintProvider(n.self.Fingerprint)
+	}
+
 	if n.cm.CaCertificate() != nil {
 		for _, c := range n.cm.ContactList() {
 			if n.self.Id == string(c.SubjectKeyId) {
@@ -242,6 +246,14 @@ func (n *Node) Verify(r, s, content []byte, id string) bool {
 	}
 
 	return n.cs.Verify(content, r, s, p.PublicKey())
+}
+
+func (n *Node) SetFingerprint(fp uint64) {
+	n.self.SetFingerprint(fp)
+}
+
+func (n *Node) Fingerprint() uint64 {
+	return n.self.Fingerprint()
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

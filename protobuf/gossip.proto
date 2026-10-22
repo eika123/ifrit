@@ -80,6 +80,7 @@ message Ping {
 message Pong {
     bytes nonce = 1;
     Signature signature = 2;
+    uint64 fingerprint = 3;
 }
 
 message Test {

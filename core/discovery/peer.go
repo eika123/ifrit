@@ -56,6 +56,9 @@ type Peer struct {
 	nPing uint32
 
 	nPingMutex sync.RWMutex
+
+	fingerprint      uint64
+	fingerprintMutex sync.RWMutex
 }
 
 // Ecdsa signature values
@@ -383,6 +386,20 @@ func (p *Peer) NumPing() uint32 {
 	defer p.nPingMutex.RUnlock()
 
 	return p.nPing
+}
+
+func (p *Peer) Fingerprint() uint64 {
+	p.fingerprintMutex.RLock()
+	defer p.fingerprintMutex.RUnlock()
+
+	return p.fingerprint
+}
+
+func (p *Peer) SetFingerprint(fp uint64) {
+	p.fingerprintMutex.Lock()
+	defer p.fingerprintMutex.Unlock()
+
+	p.fingerprint = fp
 }
 
 /*

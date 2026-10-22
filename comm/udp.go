@@ -2,6 +2,7 @@ package comm
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -18,6 +19,9 @@ type UDPServer struct {
 
 	pongSigner
 	timeout time.Duration
+
+	fpProvider func() uint64
+	fpMutex    sync.RWMutex
 }
 
 type pongSigner interface {
@@ -110,6 +114,7 @@ func (us *UDPServer) Start() {
 					R: r,
 					S: s,
 				},
+				Fingerprint: us.getFingerprint(),
 			}
 
 			resp, err := proto.Marshal(pong)
@@ -126,6 +131,25 @@ func (us *UDPServer) Start() {
 			}
 		}
 	}
+}
+
+func (us *UDPServer) SetFingerprintProvider(f func() uint64) {
+	us.fpMutex.Lock()
+	defer us.fpMutex.Unlock()
+	us.fpProvider = f
+}
+
+func (us *UDPServer) SetFingerprint(fp uint64) {
+	us.SetFingerprintProvider(func() uint64 { return fp })
+}
+
+func (us *UDPServer) getFingerprint() uint64 {
+	us.fpMutex.RLock()
+	defer us.fpMutex.RUnlock()
+	if us.fpProvider != nil {
+		return us.fpProvider()
+	}
+	return 0
 }
 
 func (us *UDPServer) Addr() string {
