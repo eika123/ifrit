@@ -752,25 +752,48 @@ func (v *View) RemoveTestFull(id string) {
 // ONLY for testing
 func (v *View) Compare(other *View) error {
 	for id, p := range v.viewMap {
-		if p2, ok := other.viewMap[id]; !ok {
-			return errors.New("Peer not present in both views.")
+		var p2 *Peer
+		if id == other.self.Id {
+			p2 = other.self
 		} else {
-			for ringNum, a := range p.accusations {
-				if a2, ok := p2.accusations[ringNum]; !ok {
-					return errors.New("Accusation not present in both views.")
-				} else {
-					if !a.Equal(a2.accused, a2.accuser, a2.ringNum, a2.epoch) {
-						return errors.New("Accusation were not equal in both views.")
-					}
-				}
+			var ok bool
+			p2, ok = other.viewMap[id]
+			if !ok {
+				return errors.New("Peer not present in both views.")
 			}
-			if !p.note.Equal(p2.note.epoch) {
-				return errors.New("Did not have same note for peer in both views.")
+		}
+
+		for ringNum, a := range p.accusations {
+			a2, ok := p2.accusations[ringNum]
+			if !ok {
+				return errors.New("Accusation not present in both views.")
 			}
+			if a == nil && a2 == nil {
+				continue
+			}
+			if a == nil || a2 == nil {
+				return errors.New("Accusation presence mismatch in views.")
+			}
+			if !a.Equal(a2.accused, a2.accuser, a2.ringNum, a2.epoch) {
+				return errors.New("Accusation were not equal in both views.")
+			}
+		}
+
+		if p.note == nil && p2.note == nil {
+			continue
+		}
+		if p.note == nil || p2.note == nil {
+			return errors.New("Did not have note for peer in both views.")
+		}
+		if !p.note.Equal(p2.note.epoch) {
+			return errors.New("Did not have same note for peer in both views.")
 		}
 	}
 
-	for id, _ := range v.liveMap {
+	for id := range v.liveMap {
+		if id == other.self.Id {
+			continue
+		}
 		if _, ok := other.liveMap[id]; !ok {
 			return errors.New("Did not have peer in both live views.")
 		}

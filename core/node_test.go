@@ -15,8 +15,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"golang.org/x/net/context"
-
 	pb "github.com/joonnna/ifrit/protobuf"
 )
 
@@ -59,7 +57,10 @@ func (suite *NodeTestSuite) TestGossip() {
 
 	for _, n := range suite.nodes {
 		for _, n2 := range suite.nodes {
-			reply, err := n2.Spread(context.Background(), n.collectGossipContent())
+			if n == n2 {
+				continue
+			}
+			reply, err := n2.Spread(peerContext(n.self), n.collectGossipContent())
 			if err != nil {
 				continue
 			}
