@@ -178,4 +178,3 @@ func PongContent(nonce []byte, fingerprint []byte) []byte {
 func (us *UDPServer) PongContent(nonce []byte, fingerprint []byte) []byte {
 	return PongContent(nonce, fingerprint)
 }
-

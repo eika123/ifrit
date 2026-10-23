@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/dchest/siphash"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/yangl1996/riblt"
 )
 
@@ -29,20 +29,8 @@ type sym[S any] interface {
 	riblt.Symbol[S]
 }
 
-// -------------------- Conrecte implementation of a symbol -------------------
-type DigestSymbol uint64
-
-// XOR implements riblt.Symbol[DigestSymbol]
-func (d DigestSymbol) XOR(other DigestSymbol) DigestSymbol {
-	return d ^ other
-}
-
-// Hash implements riblt.Symbol[DigestSymbol] (must be non-homomorphic to XOR)
-func (d DigestSymbol) Hash() uint64 {
-	buf := [8]byte{}
-	binary.LittleEndian.PutUint64(buf[:], uint64(d))
-	return siphash.Hash(50683, 19283, buf[:])
-}
+// DigestSymbol is aliased from revIdxStore.DigestSymbol.
+type DigestSymbol = revIdxStore.DigestSymbol
 
 // -----------------------------------------------------------------------------
 type RIBLTSession[T any, S Symbol[S]] struct {

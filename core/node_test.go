@@ -12,10 +12,10 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	pb "github.com/joonnna/ifrit/protobuf"
 )
 
 // Define the suite, and absorb the built-in basic suite

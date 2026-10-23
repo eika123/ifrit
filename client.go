@@ -10,6 +10,7 @@ import (
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core"
 	"github.com/joonnna/ifrit/netutil"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 )
 
@@ -229,25 +230,25 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 }
 
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
-type ReverseIndexStore[T any] = core.ReverseIndexStore[T, core.DigestSymbol]
+type ReverseIndexStore[T any] = revIdxStore.ReverseIndexStore[T, revIdxStore.DigestSymbol]
 
-var ErrNilHasher = core.ErrNilHasher
+var ErrNilHasher = revIdxStore.ErrNilHasher
 
 // DefaultHasher returns a deterministic 64-bit FNV-1a hasher for type T.
-func DefaultHasher[T any]() core.Hasher[T, core.DigestSymbol] {
-	return core.DefaultHasher[T]()
+func DefaultHasher[T any]() revIdxStore.Hasher[T, revIdxStore.DigestSymbol] {
+	return revIdxStore.DefaultHasher[T]()
 }
 
 // NewCustomDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // Returns (nil, ErrNilHasher) if hasher is nil.
-func NewCustomDigestSet[T any, S core.Symbol[S]](hasher core.Hasher[T, S]) (core.ReverseIndexStore[T, S], error) {
-	return core.NewDigestSet(hasher)
+func NewCustomDigestSet[T any, S revIdxStore.Symbol[S]](hasher revIdxStore.Hasher[T, S]) (revIdxStore.ReverseIndexStore[T, S], error) {
+	return revIdxStore.NewDigestSet(hasher)
 }
 
 // NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // Returns (nil, ErrNilHasher) if hasher is nil.
-func NewDigestSet[T any](hasher core.Hasher[T, core.DigestSymbol]) (ReverseIndexStore[T], error) {
-	return core.NewDigestSet(hasher)
+func NewDigestSet[T any](hasher revIdxStore.Hasher[T, revIdxStore.DigestSymbol]) (ReverseIndexStore[T], error) {
+	return revIdxStore.NewDigestSet(hasher)
 }
 
 // NewNaiveGossipSet creates and initializes a push-based reconcilable store bound to the specified Ifrit Client.

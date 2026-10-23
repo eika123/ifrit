@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,7 +69,7 @@ func TestGossipSet_DigestAndReconciliationMethods(t *testing.T) {
 	assert.Len(t, digests, 2)
 
 	// ContainsDigest and GetByDigest
-	hasher := DefaultHasher[testItem]()
+	hasher := revIdxStore.DefaultHasher[testItem]()
 	d1 := hasher(item1)
 	d2 := hasher(item2)
 
@@ -117,8 +118,8 @@ func TestGossipSet_RemoteMerge(t *testing.T) {
 	gs.AddElement(testItem{ID: "local-1", Value: 10})
 
 	// Prepare remote gossip payload
-	hasher := DefaultHasher[testItem]()
-	remoteSet, err := NewDigestSet[testItem, DigestSymbol](hasher)
+	hasher := revIdxStore.DefaultHasher[testItem]()
+	remoteSet, err := revIdxStore.NewDigestSet[testItem, DigestSymbol](hasher)
 	require.NoError(t, err)
 	remoteSet.AddElement(testItem{ID: "local-1", Value: 10})  // duplicate
 	remoteSet.AddElement(testItem{ID: "remote-1", Value: 20}) // new
@@ -160,14 +161,14 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 		}(w)
 	}
 
-	hasher := DefaultHasher[string]()
+	hasher := revIdxStore.DefaultHasher[string]()
 	// Concurrent remote gossip injections
 	for r := 0; r < 4; r++ {
 		wg.Add(1)
 		go func(remoteID int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				remSet, err := NewDigestSet[string, DigestSymbol](hasher)
+				remSet, err := revIdxStore.NewDigestSet[string, DigestSymbol](hasher)
 				require.NoError(t, err)
 				for j := 0; j < 5; j++ {
 					remSet.AddElement(fmt.Sprintf("remote-%d-%d-%d", remoteID, i, j))

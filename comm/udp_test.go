@@ -48,4 +48,3 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	assert.Equal(t, expectedFP, pong.GetFingerprint())
 	assert.Equal(t, PongContent(nonce, expectedFP), signer.lastSigned, "signature must cover PongContent(nonce, fingerprint)")
 }
-

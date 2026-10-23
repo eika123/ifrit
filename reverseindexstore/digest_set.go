@@ -1,4 +1,4 @@
-package core
+package reverseindexstore
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Hasher computes a deterministic, cross-platform 64-bit digest for an element.
+// Hasher computes a deterministic, cross-platform digest for an element.
 type Hasher[T any, S Symbol[S]] func(item T) S
 
 // DefaultHasher returns a deterministic 64-bit FNV-1a hasher for type T.
@@ -51,35 +51,23 @@ func DefaultHasher[T any]() Hasher[T, DigestSymbol] {
 	}
 }
 
-// DigestSet represents a reverse-index hash set that maps deterministic 64-bit digests
+// digestSet represents a reverse-index hash set that maps deterministic digests
 // to items, enabling O(1) reverse lookup (GetByDigest) for set reconciliation protocols.
 type digestSet[T any, S Symbol[S]] struct {
 	mu            sync.RWMutex
 	itemsByDigest map[S]T
 	hasher        Hasher[T, S]
 
-	// The fingerprint is a commutative XOR sum of all item digests, so an incremental hash of the set.
-	// This also provides a digest of the symmetric set difference, as in the example below.
-
-	// Example: NodeA has set A={h1,h2,h3, h4} and nodeB has set B={h3, h4, h5, h6}.
-	// The digest A sends node B is dA = h1 ^ h2 ^ h3 ^ h4.
-	// B's digest is dB = h3 ^ h4 ^ h5 ^ h6, and it can calulate d_AB = dA ^ dB = h1 ^ h2 ^ h5 ^ h6,
-	// which is the fingerprint of the symmetric difference!
-	// Piggybacking this back to A, both nodes will know when the entire symmetric difference has been
-	// fully exchanged.
-	//
-	// Exactly how to decide what digests to exchange is left to the set reconciliation protocols to solve.
+	// The fingerprint is a commutative XOR sum of all item digests: an incremental hash of the set.
+	// This also provides a digest of the symmetric set difference: d_AB = dA ^ dB.
 	fingerprint S
 }
 
 var ErrNilHasher = errors.New("hasher cannot be nil")
 
-// newDigestSet creates an in-memory digestSet pointer for internal package use.
+// NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // An explicit, non-nil Hasher must be provided to compute element digests.
-// Returns ErrNilHasher if hasher is nil. Callers MUST check and handle this error;
-// attempting to ignore the error or invoke mutation/lookup methods on an uninitialized
-// or nil-hasher set will result in a panic (ErrNilHasher).
-func newDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (*digestSet[T, S], error) {
+func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (ReverseIndexStore[T, S], error) {
 	if hasher == nil {
 		return nil, ErrNilHasher
 	}
@@ -89,17 +77,8 @@ func newDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (*digestSet[T, S], er
 	}, nil
 }
 
-// NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
-// An explicit, non-nil Hasher must be provided to compute element digests.
-// Returns ErrNilHasher if hasher is nil. Callers MUST check and handle this error;
-// attempting to ignore the error or invoke mutation/lookup methods on an uninitialized
-// or nil-hasher set will result in a panic (ErrNilHasher).
-func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (ReverseIndexStore[T, S], error) {
-	return newDigestSet(hasher)
-}
-
 // Insert adds an element to the set.
-// Returns the element's digest of type S and true if the element was new and inserted.
+// Returns the element's digest of type S and true if the element was newly inserted.
 func (s *digestSet[T, S]) Insert(item T) (S, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,7 +102,6 @@ func (s *digestSet[T, S]) Insert(item T) (S, bool) {
 }
 
 // AddElement inserts an element into the set and returns true if newly added.
-// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T, S]) AddElement(elem T) bool {
 	_, inserted := s.Insert(elem)
 	return inserted
@@ -160,7 +138,6 @@ func (s *digestSet[T, S]) InsertSlice(items []T) int {
 }
 
 // AddElements inserts multiple elements into the set and returns the count of newly added elements.
-// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T, S]) AddElements(elems ...T) int {
 	return s.InsertSlice(elems)
 }
@@ -189,7 +166,7 @@ func (s *digestSet[T, S]) Remove(item T) bool {
 	return true
 }
 
-// RemoveByDigest removes an element by its 64-bit digest.
+// RemoveByDigest removes an element by its digest.
 // Returns true if the element was present and removed.
 func (s *digestSet[T, S]) RemoveByDigest(digest S) bool {
 	s.mu.Lock()
@@ -221,7 +198,7 @@ func (s *digestSet[T, S]) Contains(item T) bool {
 	return exists
 }
 
-// ContainsDigest returns true if an item with the given 64-bit digest exists in the set.
+// ContainsDigest returns true if an item with the given digest exists in the set.
 func (s *digestSet[T, S]) ContainsDigest(digest S) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -230,8 +207,7 @@ func (s *digestSet[T, S]) ContainsDigest(digest S) bool {
 	return exists
 }
 
-// GetByDigest returns the item associated with the 64-bit digest in O(1) time.
-// This is the core operation used during set reconciliation to retrieve requested missing items.
+// GetByDigest returns the item associated with the digest in O(1) time.
 func (s *digestSet[T, S]) GetByDigest(digest S) (T, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -256,8 +232,7 @@ func (s *digestSet[T, S]) Empty() bool {
 	return len(s.itemsByDigest) == 0
 }
 
-// Fingerprint returns the 64-bit XOR sum of all digests in the set.
-// Two nodes have identical sets if and only if their fingerprints match (with high probability).
+// Fingerprint returns the XOR sum of all digests in the set.
 func (s *digestSet[T, S]) Fingerprint() S {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -265,7 +240,7 @@ func (s *digestSet[T, S]) Fingerprint() S {
 	return s.fingerprint
 }
 
-// Digests returns a slice containing the 64-bit digests of all elements in the set.
+// Digests returns a slice containing the digests of all elements in the set.
 func (s *digestSet[T, S]) Digests() []S {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -278,8 +253,6 @@ func (s *digestSet[T, S]) Digests() []S {
 }
 
 // Slice returns all elements currently in the set as a slice.
-// The items are deep copied, so mutations on the returned slice will not
-// affect the original set.
 func (s *digestSet[T, S]) Slice() []T {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -292,13 +265,11 @@ func (s *digestSet[T, S]) Slice() []T {
 }
 
 // Elements returns all elements currently in the set as a slice.
-// Satisfies ReverseIndexStore[T].
 func (s *digestSet[T, S]) Elements() []T {
 	return s.Slice()
 }
 
-// Copy creates an independent, deep clone of the DigestSet.
-// Mutations on the returned copy will not affect the original set.
+// Copy creates an independent, deep clone of the digestSet.
 func (s *digestSet[T, S]) Copy() ReverseIndexStore[T, S] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -316,7 +287,7 @@ func (s *digestSet[T, S]) Copy() ReverseIndexStore[T, S] {
 	return cp
 }
 
-// Close satisfies ReverseIndexStore (and io.Closer). For in-memory DigestSet,
+// Close satisfies ReverseIndexStore (and io.Closer). For in-memory digestSet,
 // this is a no-op returning nil.
 func (s *digestSet[T, S]) Close() error {
 	return nil
@@ -328,7 +299,6 @@ func (s *digestSet[T, S]) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON populates the set from a JSON array of elements.
-// The receiver must already be initialized with a non-nil hasher; returns ErrNilHasher otherwise.
 func (s *digestSet[T, S]) UnmarshalJSON(data []byte) error {
 	var items []T
 	if err := json.Unmarshal(data, &items); err != nil {

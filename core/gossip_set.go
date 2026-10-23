@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	log "github.com/inconshreveable/log15"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
 
 type naiveGossipSet[T any, S Symbol[S]] struct {
@@ -24,7 +25,7 @@ var _ ReverseIndexStore[string, DigestSymbol] = (*naiveGossipSet[string, DigestS
 func NewNaiveGossipSet[T any](node *Node, initial ReverseIndexStore[T, DigestSymbol]) ReverseIndexStore[T, DigestSymbol] {
 	if initial == nil {
 		var err error
-		initial, err = NewDigestSet[T, DigestSymbol](DefaultHasher[T]())
+		initial, err = revIdxStore.NewDigestSet[T, DigestSymbol](revIdxStore.DefaultHasher[T]())
 		if err != nil {
 			panic(err)
 		}

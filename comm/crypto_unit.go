@@ -14,8 +14,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"github.com/joonnna/ifrit/netutil"
+	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
@@ -72,7 +72,7 @@ type certSet struct {
 	trusted    bool
 }
 
-//func NewCu(identity pkix.Name, workingDir string, caAddr string, dnsLabel string) (*CryptoUnit, error) {
+// func NewCu(identity pkix.Name, workingDir string, caAddr string, dnsLabel string) (*CryptoUnit, error) {
 func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
 	var certs *certSet
 	var extValue []byte
@@ -231,7 +231,7 @@ func (cu *CryptoUnit) SavePrivateKey() error {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(cu.path, 0755); err != nil {
 				return err
-			}		
+			}
 		} else {
 			return err
 		}
@@ -268,12 +268,12 @@ func (cu *CryptoUnit) SaveCertificate() error {
 		if os.IsNotExist(err) {
 			if err := os.MkdirAll(cu.path, 0755); err != nil {
 				return err
-			}		
+			}
 		} else {
-			return err 
+			return err
 		}
 	}
-	
+
 	// Peers certificates
 	for i, knownCert := range cu.knownCerts {
 		fname := filepath.Join(cu.path, fmt.Sprintf("g-%s.pem", knownCert.SerialNumber))
@@ -443,7 +443,7 @@ func sendCertRequest(privKey *ecdsa.PrivateKey, caAddr string, pk pkix.Name, DNS
 		SignatureAlgorithm: x509.ECDSAWithSHA256,
 		Subject:            pk,
 		DNSNames:           DNSNames,
-		IPAddresses: 		[]net.IP{net.ParseIP(localIP)},
+		IPAddresses:        []net.IP{net.ParseIP(localIP)},
 	}
 
 	certReqBytes, err := x509.CreateCertificateRequest(rand.Reader, &template, privKey)

@@ -12,10 +12,10 @@ import (
 
 type dummyPingService struct{}
 
-func (d *dummyPingService) Pause(time.Duration)                   {}
+func (d *dummyPingService) Pause(time.Duration)                     {}
 func (d *dummyPingService) Ping(string, *pb.Ping) (*pb.Pong, error) { return nil, nil }
-func (d *dummyPingService) Start()                                {}
-func (d *dummyPingService) Stop()                                 {}
+func (d *dummyPingService) Start()                                  {}
+func (d *dummyPingService) Stop()                                   {}
 func (d *dummyPingService) PongContent(nonce []byte, fingerprint []byte) []byte {
 	return nil
 }

@@ -260,11 +260,11 @@ func TestProcessEthernetFrame_IgnoredPort(t *testing.T) {
 }
 
 // TestProcessEthernetFrame_UDPPingAndPong verifies end-to-end passive RTT observation:
-// 1. Synthesizes an outgoing UDP pb.Ping packet destined for failure detector port 9001 with a 32-byte nonce.
-// 2. Verifies that the Observer logs the PING event and registers the pending challenge.
-// 3. Synthesizes the returning UDP pb.Pong response with an ECDSA signature and matching nonce.
-// 4. Verifies that the Observer correlates the Pong with the preceding Ping, records the PONG event,
-//    and accurately calculates a positive Round-Trip Time (RTT > 0 ms).
+//  1. Synthesizes an outgoing UDP pb.Ping packet destined for failure detector port 9001 with a 32-byte nonce.
+//  2. Verifies that the Observer logs the PING event and registers the pending challenge.
+//  3. Synthesizes the returning UDP pb.Pong response with an ECDSA signature and matching nonce.
+//  4. Verifies that the Observer correlates the Pong with the preceding Ping, records the PONG event,
+//     and accurately calculates a positive Round-Trip Time (RTT > 0 ms).
 func TestProcessEthernetFrame_UDPPingAndPong(t *testing.T) {
 	rec := &MockRecorder{}
 	obs := NewObserverWithRecorder(Config{UDPPort: 9001, TCPPort: 9000}, rec)
@@ -431,4 +431,3 @@ func TestGetBridgeSlaves(t *testing.T) {
 		t.Errorf("Expected 0 slaves for nonexistent device, got %d", len(slaves))
 	}
 }
-

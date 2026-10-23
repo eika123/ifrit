@@ -33,7 +33,6 @@ func (s *mockPingService) PongContent(nonce []byte, fingerprint []byte) []byte {
 	return content
 }
 
-
 func createTestPeer() (*discovery.Peer, *cryptoStub, error) {
 	priv, err := genKeys()
 	if err != nil {
