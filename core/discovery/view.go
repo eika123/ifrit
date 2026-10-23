@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"hash/fnv"
 	"math/bits"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	log "github.com/inconshreveable/log15"
 	pb "github.com/joonnna/ifrit/protobuf"
 	proto "github.com/joonnna/ifrit/protobuf"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 )
 
@@ -28,11 +30,10 @@ var (
 )
 
 type View struct {
-	viewMap   map[string]*Peer
+	viewStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 	viewMutex sync.RWMutex
 
-	liveMap   map[string]*Peer
-	liveMutex sync.RWMutex
+	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 
 	timeoutMap   map[string]*timeout
 	timeoutMutex sync.RWMutex
@@ -112,10 +113,26 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		updateInterval = 10
 	}
 
+	peerHasher := func(p *Peer) revIdxStore.DigestSymbol {
+		h := fnv.New64a()
+		h.Write([]byte(p.Id))
+		return revIdxStore.DigestSymbol(h.Sum64())
+	}
+
+	viewStore, err := revIdxStore.NewDigestSet(peerHasher)
+	if err != nil {
+		return nil, err
+	}
+
+	liveStore, err := revIdxStore.NewDigestSet(peerHasher)
+	if err != nil {
+		return nil, err
+	}
+
 	v := &View{
 		rings:           rings,
-		viewMap:         make(map[string]*Peer),
-		liveMap:         make(map[string]*Peer),
+		viewStore:       viewStore,
+		liveStore:       liveStore,
 		timeoutMap:      make(map[string]*timeout),
 		maxByz:          maxByz,
 		currGossipRing:  1,
@@ -190,49 +207,30 @@ func (v *View) Self() *Peer {
 	return v.self
 }
 
-// Peer returns the Peer with the given ID from the full view map, or nil if not present.
-//
-// Prerequisites / Expected Services:
-//   - Peers must have been registered into the full view (e.g. via certificate validation in gossip handlers or CA contacts).
-func (v *View) Peer(id string) *Peer {
-	v.viewMutex.RLock()
-	defer v.viewMutex.RUnlock()
+// hashId computes the deterministic 64-bit digest for a peer ID string.
+func (v *View) hashId(id string) revIdxStore.DigestSymbol {
+	h := fnv.New64a()
+	h.Write([]byte(id))
+	return revIdxStore.DigestSymbol(h.Sum64())
+}
 
-	if p, ok := v.viewMap[id]; !ok {
-		return nil
-	} else {
+// Peer returns the Peer with the given ID from the full view, or nil if not present.
+func (v *View) Peer(id string) *Peer {
+	if p, found := v.viewStore.GetByDigest(v.hashId(id)); found && p.Id == id {
 		return p
 	}
+	return nil
 }
 
-// Full returns a slice of all known peers in the full view map.
-//
-// Prerequisites / Expected Services:
-//   - Used during gossip digest preparation, state responses, or bootstrapping to enumerate known hosts.
+// Full returns a slice of all known peers in the full view.
 func (v *View) Full() []*Peer {
-	v.viewMutex.RLock()
-	defer v.viewMutex.RUnlock()
-
-	ret := make([]*Peer, 0, len(v.viewMap))
-
-	for _, p := range v.viewMap {
-		ret = append(ret, p)
-	}
-
-	return ret
+	return v.viewStore.Elements()
 }
 
-// Exists reports whether a peer with the specified ID exists in the full view map.
-//
-// Prerequisites / Expected Services:
-//   - Used before processing peer notes or accusations to verify registration in full view.
+// Exists reports whether a peer with the specified ID exists in the full view.
 func (v *View) Exists(id string) bool {
-	v.viewMutex.RLock()
-	defer v.viewMutex.RUnlock()
-
-	_, ok := v.viewMap[id]
-
-	return ok
+	p, found := v.viewStore.GetByDigest(v.hashId(id))
+	return found && p.Id == id
 }
 
 // Live returns a slice of all currently active/live peers.
@@ -241,17 +239,7 @@ func (v *View) Exists(id string) bool {
 //   - Peers must have been inserted into the live view (e.g. initial contacts or validated gossip notes).
 //   - Used by application services, failure detectors, or visualizers to query active cluster membership.
 func (v *View) Live() []*Peer {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
-
-	ret := make([]*Peer, 0, len(v.liveMap))
-
-	for _, p := range v.liveMap {
-		ret = append(ret, p)
-	}
-
-	return ret
-
+	return v.liveStore.Elements()
 }
 
 // AddFull registers a new peer in the full view map using their ID and certificate.
@@ -264,8 +252,9 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
-	if _, ok := v.viewMap[id]; ok {
-		log.Error("Tried to add peer twice to viewMap")
+	d := v.hashId(id)
+	if p, found := v.viewStore.GetByDigest(d); found && p.Id == id {
+		log.Error("Tried to add peer twice to full view")
 		return errPeerAlreadyExists
 	}
 
@@ -275,9 +264,41 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 		return err
 	}
 
-	v.viewMap[p.Id] = p
+	v.viewStore.AddElement(p)
 
 	return nil
+}
+
+// Fingerprint returns the commutative XOR fingerprint of all admitted members in the full view (including self).
+// By XORing self's identity hash with the remote peers in viewStore, every node in the cluster with an
+// identical membership view calculates the exact same fingerprint.
+func (v *View) Fingerprint() revIdxStore.DigestSymbol {
+	fp := v.viewStore.Fingerprint()
+	if v.self != nil {
+		fp = fp.XOR(v.hashId(v.self.Id))
+	}
+	return fp
+}
+
+// ViewStore returns the underlying ReverseIndexStore backing the full view.
+func (v *View) ViewStore() revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol] {
+	return v.viewStore
+}
+
+// LiveStore returns the underlying ReverseIndexStore backing the live view.
+func (v *View) LiveStore() revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol] {
+	return v.liveStore
+}
+
+// LiveSubsetOfView reports whether every peer in liveStore is also present in viewStore.
+// This enforces the invariant that live members are always a subset of admitted members.
+func (v *View) LiveSubsetOfView() bool {
+	for _, p := range v.liveStore.Elements() {
+		if !v.Exists(p.Id) {
+			return false
+		}
+	}
+	return true
 }
 
 // MyNeighbours returns all distinct neighbours (predecessors and successors) across all active rings.
@@ -285,8 +306,8 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 // Prerequisites / Expected Services:
 //   - Used by gossip protocols and failure detectors to discover which nodes to monitor/probe.
 func (v *View) MyNeighbours() []*Peer {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
 
 	return v.rings.allMyNeighbours()
 }
@@ -297,8 +318,8 @@ func (v *View) MyNeighbours() []*Peer {
 // Prerequisites / Expected Services:
 //   - Expected to be called by the periodic gossip loop (Node.gossipLoop) on each gossip round.
 func (v *View) GossipPartners() []*Peer {
-	v.liveMutex.Lock()
-	defer v.liveMutex.Unlock()
+	v.viewMutex.Lock()
+	defer v.viewMutex.Unlock()
 	defer v.incrementGossipRing()
 
 	return v.rings.myRingNeighbours(v.currGossipRing)
@@ -311,8 +332,8 @@ func (v *View) GossipPartners() []*Peer {
 //   - Expected to be called by the periodic failure detector / monitoring loop (Node.monitorLoop).
 //   - The failure detector service (PingService / commService) will probe the returned peer.
 func (v *View) MonitorTarget() (*Peer, uint32) {
-	v.liveMutex.Lock()
-	defer v.liveMutex.Unlock()
+	v.viewMutex.Lock()
+	defer v.viewMutex.Unlock()
 
 	ringNum := v.currMonitorRing
 	defer v.incrementMonitorRing()
@@ -320,24 +341,27 @@ func (v *View) MonitorTarget() (*Peer, uint32) {
 	return v.rings.myRingSuccessor(v.currMonitorRing), ringNum
 }
 
-// AddLive inserts a peer into the live map and places them into the ring structures,
+// AddLive inserts a peer into the live store and places them into the ring structures,
 // closing connections to any peers that are no longer direct ring neighbours.
 //
 // Prerequisites / Expected Services:
 //   - Peer must have been validated (valid certificate and fresh signed Note) before adding to live view.
 //   - connectionManager (commService) must be initialized to close connections to displaced ring neighbours.
 func (v *View) AddLive(p *Peer) {
-	v.liveMutex.Lock()
-	defer v.liveMutex.Unlock()
+	v.viewMutex.Lock()
 
-	if _, ok := v.liveMap[p.Id]; ok {
-		log.Error("Tried to add peer twice to liveMap", "addr", p.Addr)
+	d := v.hashId(p.Id)
+	if existing, found := v.liveStore.GetByDigest(d); found && existing.Id == p.Id {
+		v.viewMutex.Unlock()
+		log.Error("Tried to add peer twice to live store", "addr", p.Addr)
 		return
 	}
 
-	v.liveMap[p.Id] = p
+	v.liveStore.AddElement(p)
 
 	old := v.rings.add(p)
+	v.viewMutex.Unlock()
+
 	for _, addr := range old {
 		v.cm.CloseConn(addr)
 	}
@@ -349,43 +373,46 @@ func (v *View) AddLive(p *Peer) {
 //   - Ring number must be in range [1, numRings].
 //   - Used during accusation validation to verify monitoring relationships.
 func (v *View) MyRingNeighbours(ringNum uint32) (*Peer, *Peer) {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
 
 	return v.rings.myRingSuccessor(ringNum), v.rings.myRingPredecessor(ringNum)
 }
 
-// LivePeer retrieves a peer from the live map by their ID, returning nil if not found.
+// LivePeer retrieves a peer from the live store by their ID, returning nil if not found.
 //
 // Prerequisites / Expected Services:
 //   - Used when handling gossip and accusations to check if the target is currently considered active.
 func (v *View) LivePeer(id string) *Peer {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
-
-	return v.liveMap[id]
+	if p, found := v.liveStore.GetByDigest(v.hashId(id)); found && p.Id == id {
+		return p
+	}
+	return nil
 }
 
-// RemoveLive removes a peer from the live map and ring structures, closing any active connection to them.
+// RemoveLive removes a peer from the live store and ring structures, closing any active connection to them.
 //
 // Prerequisites / Expected Services:
 //   - connectionManager (commService) must be initialized to close the open transport connection to the removed peer.
 //   - Called when a suspicion timeout expires (Start / checkTimeouts) or on explicit eviction.
 func (v *View) RemoveLive(id string) {
-	v.liveMutex.Lock()
-	defer v.liveMutex.Unlock()
+	v.viewMutex.Lock()
 
-	if peer, ok := v.liveMap[id]; ok {
-		v.rings.remove(peer)
-
-		delete(v.liveMap, peer.Id)
-
-		v.cm.CloseConn(peer.Addr)
-
-		log.Debug("Removed livePeer", "addr", peer.Addr)
-	} else {
+	d := v.hashId(id)
+	peer, ok := v.liveStore.GetByDigest(d)
+	if !ok || peer.Id != id {
+		v.viewMutex.Unlock()
 		log.Debug("Tried to remove non-existing peer from live view.")
+		return
 	}
+
+	v.liveStore.Remove(peer)
+	v.rings.remove(peer)
+	v.viewMutex.Unlock()
+
+	v.cm.CloseConn(peer.Addr)
+
+	log.Debug("Removed livePeer", "addr", peer.Addr)
 }
 
 // StartTimer begins or updates a suspicion timeout timer for an accused peer based on a received accusation.
@@ -539,8 +566,8 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 // Prerequisites / Expected Services:
 //   - Used by incoming gossip RPC handlers (e.g. Spread) to verify whether incoming gossip from a sender should be accepted and merged.
 func (v *View) ShouldBeNeighbour(id string) bool {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
 
 	return v.rings.shouldBeMyNeighbour(id)
 }
@@ -550,8 +577,8 @@ func (v *View) ShouldBeNeighbour(id string) bool {
 // Prerequisites / Expected Services:
 //   - Used during peer placement checks and diagnostic/visualizer services.
 func (v *View) FindNeighbours(id string) []*Peer {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
 
 	return v.rings.findNeighbours(id)
 }
@@ -561,23 +588,19 @@ func (v *View) FindNeighbours(id string) []*Peer {
 // Prerequisites / Expected Services:
 //   - Used by accusation validation handlers (Node.evalAccusation) to verify accusation legitimacy before accepting.
 func (v *View) ValidAccuser(accused, accuser *Peer, ringNum uint32) bool {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
 
 	return v.rings.isPredecessor(accused, accuser, ringNum)
 }
 
-// IsAlive checks whether a peer with the given ID currently exists in the live view map.
+// IsAlive checks whether a peer with the given ID currently exists in the live store.
 //
 // Prerequisites / Expected Services:
 //   - Used by failure detectors, visualizers, and message handlers before routing messages.
 func (v *View) IsAlive(id string) bool {
-	v.liveMutex.RLock()
-	defer v.liveMutex.RUnlock()
-
-	_, ok := v.liveMap[id]
-
-	return ok
+	p, found := v.liveStore.GetByDigest(v.hashId(id))
+	return found && p.Id == id
 }
 
 func (v *View) incrementGossipRing() {
@@ -617,7 +640,7 @@ func (v *View) State() *proto.State {
 		OwnNote:       ownNote,
 	}
 
-	for _, p := range v.viewMap {
+	for _, p := range v.viewStore.Elements() {
 		id := hex.EncodeToString([]byte(p.Id))
 		if note := p.Note(); note != nil {
 			ret.ExistingHosts[id] = note.epoch
@@ -746,19 +769,35 @@ func hasBit(n uint32, pos uint32) bool {
 
 // ONLY for testing
 func (v *View) RemoveTestFull(id string) {
-	delete(v.viewMap, id)
+	v.viewMutex.Lock()
+	defer v.viewMutex.Unlock()
+
+	if p, ok := v.viewStore.GetByDigest(v.hashId(id)); ok && p.Id == id {
+		v.viewStore.Remove(p)
+	}
+}
+
+// ONLY for testing
+func (v *View) AddTestPeer(p *Peer) {
+	v.viewStore.AddElement(p)
+}
+
+// ONLY for testing
+func (v *View) AddTestLivePeer(p *Peer) {
+	v.liveStore.AddElement(p)
 }
 
 // ONLY for testing
 func (v *View) Compare(other *View) error {
-	for id, p := range v.viewMap {
+	for _, p := range v.viewStore.Elements() {
+		id := p.Id
 		var p2 *Peer
 		if id == other.self.Id {
 			p2 = other.self
 		} else {
 			var ok bool
-			p2, ok = other.viewMap[id]
-			if !ok {
+			p2, ok = other.viewStore.GetByDigest(other.hashId(id))
+			if !ok || p2.Id != id {
 				return errors.New("Peer not present in both views.")
 			}
 		}
@@ -790,11 +829,12 @@ func (v *View) Compare(other *View) error {
 		}
 	}
 
-	for id := range v.liveMap {
+	for _, p := range v.liveStore.Elements() {
+		id := p.Id
 		if id == other.self.Id {
 			continue
 		}
-		if _, ok := other.liveMap[id]; !ok {
+		if !other.IsAlive(id) {
 			return errors.New("Did not have peer in both live views.")
 		}
 	}

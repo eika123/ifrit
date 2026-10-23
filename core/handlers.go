@@ -542,9 +542,7 @@ func (n *Node) validateCertificate(cert *x509.Certificate) error {
 // addValidCertificate registers an authenticated certificate in the full view if not already present.
 func (n *Node) addValidCertificate(cert *x509.Certificate) {
 	id := string(cert.SubjectKeyId)
-	if !n.view.Exists(id) {
-		n.view.AddFull(id, cert)
-	}
+	_ = n.view.AddFull(id, cert)
 }
 
 // evalCertificate validates a certificate and adds it to the full view if valid.

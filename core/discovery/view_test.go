@@ -94,7 +94,7 @@ func (suite *ViewTestSuite) TestPeer() {
 		Id: "testId",
 	}
 
-	suite.v.viewMap[p.Id] = p
+	suite.v.AddTestPeer(p)
 
 	assert.Equal(suite.T(), p, suite.v.Peer(p.Id), "Did not find correct peer.")
 
@@ -114,7 +114,7 @@ func (suite *ViewTestSuite) TestFull() {
 			Id: fmt.Sprintf("testId%d", i),
 		}
 
-		suite.v.viewMap[p.Id] = p
+		suite.v.AddTestPeer(p)
 
 		view := suite.v.Full()
 
@@ -130,7 +130,7 @@ func (suite *ViewTestSuite) TestExists() {
 		Id: "TestId",
 	}
 
-	suite.v.viewMap[p.Id] = p
+	suite.v.AddTestPeer(p)
 
 	assert.True(suite.T(), suite.v.Exists(p.Id), "Should return true on existing id.")
 }
@@ -147,7 +147,7 @@ func (suite *ViewTestSuite) TestLive() {
 			Id: fmt.Sprintf("testId%d", i),
 		}
 
-		suite.v.liveMap[p.Id] = p
+		suite.v.AddTestLivePeer(p)
 
 		view := suite.v.Live()
 
@@ -161,12 +161,12 @@ func (suite *ViewTestSuite) TestAddFull() {
 		Id: "TestId",
 	}
 
-	suite.v.viewMap[p.Id] = p
+	suite.v.AddTestPeer(p)
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
 	require.NoError(suite.T(), err, "Failed to generate private key.")
 
-	certId := "selfId"
+	certId := "otherId"
 	cert := validCert(certId, privKey.Public())
 
 	assert.EqualError(suite.T(), suite.v.AddFull(p.Id, cert), errPeerAlreadyExists.Error(), "Should return error when adding duplicate peer.")
@@ -175,6 +175,8 @@ func (suite *ViewTestSuite) TestAddFull() {
 
 	assert.NoError(suite.T(), suite.v.AddFull(certId, cert), "Should not return error with valid parameters.")
 	assert.True(suite.T(), suite.v.Exists(certId), "Peer not added to map.")
+	assert.NotZero(suite.T(), suite.v.Fingerprint(), "View fingerprint should be non-zero.")
+	assert.Equal(suite.T(), 2, suite.v.ViewStore().Size(), "ViewStore should contain added peers.")
 }
 
 func (suite *ViewTestSuite) TestMyNeighbours() {
@@ -304,16 +306,12 @@ func (suite *ViewTestSuite) TestAddLive() {
 
 	view.AddLive(p)
 
-	assert.Equal(suite.T(), 1, len(view.liveMap), "Peer not added to liveMap.")
-
-	_, ok := view.liveMap[p.Id]
-	assert.True(suite.T(), ok, "Peer does is not present in liveMap.")
+	assert.Equal(suite.T(), 1, view.LiveStore().Size(), "Peer not added to liveStore.")
+	assert.True(suite.T(), view.IsAlive(p.Id), "Peer is not present in liveStore.")
 
 	view.AddLive(p)
-	assert.Equal(suite.T(), 1, len(view.liveMap), "Adding peer twice does not alter state.")
-
-	_, ok = view.liveMap[p.Id]
-	assert.True(suite.T(), ok, "Adding peer twice does not alter state.")
+	assert.Equal(suite.T(), 1, view.LiveStore().Size(), "Adding peer twice does not alter state.")
+	assert.True(suite.T(), view.IsAlive(p.Id), "Adding peer twice does not alter state.")
 }
 
 func (suite *ViewTestSuite) TestRingNeighbours() {
@@ -354,7 +352,7 @@ func (suite *ViewTestSuite) TestLivePeer() {
 		Id: "testId",
 	}
 
-	view.liveMap[p.Id] = p
+	view.AddTestLivePeer(p)
 
 	assert.Equal(suite.T(), p, view.LivePeer(p.Id), "Returned incorrect peer of existing id.")
 }
@@ -366,28 +364,22 @@ func (suite *ViewTestSuite) TestRemoveLive() {
 		Id: "testId",
 	}
 
-	view.liveMap[p.Id] = p
+	view.AddTestLivePeer(p)
 
 	view.RemoveLive(p.Id)
 
-	assert.Zero(suite.T(), len(view.liveMap), "Peer not removed from liveMap.")
-
-	_, ok := view.liveMap[p.Id]
-	assert.False(suite.T(), ok, "Peer still in liveMap after being removed.")
+	assert.Zero(suite.T(), view.LiveStore().Size(), "Peer not removed from liveStore.")
+	assert.False(suite.T(), view.IsAlive(p.Id), "Peer still in liveStore after being removed.")
 
 	view.RemoveLive(p.Id)
-	assert.Zero(suite.T(), len(view.liveMap), "Removing peer twice alters state.")
-
-	_, ok = view.liveMap[p.Id]
-	assert.False(suite.T(), ok, "Removing peer twice alters state.")
+	assert.Zero(suite.T(), view.LiveStore().Size(), "Removing peer twice alters state.")
+	assert.False(suite.T(), view.IsAlive(p.Id), "Removing peer twice alters state.")
 
 	nonExistingId := "does-not-exist"
 
 	view.RemoveLive(nonExistingId)
-	assert.Zero(suite.T(), len(view.liveMap), "Removing non-existing id alters state.")
-
-	_, ok = view.liveMap[nonExistingId]
-	assert.False(suite.T(), ok, "Removing non-existing id alters state.")
+	assert.Zero(suite.T(), view.LiveStore().Size(), "Removing non-existing id alters state.")
+	assert.False(suite.T(), view.IsAlive(nonExistingId), "Removing non-existing id alters state.")
 }
 
 func (suite *ViewTestSuite) TestStartTimer() {
@@ -634,7 +626,7 @@ func (suite *ViewTestSuite) TestIsAlive() {
 		Id: "testId",
 	}
 
-	view.liveMap[p.Id] = p
+	view.AddTestLivePeer(p)
 
 	assert.True(suite.T(), view.IsAlive(p.Id), "Id of live peer should return true.")
 }
@@ -720,7 +712,7 @@ func (suite *ViewTestSuite) TestState() {
 			}
 		}
 
-		view.viewMap[p.Id] = p
+		view.AddTestPeer(p)
 
 		s := view.State()
 
@@ -907,7 +899,7 @@ func (suite *ViewTestSuite) TestCheckTimeoutsSuspicionWindow() {
 		Id:   "accusedPeer",
 		Addr: "accusedAddr",
 	}
-	suite.v.liveMap[accused.Id] = accused
+	suite.v.AddTestLivePeer(accused)
 
 	accuser := &Peer{
 		Id: "accuserPeer",
@@ -928,13 +920,41 @@ func (suite *ViewTestSuite) TestCheckTimeoutsSuspicionWindow() {
 	// First tick should NOT evict the peer
 	suite.v.checkTimeouts()
 	assert.Contains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should not be evicted immediately on tick")
-	assert.Contains(suite.T(), suite.v.liveMap, accused.Id, "Peer should remain in liveMap during suspicion window")
+	assert.True(suite.T(), suite.v.IsAlive(accused.Id), "Peer should remain in liveStore during suspicion window")
 
 	// Expire timeout by setting timestamp past 60s
 	suite.v.timeoutMap[accused.Id].timeStamp = time.Now().Add(-65 * time.Second)
 	suite.v.checkTimeouts()
 	assert.NotContains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should be evicted after removal_timeout expires")
-	assert.NotContains(suite.T(), suite.v.liveMap, accused.Id, "Peer should be removed from liveMap after timeout")
+	assert.False(suite.T(), suite.v.IsAlive(accused.Id), "Peer should be removed from liveStore after timeout")
+}
+
+func (suite *ViewTestSuite) TestLiveSubsetOfView() {
+	view := suite.v
+
+	// Initially empty: subset should hold
+	assert.True(suite.T(), view.LiveSubsetOfView(), "Empty live store should be subset of view")
+
+	p1 := &Peer{Id: "peer1"}
+	p2 := &Peer{Id: "peer2"}
+
+	// Admitted to full view
+	view.AddTestPeer(p1)
+	view.AddTestPeer(p2)
+	assert.True(suite.T(), view.LiveSubsetOfView())
+
+	// p1 becomes live
+	view.AddTestLivePeer(p1)
+	assert.True(suite.T(), view.LiveSubsetOfView(), "p1 is in both live and view")
+
+	// rogue peer only in live
+	rogue := &Peer{Id: "rogue"}
+	view.AddTestLivePeer(rogue)
+	assert.False(suite.T(), view.LiveSubsetOfView(), "rogue peer is live but not in full view")
+
+	// remove rogue peer
+	view.LiveStore().Remove(rogue)
+	assert.True(suite.T(), view.LiveSubsetOfView(), "subset holds after rogue peer removed")
 }
 
 func validCert(id string, pub crypto.PublicKey) *x509.Certificate {
