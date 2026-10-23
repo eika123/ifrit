@@ -344,7 +344,7 @@ func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Pee
 }
 
 // validateRemoteAccusation verifies that an accusation against a remote peer matches the peer's
-// current note epoch, is on an enabled ring, originates from the legitimate ring predecessor,
+// current note epoch, is on an enabled ring, that the accuserPeer is the legitimate predecessor of accusedPeer,
 // and carries a valid cryptographic signature.
 func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer, marshaledAcc []byte) error {
 	ringNum := a.GetRingNum()
