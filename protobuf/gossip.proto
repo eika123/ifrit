@@ -80,7 +80,9 @@ message Ping {
 message Pong {
     bytes nonce = 1;
     Signature signature = 2;
-    bytes fingerprint = 3;
+    bytes fingerprint_data = 3;
+    bytes fingerprint_accusations = 4;
+    bytes fingerprint_view = 5;
 }
 
 message Test {

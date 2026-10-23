@@ -194,7 +194,7 @@ func (ps *pingStub) Ping(addr string, m *pb.Ping) (*pb.Pong, error) {
 	return &pb.Pong{}, nil
 }
 
-func (ps *pingStub) PongContent(nonce []byte, fingerprint []byte) []byte {
+func (ps *pingStub) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
 	return nil
 }
 

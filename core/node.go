@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/ecdsa"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/joonnna/workerpool"
 	"github.com/spf13/viper"
 )
@@ -195,8 +197,18 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 	n.comm.Register(n)
 
-	if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
+	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
+		fpSetter.SetFingerprintDataProvider(n.self.FingerprintData)
+	} else if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintProvider(n.self.Fingerprint)
+	}
+
+	if fpAccSetter, ok := ps.(interface{ SetFingerprintAccusationsProvider(func() []byte) }); ok {
+		fpAccSetter.SetFingerprintAccusationsProvider(n.AccusationFingerprintBytes)
+	}
+
+	if fpViewSetter, ok := ps.(interface{ SetFingerprintViewProvider(func() []byte) }); ok {
+		fpViewSetter.SetFingerprintViewProvider(n.ViewFingerprintBytes)
 	}
 
 	if n.cm.CaCertificate() != nil {
@@ -254,6 +266,37 @@ func (n *Node) SetFingerprint(fp []byte) {
 
 func (n *Node) Fingerprint() []byte {
 	return n.self.Fingerprint()
+}
+
+func (n *Node) SetFingerprintData(fp []byte) {
+	n.self.SetFingerprintData(fp)
+}
+
+func (n *Node) FingerprintData() []byte {
+	return n.self.FingerprintData()
+}
+
+func (n *Node) AccusationFingerprint() revIdxStore.DigestSymbol {
+	return n.view.AccusationFingerprint()
+}
+
+// TODO: Check this big endian stuff
+func (n *Node) AccusationFingerprintBytes() []byte {
+	fp := n.view.AccusationFingerprint()
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(fp))
+	return buf[:]
+}
+
+func (n *Node) ViewFingerprint() revIdxStore.DigestSymbol {
+	return n.view.Fingerprint()
+}
+
+func (n *Node) ViewFingerprintBytes() []byte {
+	fp := n.view.Fingerprint()
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(fp))
+	return buf[:]
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

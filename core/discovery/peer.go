@@ -51,7 +51,9 @@ type Peer struct {
 
 	nPingMutex sync.RWMutex
 
-	fingerprint      []byte
+	fingerprintData  []byte
+	fingerprintAcc   []byte
+	fingerprintView  []byte
 	fingerprintMutex sync.RWMutex
 }
 
@@ -185,18 +187,55 @@ func (p *Peer) NumPing() uint32 {
 	return p.nPing
 }
 
-func (p *Peer) Fingerprint() []byte {
+func (p *Peer) FingerprintData() []byte {
 	p.fingerprintMutex.RLock()
 	defer p.fingerprintMutex.RUnlock()
 
-	return p.fingerprint
+	return p.fingerprintData
 }
 
-func (p *Peer) SetFingerprint(fp []byte) {
+func (p *Peer) SetFingerprintData(fp []byte) {
 	p.fingerprintMutex.Lock()
 	defer p.fingerprintMutex.Unlock()
 
-	p.fingerprint = fp
+	p.fingerprintData = fp
+}
+
+func (p *Peer) FingerprintAccusations() []byte {
+	p.fingerprintMutex.RLock()
+	defer p.fingerprintMutex.RUnlock()
+
+	return p.fingerprintAcc
+}
+
+func (p *Peer) SetFingerprintAccusations(fp []byte) {
+	p.fingerprintMutex.Lock()
+	defer p.fingerprintMutex.Unlock()
+
+	p.fingerprintAcc = fp
+}
+
+func (p *Peer) FingerprintView() []byte {
+	p.fingerprintMutex.RLock()
+	defer p.fingerprintMutex.RUnlock()
+
+	return p.fingerprintView
+}
+
+func (p *Peer) SetFingerprintView(fp []byte) {
+	p.fingerprintMutex.Lock()
+	defer p.fingerprintMutex.Unlock()
+
+	p.fingerprintView = fp
+}
+
+// Backwards-compatible aliases:
+func (p *Peer) Fingerprint() []byte {
+	return p.FingerprintData()
+}
+
+func (p *Peer) SetFingerprint(fp []byte) {
+	p.SetFingerprintData(fp)
 }
 
 /*

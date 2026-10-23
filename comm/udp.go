@@ -20,8 +20,14 @@ type UDPServer struct {
 	pongSigner
 	timeout time.Duration
 
-	fpProvider func() []byte
-	fpMutex    sync.RWMutex
+	fpDataProvider func() []byte
+	fpDataMutex    sync.RWMutex
+
+	fpAccProvider func() []byte
+	fpAccMutex    sync.RWMutex
+
+	fpViewProvider func() []byte
+	fpViewMutex    sync.RWMutex
 }
 
 type pongSigner interface {
@@ -102,8 +108,10 @@ func (us *UDPServer) Start() {
 				continue
 			}
 
-			fp := us.getFingerprint()
-			content := us.PongContent(ping.GetNonce(), fp)
+			fpData := us.getFingerprintData()
+			fpAcc := us.getFingerprintAccusations()
+			fpView := us.getFingerprintView()
+			content := us.PongContent(ping.GetNonce(), fpData, fpAcc, fpView)
 			r, s, err := us.Sign(content)
 			if err != nil {
 				log.Error(err.Error())
@@ -116,7 +124,9 @@ func (us *UDPServer) Start() {
 					R: r,
 					S: s,
 				},
-				Fingerprint: fp,
+				FingerprintData:        fpData,
+				FingerprintAccusations: fpAcc,
+				FingerprintView:        fpView,
 			}
 
 			resp, err := proto.Marshal(pong)
@@ -135,23 +145,74 @@ func (us *UDPServer) Start() {
 	}
 }
 
+func (us *UDPServer) SetFingerprintDataProvider(f func() []byte) {
+	us.fpDataMutex.Lock()
+	defer us.fpDataMutex.Unlock()
+	us.fpDataProvider = f
+}
+
+func (us *UDPServer) SetFingerprintData(fp []byte) {
+	us.SetFingerprintDataProvider(func() []byte { return fp })
+}
+
+func (us *UDPServer) getFingerprintData() []byte {
+	us.fpDataMutex.RLock()
+	defer us.fpDataMutex.RUnlock()
+	if us.fpDataProvider != nil {
+		return us.fpDataProvider()
+	}
+	return nil
+}
+
+func (us *UDPServer) SetFingerprintAccusationsProvider(f func() []byte) {
+	us.fpAccMutex.Lock()
+	defer us.fpAccMutex.Unlock()
+	us.fpAccProvider = f
+}
+
+func (us *UDPServer) SetFingerprintAccusations(fp []byte) {
+	us.SetFingerprintAccusationsProvider(func() []byte { return fp })
+}
+
+func (us *UDPServer) getFingerprintAccusations() []byte {
+	us.fpAccMutex.RLock()
+	defer us.fpAccMutex.RUnlock()
+	if us.fpAccProvider != nil {
+		return us.fpAccProvider()
+	}
+	return nil
+}
+
+func (us *UDPServer) SetFingerprintViewProvider(f func() []byte) {
+	us.fpViewMutex.Lock()
+	defer us.fpViewMutex.Unlock()
+	us.fpViewProvider = f
+}
+
+func (us *UDPServer) SetFingerprintView(fp []byte) {
+	us.SetFingerprintViewProvider(func() []byte { return fp })
+}
+
+func (us *UDPServer) getFingerprintView() []byte {
+	us.fpViewMutex.RLock()
+	defer us.fpViewMutex.RUnlock()
+	if us.fpViewProvider != nil {
+		return us.fpViewProvider()
+	}
+	return nil
+}
+
+// Backwards-compatible aliases:
 func (us *UDPServer) SetFingerprintProvider(f func() []byte) {
-	us.fpMutex.Lock()
-	defer us.fpMutex.Unlock()
-	us.fpProvider = f
+	us.SetFingerprintDataProvider(f)
 }
 
 func (us *UDPServer) SetFingerprint(fp []byte) {
-	us.SetFingerprintProvider(func() []byte { return fp })
+	us.SetFingerprintData(fp)
 }
 
 func (us *UDPServer) getFingerprint() []byte {
-	us.fpMutex.RLock()
-	defer us.fpMutex.RUnlock()
-	if us.fpProvider != nil {
-		return us.fpProvider()
-	}
-	return nil
+	return us.getFingerprintData()
 }
 
 func (us *UDPServer) Addr() string {
@@ -167,14 +228,16 @@ func (us *UDPServer) Stop() {
 	us.conn.Close()
 }
 
-// PongContent returns the canonical serialized semantic content of a Pong message (nonce and fingerprint).
-func PongContent(nonce []byte, fingerprint []byte) []byte {
-	content := make([]byte, 0, len(nonce)+len(fingerprint))
+// PongContent returns the canonical serialized semantic content of a Pong message (nonce, fingerprint_data, fingerprint_accusations, and fingerprint_view).
+func PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
+	content := make([]byte, 0, len(nonce)+len(fpData)+len(fpAcc)+len(fpView))
 	content = append(content, nonce...)
-	content = append(content, fingerprint...)
+	content = append(content, fpData...)
+	content = append(content, fpAcc...)
+	content = append(content, fpView...)
 	return content
 }
 
-func (us *UDPServer) PongContent(nonce []byte, fingerprint []byte) []byte {
-	return PongContent(nonce, fingerprint)
+func (us *UDPServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
+	return PongContent(nonce, fpData, fpAcc, fpView)
 }
