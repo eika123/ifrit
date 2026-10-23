@@ -306,6 +306,95 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 	}
 }
 
+// marshalAccusationContent strips the signature, marshals the accusation payload,
+// and restores the signature on the protobuf struct.
+func (n *Node) marshalAccusationContent(a *pb.Accusation) ([]byte, error) {
+	sign := a.GetSignature()
+	if sign == nil {
+		return nil, errInvalidSignature
+	}
+
+	a.Signature = nil
+	bytes, err := proto.Marshal(a)
+	a.Signature = sign
+	return bytes, err
+}
+
+// handleSelfAccusation validates and responds to an incoming accusation against the local node.
+// If the accuser is a legitimate ring predecessor with a valid signature, an immediate
+// rebuttal broadcast is triggered.
+func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Peer, marshaledAcc []byte) error {
+	ringNum := a.GetRingNum()
+	epoch := a.GetEpoch()
+
+	if !n.view.ValidAccuser(n.self, accuserPeer, ringNum) {
+		return errInvalidAccuser
+	}
+
+	sign := a.GetSignature()
+	if !n.cs.Verify(marshaledAcc, sign.GetR(), sign.GetS(), accuserPeer.PublicKey()) {
+		return errInvalidSignature
+	}
+
+	if n.view.ShouldRebuttal(epoch, ringNum) {
+		n.protocol().Rebuttal(n)
+		return nil
+	}
+	return errInvalidSelfAccusation
+}
+
+// validateRemoteAccusation verifies that an accusation against a remote peer matches the peer's
+// current note epoch, is on an enabled ring, originates from the legitimate ring predecessor,
+// and carries a valid cryptographic signature.
+func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer, marshaledAcc []byte) error {
+	ringNum := a.GetRingNum()
+	epoch := a.GetEpoch()
+
+	note := accusedPeer.Note()
+	if note == nil || !note.Equal(epoch) {
+		return errInvalidEpoch
+	}
+
+	if note.IsRingDisabled(ringNum, n.view.NumRings()) {
+		return errDisabledRing
+	}
+
+	if !n.view.ValidAccuser(accusedPeer, accuserPeer, ringNum) {
+		return errInvalidAccuser
+	}
+
+	sign := a.GetSignature()
+	if !n.cs.Verify(marshaledAcc, sign.GetR(), sign.GetS(), accuserPeer.PublicKey()) {
+		return errInvalidSignature
+	}
+
+	return nil
+}
+
+// applyValidAccusation records a validated accusation on the accused peer and starts a suspicion
+// removal timer if the peer is live.
+func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) error {
+	sign := a.GetSignature()
+	err := p.AddAccusation(p.Id, accuserPeer.Id, a.GetEpoch(), a.GetRingNum(), sign.GetR(), sign.GetS())
+	if err != nil {
+		return err
+	}
+
+	// start timer if there isn't already one and the peer is considered alive
+	if n.view.IsAlive(p.Id) && !n.view.HasTimer(p.Id) {
+		n.view.StartTimer(p, p.Note(), accuserPeer)
+	}
+	return nil
+}
+
+// ensureAccusationTimer ensures a suspicion timer is active for an already recorded accusation if the peer is live.
+func (n *Node) ensureAccusationTimer(accusedPeer, accuserPeer *discovery.Peer) {
+	if n.view.IsAlive(accusedPeer.Id) && !n.view.HasTimer(accusedPeer.Id) {
+		n.view.StartTimer(accusedPeer, accusedPeer.Note(), accuserPeer)
+		log.Debug("Had accusation with no timer, starting timer.")
+	}
+}
+
 // evalAccusation validates and processes an incoming gossip accusation against peer p.
 //
 // Behavior:
@@ -317,85 +406,29 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 //     - If already recorded, ensures the suspicion timer is active.
 //     - If new, verifies that the target note epoch matches, the ring is not disabled, and the accuser is the valid predecessor.
 //     - Stores the accusation on the peer and starts a suspicion removal timer if the peer is live.
-func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) error {
-	sign := a.GetSignature()
-	if sign == nil {
-		return errInvalidSignature
-	}
-
-	r := sign.GetR()
-	s := sign.GetS()
-
-	epoch := a.GetEpoch()
-	ringNum := a.GetRingNum()
-
-	a.Signature = nil
-	bytes, err := proto.Marshal(a)
-	a.Signature = sign
+func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
+	marshaledAcc, err := n.marshalAccusationContent(a)
 	if err != nil {
 		return err
 	}
 
-	// If the node is handling an incoming accusation about itself,
-	// check if the accuser is the legitimate predecessor in the ring, that the
-	// accusation has a valid signature and if it should be rebutted
-	if n.self.Id == p.Id {
-		if isPrev := n.view.ValidAccuser(n.self, accuserPeer, ringNum); !isPrev {
-			return errInvalidAccuser
-		}
-
-		if valid := n.cs.Verify(bytes, r, s, accuserPeer.PublicKey()); !valid {
-			return errInvalidSignature
-		}
-
-		if rebut := n.view.ShouldRebuttal(epoch, ringNum); rebut {
-			n.protocol().Rebuttal(n)
-			return nil
-		} else {
-			return errInvalidSelfAccusation
-		}
+	if n.self.Id == accusedPeer.Id {
+		return n.handleSelfAccusation(a, accuserPeer, marshaledAcc)
 	}
 
-	acc := p.RingAccusation(ringNum)
-	if acc != nil && acc.Equal(p.Id, accuserPeer.Id, ringNum, epoch) {
-		live := n.view.IsAlive(p.Id)
-		if exists := n.view.HasTimer(p.Id); !exists && live {
-			n.view.StartTimer(p, p.Note(), accuserPeer)
-			log.Debug("Had accusation with no timer, starting timer.")
-		}
+	ringNum := a.GetRingNum()
+	epoch := a.GetEpoch()
+
+	if acc := accusedPeer.RingAccusation(ringNum); acc != nil && acc.Equal(accusedPeer.Id, accuserPeer.Id, ringNum, epoch) {
+		n.ensureAccusationTimer(accusedPeer, accuserPeer)
 		return errAccAlreadyExists
 	}
 
-	// The notes are collected before the accusations, so we check if the
-	// accusation matches our most recent note (by epoch).
-	// This is an implementation artifact since notes are not piggybacked on accusations in Ifrit.
-	if note := p.Note(); note != nil && note.Equal(epoch) {
-		if disabled := note.IsRingDisabled(ringNum, n.view.NumRings()); disabled {
-			return errDisabledRing
-		}
-
-		if valid := n.view.ValidAccuser(p, accuserPeer, ringNum); !valid {
-			return errInvalidAccuser
-		}
-
-		if valid := n.cs.Verify(bytes, r, s, accuserPeer.PublicKey()); !valid {
-			return errInvalidSignature
-		}
-
-		err := p.AddAccusation(p.Id, accuserPeer.Id, epoch, ringNum, sign.GetR(), sign.GetS())
-		if err != nil {
-			return err
-		}
-
-		live := n.view.IsAlive(p.Id)
-		if exists := n.view.HasTimer(p.Id); !exists && live {
-			n.view.StartTimer(p, p.Note(), accuserPeer)
-		}
-	} else {
-		return errInvalidEpoch
+	if err := n.validateRemoteAccusation(a, accuserPeer, accusedPeer, marshaledAcc); err != nil {
+		return err
 	}
 
-	return nil
+	return n.applyValidAccusation(a, accuserPeer, accusedPeer)
 }
 
 func (node *Node) evalNote(newNote *pb.Note) error {
@@ -482,9 +515,9 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 	return nil
 }
 
-// Adds the certificate to the full view if the certificate is valid and the
-// peer is not already in the full view.
-func (n *Node) evalCertificate(cert *x509.Certificate) error {
+// validateCertificate checks if a certificate is non-nil, does not belong to self,
+// has a valid SubjectKeyId length, and is signed by the CA (or self-signed if CA is absent).
+func (n *Node) validateCertificate(cert *x509.Certificate) error {
 	if cert == nil {
 		return errNilCert
 	}
@@ -500,21 +533,26 @@ func (n *Node) evalCertificate(cert *x509.Certificate) error {
 	}
 
 	if caCert := n.cm.CaCertificate(); caCert != nil {
-		err := cert.CheckSignatureFrom(caCert)
-		if err != nil {
-			return err
-		}
-	} else {
-		err := cert.CheckSignatureFrom(cert)
-		if err != nil {
-			return err
-		}
+		// our chain of trust is currently just CA -> nodes, no intermediaries
+		return cert.CheckSignatureFrom(caCert)
 	}
+	return cert.CheckSignatureFrom(cert)
+}
 
-	if exists := n.view.Exists(id); !exists {
+// addValidCertificate registers an authenticated certificate in the full view if not already present.
+func (n *Node) addValidCertificate(cert *x509.Certificate) {
+	id := string(cert.SubjectKeyId)
+	if !n.view.Exists(id) {
 		n.view.AddFull(id, cert)
 	}
+}
 
+// evalCertificate validates a certificate and adds it to the full view if valid.
+func (n *Node) evalCertificate(cert *x509.Certificate) error {
+	if err := n.validateCertificate(cert); err != nil {
+		return err
+	}
+	n.addValidCertificate(cert)
 	return nil
 }
 
