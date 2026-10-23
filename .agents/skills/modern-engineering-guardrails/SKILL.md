@@ -40,6 +40,9 @@ It is important that the user keeps control over what is commited to the git his
 When implementing code, interpret the prompt minimally so that git history can be kept clean. Make minimal edits that satisfy the requirement, following the
 verification protocol in point ## 5. below.
 
+You write readable code with descriptive variable names and informative comments that explain why things are done.
+If necessary, explain what is done. The code should always be self-explaining for how things are done.
+
 After implementing a piece of code, provide a commit message that details what was done in typically 10-20 lines, prefering short messages with good overall information.
 The commit message must always provide two items:
 * What was your contributioin (the agent).
