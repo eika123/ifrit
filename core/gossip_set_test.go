@@ -30,7 +30,8 @@ func TestGossipSet_BasicOperations(t *testing.T) {
 	assert.True(t, added)
 	assert.Equal(t, 1, gs.Size())
 	assert.False(t, gs.Empty())
-	assert.True(t, gs.Contains(item1))
+	_, foundItem1 := gs.Contains(item1)
+	assert.True(t, foundItem1)
 
 	// Duplicate addition should return false
 	addedAgain := gs.AddElement(item1)
@@ -98,17 +99,21 @@ func TestGossipSet_CopyIsolation(t *testing.T) {
 	// Get a copy
 	cp := gs.Copy()
 	assert.Equal(t, 1, cp.Size())
-	assert.True(t, cp.Contains(testItem{ID: "orig", Value: 1}))
+	_, foundOrigInCp := cp.Contains(testItem{ID: "orig", Value: 1})
+	assert.True(t, foundOrigInCp)
 
 	// Mutate the copied set directly
 	cp.AddElement(testItem{ID: "mutated-outside", Value: 999})
 
 	// Internal GossipSet state MUST remain unaffected
 	assert.Equal(t, 1, gs.Size())
-	assert.True(t, gs.Contains(testItem{ID: "orig", Value: 1}))
-	assert.False(t, gs.Contains(testItem{ID: "mutated-outside", Value: 999}))
+	_, foundOrigInGs := gs.Contains(testItem{ID: "orig", Value: 1})
+	assert.True(t, foundOrigInGs)
+	_, foundMutatedInGs := gs.Contains(testItem{ID: "mutated-outside", Value: 999})
+	assert.False(t, foundMutatedInGs)
 	assert.Equal(t, 2, cp.Size())
-	assert.True(t, cp.Contains(testItem{ID: "mutated-outside", Value: 999}))
+	_, foundMutatedInCp := cp.Contains(testItem{ID: "mutated-outside", Value: 999})
+	assert.True(t, foundMutatedInCp)
 }
 
 func TestGossipSet_RemoteMerge(t *testing.T) {
@@ -135,9 +140,9 @@ func TestGossipSet_RemoteMerge(t *testing.T) {
 
 	// Verify merged state
 	assert.Eventually(t, func() bool {
-		return gs.Size() == 3 &&
-			gs.Contains(testItem{ID: "remote-1", Value: 20}) &&
-			gs.Contains(testItem{ID: "remote-2", Value: 30})
+		_, f1 := gs.Contains(testItem{ID: "remote-1", Value: 20})
+		_, f2 := gs.Contains(testItem{ID: "remote-2", Value: 30})
+		return gs.Size() == 3 && f1 && f2
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
@@ -193,7 +198,7 @@ func TestGossipSet_ConcurrentAccessAndRaceDetector(t *testing.T) {
 				default:
 					_ = gs.Copy()
 					_ = gs.Size()
-					_ = gs.Contains("some-item")
+					_, _ = gs.Contains("some-item")
 					_ = gs.Digests()
 					_ = gs.Fingerprint()
 					_ = gs.Elements()

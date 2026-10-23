@@ -83,9 +83,9 @@ func (suite *HandlerTestSuite) TestSpread() {
 			"Peer should not be neighbour.")
 
 		if i != 0 {
-			require.False(suite.T(), node.view.IsAlive(p.Id), "Peer should be dead.")
+			require.False(suite.T(), node.view.IsAlive(p), "Peer should be dead.")
 		} else {
-			require.True(suite.T(), node.view.IsAlive(p.Id), "Peer should be alive.")
+			require.True(suite.T(), node.view.IsAlive(p), "Peer should be alive.")
 		}
 	}
 
@@ -231,7 +231,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			"Invalid accused state for test %d.", i)
 		require.Equalf(suite.T(), t.exists, node.view.Exists(t.peer.Id),
 			"Invalid exists state for test %d.", i)
-		require.Equalf(suite.T(), t.live, node.view.IsAlive(t.peer.Id),
+		require.Equalf(suite.T(), t.live, node.view.IsAlive(t.peer),
 			"Invalid live state for test %d.", i)
 
 		var certs []string
@@ -542,7 +542,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		}
 
 		if t.accused != nil {
-			require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.accused.Id),
+			require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.accused),
 				"Invalid timer state for test %d.", i)
 
 			require.Equalf(suite.T(), t.isAccused, t.accused.IsAccused(),
@@ -554,10 +554,10 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 				"Note note changed after rebuttal for test %d.", i)
 		}
 
-		node.view.DeleteTimeout(succ.Id)
-		node.view.DeleteTimeout(prev.Id)
-		node.view.DeleteTimeout(node.self.Id)
-		node.view.DeleteTimeout(randomPeer.Id)
+		node.view.DeleteTimeout(succ)
+		node.view.DeleteTimeout(prev)
+		node.view.DeleteTimeout(node.self)
+		node.view.DeleteTimeout(randomPeer)
 	}
 
 }
@@ -686,9 +686,9 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 	}
 
 	for i, t := range tests {
-		node.view.RemoveLive(peer.Id)
-		node.view.RemoveLive(peer2.Id)
-		node.view.RemoveLive(peer3.Id)
+		node.view.RemoveLive(peer)
+		node.view.RemoveLive(peer2)
+		node.view.RemoveLive(peer3)
 
 		origSign := t.note.GetSignature()
 		require.Equalf(suite.T(), t.out, node.evalNote(t.note),
@@ -699,9 +699,9 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		}
 		require.Equalf(suite.T(), t.isAccused, t.noteHolder.IsAccused(),
 			"Invalid accusation state for test %d.", i)
-		require.Equalf(suite.T(), t.isAlive, node.view.IsAlive(t.noteHolder.Id),
+		require.Equalf(suite.T(), t.isAlive, node.view.IsAlive(t.noteHolder),
 			"Invalid live state for test %d.", i)
-		require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.noteHolder.Id),
+		require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.noteHolder),
 			"Invalid timer state for test %d.", i)
 
 		if t.replaceNote {
@@ -904,7 +904,7 @@ func nonNeighbouringPeers(n *Node, amount int) []*discovery.Peer {
 
 				if counter == len(fetched) {
 					if i != 0 {
-						n.view.RemoveLive(p.Id)
+						n.view.RemoveLive(p)
 					}
 					fetched = append(fetched, p)
 					break

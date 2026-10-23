@@ -381,7 +381,7 @@ func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.
 	}
 
 	// start timer if there isn't already one and the peer is considered alive
-	if n.view.IsAlive(p.Id) && !n.view.HasTimer(p.Id) {
+	if n.view.IsAlive(p) && !n.view.HasTimer(p) {
 		n.view.StartTimer(p, p.Note(), accuserPeer)
 	}
 	return nil
@@ -389,7 +389,7 @@ func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.
 
 // ensureAccusationTimer ensures a suspicion timer is active for an already recorded accusation if the peer is live.
 func (n *Node) ensureAccusationTimer(accusedPeer, accuserPeer *discovery.Peer) {
-	if n.view.IsAlive(accusedPeer.Id) && !n.view.HasTimer(accusedPeer.Id) {
+	if n.view.IsAlive(accusedPeer) && !n.view.HasTimer(accusedPeer) {
 		n.view.StartTimer(accusedPeer, accusedPeer.Note(), accuserPeer)
 		log.Debug("Had accusation with no timer, starting timer.")
 	}
@@ -477,7 +477,7 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 
 			peer.AddNote(mask, epoch, r, s)
 
-			if alive := node.view.IsAlive(peer.Id); !alive {
+			if alive := node.view.IsAlive(peer); !alive {
 				node.view.AddLive(peer)
 			}
 		}
@@ -501,11 +501,11 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		if !peer.IsAccused() {
 			peer.ResetPingCount()
 
-			if exists := node.view.HasTimer(peer.Id); exists {
-				node.view.DeleteTimeout(peer.Id)
+			if exists := node.view.HasTimer(peer); exists {
+				node.view.DeleteTimeout(peer)
 			}
 
-			if alive := node.view.IsAlive(peer.Id); !alive {
+			if alive := node.view.IsAlive(peer); !alive {
 				node.view.AddLive(peer)
 			}
 

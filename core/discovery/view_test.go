@@ -307,11 +307,11 @@ func (suite *ViewTestSuite) TestAddLive() {
 	view.AddLive(p)
 
 	assert.Equal(suite.T(), 1, view.LiveStore().Size(), "Peer not added to liveStore.")
-	assert.True(suite.T(), view.IsAlive(p.Id), "Peer is not present in liveStore.")
+	assert.True(suite.T(), view.IsAlive(p), "Peer is not present in liveStore.")
 
 	view.AddLive(p)
 	assert.Equal(suite.T(), 1, view.LiveStore().Size(), "Adding peer twice does not alter state.")
-	assert.True(suite.T(), view.IsAlive(p.Id), "Adding peer twice does not alter state.")
+	assert.True(suite.T(), view.IsAlive(p), "Adding peer twice does not alter state.")
 }
 
 func (suite *ViewTestSuite) TestRingNeighbours() {
@@ -343,20 +343,6 @@ func (suite *ViewTestSuite) TestRingNeighbours() {
 
 }
 
-func (suite *ViewTestSuite) TestLivePeer() {
-	view := suite.v
-
-	assert.Nil(suite.T(), view.LivePeer("non-existing-id"), "Should return nil with non-exisiting id.")
-
-	p := &Peer{
-		Id: "testId",
-	}
-
-	view.AddTestLivePeer(p)
-
-	assert.Equal(suite.T(), p, view.LivePeer(p.Id), "Returned incorrect peer of existing id.")
-}
-
 func (suite *ViewTestSuite) TestRemoveLive() {
 	view := suite.v
 
@@ -366,20 +352,23 @@ func (suite *ViewTestSuite) TestRemoveLive() {
 
 	view.AddTestLivePeer(p)
 
-	view.RemoveLive(p.Id)
+	view.RemoveLive(p)
 
 	assert.Zero(suite.T(), view.LiveStore().Size(), "Peer not removed from liveStore.")
-	assert.False(suite.T(), view.IsAlive(p.Id), "Peer still in liveStore after being removed.")
+	assert.False(suite.T(), view.IsAlive(p), "Peer still in liveStore after being removed.")
 
-	view.RemoveLive(p.Id)
+	view.RemoveLive(p)
 	assert.Zero(suite.T(), view.LiveStore().Size(), "Removing peer twice alters state.")
-	assert.False(suite.T(), view.IsAlive(p.Id), "Removing peer twice alters state.")
+	assert.False(suite.T(), view.IsAlive(p), "Removing peer twice alters state.")
 
 	nonExistingId := "does-not-exist"
 
-	view.RemoveLive(nonExistingId)
+	view.RemoveLiveId(nonExistingId)
 	assert.Zero(suite.T(), view.LiveStore().Size(), "Removing non-existing id alters state.")
-	assert.False(suite.T(), view.IsAlive(nonExistingId), "Removing non-existing id alters state.")
+	assert.False(suite.T(), view.IsAliveId(nonExistingId), "Removing non-existing id alters state.")
+
+	view.RemoveLive(nil)
+	assert.Zero(suite.T(), view.LiveStore().Size(), "Removing nil peer alters state.")
 }
 
 func (suite *ViewTestSuite) TestStartTimer() {
@@ -445,7 +434,9 @@ func (suite *ViewTestSuite) TestStartTimer() {
 func (suite *ViewTestSuite) TestHasTimer() {
 	view := suite.v
 
-	assert.False(suite.T(), view.HasTimer("non-existing-id"), "Should return false when there exists no timeout for the given id.")
+	assert.False(suite.T(), view.HasTimerId("non-existing-id"), "Should return false when there exists no timeout for the given id.")
+	assert.False(suite.T(), view.HasTimer(nil), "Should return false for nil peer.")
+	assert.False(suite.T(), view.HasTimer(&Peer{Id: "non-existing-id"}), "Should return false for non-existing peer.")
 
 	t := &timeout{
 		accused: &Peer{
@@ -455,7 +446,8 @@ func (suite *ViewTestSuite) TestHasTimer() {
 
 	view.timeoutMap[t.accused.Id] = t
 
-	assert.True(suite.T(), view.HasTimer(t.accused.Id), "Should return true when there exists a timeout for the given id.")
+	assert.True(suite.T(), view.HasTimer(t.accused), "Should return true when there exists a timeout for the given peer.")
+	assert.True(suite.T(), view.HasTimerId(t.accused.Id), "Should return true when there exists a timeout for the given id.")
 }
 
 func (suite *ViewTestSuite) TestDeleteTimeout() {
@@ -469,14 +461,17 @@ func (suite *ViewTestSuite) TestDeleteTimeout() {
 
 	view.timeoutMap[t.accused.Id] = t
 
-	view.DeleteTimeout(t.accused.Id)
+	view.DeleteTimeout(t.accused)
 
 	_, ok := view.timeoutMap[t.accused.Id]
 	assert.False(suite.T(), ok, "Timeout not removed.")
 	assert.Zero(suite.T(), len(view.timeoutMap), "Map still has entries.")
 
-	view.DeleteTimeout("non-existing-id")
+	view.DeleteTimeoutId("non-existing-id")
 	assert.Zero(suite.T(), len(view.timeoutMap), "Deleting non-existing id changes state.")
+
+	view.DeleteTimeout(nil)
+	assert.Zero(suite.T(), len(view.timeoutMap), "Deleting nil peer changes state.")
 }
 
 func (suite *ViewTestSuite) TestAllTimeouts() {
@@ -620,7 +615,9 @@ func (suite *ViewTestSuite) TestValidAccuser() {
 func (suite *ViewTestSuite) TestIsAlive() {
 	view := suite.v
 
-	assert.False(suite.T(), view.IsAlive("non-existing-id"), "Non-existing id should return false.")
+	assert.False(suite.T(), view.IsAliveId("non-existing-id"), "Non-existing id should return false.")
+	assert.False(suite.T(), view.IsAlive(nil), "Nil peer should return false.")
+	assert.False(suite.T(), view.IsAlive(&Peer{Id: "non-existing-id"}), "Non-existing peer should return false.")
 
 	p := &Peer{
 		Id: "testId",
@@ -628,7 +625,8 @@ func (suite *ViewTestSuite) TestIsAlive() {
 
 	view.AddTestLivePeer(p)
 
-	assert.True(suite.T(), view.IsAlive(p.Id), "Id of live peer should return true.")
+	assert.True(suite.T(), view.IsAlive(p), "Existing peer should return true.")
+	assert.True(suite.T(), view.IsAliveId(p.Id), "Id of live peer should return true.")
 }
 
 func (suite *ViewTestSuite) TestIncrementGossipRing() {
@@ -920,13 +918,13 @@ func (suite *ViewTestSuite) TestCheckTimeoutsSuspicionWindow() {
 	// First tick should NOT evict the peer
 	suite.v.checkTimeouts()
 	assert.Contains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should not be evicted immediately on tick")
-	assert.True(suite.T(), suite.v.IsAlive(accused.Id), "Peer should remain in liveStore during suspicion window")
+	assert.True(suite.T(), suite.v.IsAlive(accused), "Peer should remain in liveStore during suspicion window")
 
 	// Expire timeout by setting timestamp past 60s
 	suite.v.timeoutMap[accused.Id].timeStamp = time.Now().Add(-65 * time.Second)
 	suite.v.checkTimeouts()
 	assert.NotContains(suite.T(), suite.v.timeoutMap, accused.Id, "Peer should be evicted after removal_timeout expires")
-	assert.False(suite.T(), suite.v.IsAlive(accused.Id), "Peer should be removed from liveStore after timeout")
+	assert.False(suite.T(), suite.v.IsAlive(accused), "Peer should be removed from liveStore after timeout")
 }
 
 func (suite *ViewTestSuite) TestLiveSubsetOfView() {

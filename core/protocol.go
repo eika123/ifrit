@@ -82,7 +82,7 @@ func (c correct) Monitor(n *Node) {
 			// we should remove it to ensure it doesn't stay in our liveView.
 			// Not possible to accuse a peer without a note.
 			if peerNote == nil {
-				n.view.RemoveLive(p.Id)
+				n.view.RemoveLive(p)
 				log.Debug("Monitor -- Removing live peer due to not having note and being accused",
 					"addr", p.Addr)
 				continue
@@ -90,8 +90,8 @@ func (c correct) Monitor(n *Node) {
 
 			err := p.CreateAccusation(peerNote, n.self, ringNum, n.cs)
 			if err == discovery.ErrAccAlreadyExists || err == nil {
-				live := n.view.IsAlive(p.Id)
-				if exists := n.view.HasTimer(p.Id); !exists && live {
+				live := n.view.IsAlive(p)
+				if exists := n.view.HasTimer(p); !exists && live {
 					n.view.StartTimer(p, peerNote, n.self)
 				}
 			} else {

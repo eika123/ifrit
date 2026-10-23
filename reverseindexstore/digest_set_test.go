@@ -59,7 +59,9 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	d1 := hasher(u1)
 	d2 := hasher(u2)
 
-	assert.True(t, s.Contains(u1))
+	got1FromContains, found1 := s.Contains(u1)
+	assert.True(t, found1)
+	assert.Equal(t, u1, got1FromContains)
 	assert.True(t, s.ContainsDigest(d1))
 
 	got1, found := s.GetByDigest(d1)
@@ -120,7 +122,8 @@ func TestDigestSet_CopyAndIsolation(t *testing.T) {
 	s.AddElements("c")
 	assert.Equal(t, 3, s.Size())
 	assert.Equal(t, 2, cp.Size())
-	assert.False(t, cp.Contains("c"))
+	_, foundC := cp.Contains("c")
+	assert.False(t, foundC)
 }
 
 func TestDigestSet_JSONSerialization(t *testing.T) {
@@ -154,7 +157,7 @@ func TestDigestSet_ConcurrentAccess(t *testing.T) {
 			item := fmt.Sprintf("worker-%d", id)
 			s.AddElements(item)
 			_ = s.Fingerprint()
-			_ = s.Contains(item)
+			_, _ = s.Contains(item)
 			_ = s.Elements()
 		}(i)
 	}

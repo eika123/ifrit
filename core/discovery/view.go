@@ -216,7 +216,7 @@ func (v *View) hashId(id string) revIdxStore.DigestSymbol {
 
 // Peer returns the Peer with the given ID from the full view, or nil if not present.
 func (v *View) Peer(id string) *Peer {
-	if p, found := v.viewStore.GetByDigest(v.hashId(id)); found && p.Id == id {
+	if p, found := v.viewStore.Contains(&Peer{Id: id}); found && p.Id == id {
 		return p
 	}
 	return nil
@@ -229,8 +229,7 @@ func (v *View) Full() []*Peer {
 
 // Exists reports whether a peer with the specified ID exists in the full view.
 func (v *View) Exists(id string) bool {
-	p, found := v.viewStore.GetByDigest(v.hashId(id))
-	return found && p.Id == id
+	return v.Peer(id) != nil
 }
 
 // Live returns a slice of all currently active/live peers.
@@ -252,8 +251,7 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
-	d := v.hashId(id)
-	if p, found := v.viewStore.GetByDigest(d); found && p.Id == id {
+	if p, found := v.viewStore.Contains(&Peer{Id: id}); found && p.Id == id {
 		log.Error("Tried to add peer twice to full view")
 		return errPeerAlreadyExists
 	}
@@ -350,8 +348,7 @@ func (v *View) MonitorTarget() (*Peer, uint32) {
 func (v *View) AddLive(p *Peer) {
 	v.viewMutex.Lock()
 
-	d := v.hashId(p.Id)
-	if existing, found := v.liveStore.GetByDigest(d); found && existing.Id == p.Id {
+	if existing, found := v.liveStore.Contains(p); found && existing.Id == p.Id {
 		v.viewMutex.Unlock()
 		log.Error("Tried to add peer twice to live store", "addr", p.Addr)
 		return
@@ -379,28 +376,19 @@ func (v *View) MyRingNeighbours(ringNum uint32) (*Peer, *Peer) {
 	return v.rings.myRingSuccessor(ringNum), v.rings.myRingPredecessor(ringNum)
 }
 
-// LivePeer retrieves a peer from the live store by their ID, returning nil if not found.
-//
-// Prerequisites / Expected Services:
-//   - Used when handling gossip and accusations to check if the target is currently considered active.
-func (v *View) LivePeer(id string) *Peer {
-	if p, found := v.liveStore.GetByDigest(v.hashId(id)); found && p.Id == id {
-		return p
-	}
-	return nil
-}
-
 // RemoveLive removes a peer from the live store and ring structures, closing any active connection to them.
 //
 // Prerequisites / Expected Services:
 //   - connectionManager (commService) must be initialized to close the open transport connection to the removed peer.
 //   - Called when a suspicion timeout expires (Start / checkTimeouts) or on explicit eviction.
-func (v *View) RemoveLive(id string) {
-	v.viewMutex.Lock()
+func (v *View) RemoveLive(p *Peer) {
+	if p == nil {
+		return
+	}
 
-	d := v.hashId(id)
-	peer, ok := v.liveStore.GetByDigest(d)
-	if !ok || peer.Id != id {
+	v.viewMutex.Lock()
+	peer, ok := v.liveStore.Contains(p)
+	if !ok || peer.Id != p.Id {
 		v.viewMutex.Unlock()
 		log.Debug("Tried to remove non-existing peer from live view.")
 		return
@@ -413,6 +401,11 @@ func (v *View) RemoveLive(id string) {
 	v.cm.CloseConn(peer.Addr)
 
 	log.Debug("Removed livePeer", "addr", peer.Addr)
+}
+
+// RemoveLiveId removes a peer from the live store by their ID string.
+func (v *View) RemoveLiveId(id string) {
+	v.RemoveLive(&Peer{Id: id})
 }
 
 // StartTimer begins or updates a suspicion timeout timer for an accused peer based on a received accusation.
@@ -469,28 +462,43 @@ func (v *View) StartTimer(accused *Peer, n *Note, observer *Peer) error {
 	return nil
 }
 
-// HasTimer checks whether an active suspicion timer exists for the given peer ID.
+// HasTimer checks whether an active suspicion timer exists for the given peer.
 //
 // Prerequisites / Expected Services:
 //   - Used during gossip and note evaluation to check if an accused peer currently has a pending timeout.
-func (v *View) HasTimer(id string) bool {
+func (v *View) HasTimer(p *Peer) bool {
+	if p == nil {
+		return false
+	}
 	v.timeoutMutex.RLock()
 	defer v.timeoutMutex.RUnlock()
 
-	_, ok := v.timeoutMap[id]
-
+	_, ok := v.timeoutMap[p.Id]
 	return ok
 }
 
-// DeleteTimeout removes the active suspicion timer for the specified peer ID.
+// HasTimerId checks whether an active suspicion timer exists for the given peer ID string.
+func (v *View) HasTimerId(id string) bool {
+	return v.HasTimer(&Peer{Id: id})
+}
+
+// DeleteTimeout removes the active suspicion timer for the specified peer.
 //
 // Prerequisites / Expected Services:
 //   - Called when a valid rebuttal Note is received or when a peer is evicted after timeout expiration.
-func (v *View) DeleteTimeout(id string) {
+func (v *View) DeleteTimeout(p *Peer) {
+	if p == nil {
+		return
+	}
 	v.timeoutMutex.Lock()
 	defer v.timeoutMutex.Unlock()
 
-	delete(v.timeoutMap, id)
+	delete(v.timeoutMap, p.Id)
+}
+
+// DeleteTimeoutId removes the active suspicion timer for the specified peer ID string.
+func (v *View) DeleteTimeoutId(id string) {
+	v.DeleteTimeout(&Peer{Id: id})
 }
 
 func (v *View) allTimeouts() []*timeout {
@@ -515,8 +523,8 @@ func (v *View) checkTimeouts() {
 	for _, t := range timeouts {
 		if time.Since(t.timeStamp).Seconds() > v.removalTimeout {
 			log.Debug("Timeout expired, removing from live", "addr", t.accused.Addr)
-			v.RemoveLive(t.accused.Id)
-			v.DeleteTimeout(t.accused.Id)
+			v.RemoveLive(t.accused)
+			v.DeleteTimeout(t.accused)
 		}
 	}
 }
@@ -594,13 +602,19 @@ func (v *View) ValidAccuser(accused, accuser *Peer, ringNum uint32) bool {
 	return v.rings.isPredecessor(accused, accuser, ringNum)
 }
 
-// IsAlive checks whether a peer with the given ID currently exists in the live store.
-//
-// Prerequisites / Expected Services:
-//   - Used by failure detectors, visualizers, and message handlers before routing messages.
-func (v *View) IsAlive(id string) bool {
-	p, found := v.liveStore.GetByDigest(v.hashId(id))
-	return found && p.Id == id
+// IsAlive checks whether a peer with the given ID or peer object currently exists in the live store.
+// Performs a collision check comparing the stored peer's ID with the provided peer's ID.
+func (v *View) IsAlive(peer *Peer) bool {
+	if peer == nil {
+		return false
+	}
+	p, found := v.liveStore.Contains(peer)
+	return found && p.Id == peer.Id
+}
+
+// IsAliveId checks whether a peer with the given ID string currently exists in the live store.
+func (v *View) IsAliveId(id string) bool {
+	return v.IsAlive(&Peer{Id: id})
 }
 
 func (v *View) incrementGossipRing() {
@@ -772,7 +786,7 @@ func (v *View) RemoveTestFull(id string) {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
-	if p, ok := v.viewStore.GetByDigest(v.hashId(id)); ok && p.Id == id {
+	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		v.viewStore.Remove(p)
 	}
 }
@@ -796,7 +810,7 @@ func (v *View) Compare(other *View) error {
 			p2 = other.self
 		} else {
 			var ok bool
-			p2, ok = other.viewStore.GetByDigest(other.hashId(id))
+			p2, ok = other.viewStore.Contains(p)
 			if !ok || p2.Id != id {
 				return errors.New("Peer not present in both views.")
 			}
@@ -830,11 +844,10 @@ func (v *View) Compare(other *View) error {
 	}
 
 	for _, p := range v.liveStore.Elements() {
-		id := p.Id
-		if id == other.self.Id {
+		if p.Id == other.self.Id {
 			continue
 		}
-		if !other.IsAlive(id) {
+		if !other.IsAlive(p) {
 			return errors.New("Did not have peer in both live views.")
 		}
 	}

@@ -47,8 +47,10 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// RemoveByDigest removes an element by its digest. Returns true if present and removed.
 	RemoveByDigest(digest S) bool
 
-	// Contains returns true if the element exists in the store.
-	Contains(elem T) bool
+	// Contains retrieves the stored element matching elem's digest.
+	// Returns the stored element and true if found, or zero value and false otherwise.
+	// Returning (T, bool) enables callers to verify full field equality and guard against hash collisions.
+	Contains(elem T) (stored T, found bool)
 
 	// ContainsDigest returns true if an element with the given digest exists in the store.
 	ContainsDigest(digest S) bool

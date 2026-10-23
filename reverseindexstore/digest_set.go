@@ -181,8 +181,9 @@ func (s *digestSet[T, S]) RemoveByDigest(digest S) bool {
 	return true
 }
 
-// Contains returns true if the element is present in the set.
-func (s *digestSet[T, S]) Contains(item T) bool {
+// Contains retrieves the stored element matching item's digest.
+// Returns the stored element and true if found, or zero value and false otherwise.
+func (s *digestSet[T, S]) Contains(item T) (T, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -190,12 +191,13 @@ func (s *digestSet[T, S]) Contains(item T) bool {
 		panic(ErrNilHasher)
 	}
 	if s.itemsByDigest == nil {
-		return false
+		var zero T
+		return zero, false
 	}
 
 	d := s.hasher(item)
-	_, exists := s.itemsByDigest[d]
-	return exists
+	stored, exists := s.itemsByDigest[d]
+	return stored, exists
 }
 
 // ContainsDigest returns true if an item with the given digest exists in the set.
