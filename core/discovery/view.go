@@ -35,6 +35,8 @@ type View struct {
 
 	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 
+	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
+	// timeout is not a boolean group
 	timeoutMap   map[string]*timeout
 	timeoutMutex sync.RWMutex
 
