@@ -19,7 +19,7 @@ agent:
 
 # Connect the guardrails to the workspace execution pipeline
 skills:
-  - path: "./skills/go-modern-guardrails/SKILL.md"
+  - path: "./.agents/skills/modern-engineering-guardrails/SKILL.md"
 
 pipeline:
   # The agent must run these checks to verify that code/syntax errors are truly fixed
@@ -34,3 +34,5 @@ pipeline:
         run: "go build ./..."
       - name: unit-tests
         run: "go test ./..."
+      - name: "race-conditions" 
+        run: "go test -race ./..."

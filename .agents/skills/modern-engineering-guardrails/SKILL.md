@@ -13,7 +13,9 @@ triggers:
 
 # Go Modern Guardrails & Refactor Repair
 
-You are assisting in restoring a broken Go codebase that currently fails to compile due to syntax and type errors introduced during a recent refactoring phase. Your goal is to bring the system to a clean `go build` state using modern, idiomatic, and type-safe Go practices.
+You are assisting in restoring and expanding a previously broken Go codebase. A recent refactoring introduced syntax and type errors. The examples
+ `_examples/messagesExample.go` and `streamingExample.go` have not been tested after our fixes, but `gossipContentExample.go` runs cleanly.
+We must keep a clean `go build` state using modern, idiomatic, and type-safe Go practices.
 
 ## 1. Absolute Go Behavioral Bans
 Do NOT use these legacy "quick-fixes" or anti-patterns to bypass compiler errors:
@@ -31,10 +33,24 @@ When resolving compiler messages (such as `undefined`, `cannot use`, or `wrong n
 * **Immediate Defer for Resources:** If a fix requires opening a resource (files, rows, channels), enforce immediate leak prevention using `defer resource.Close()` right after the error check.
 * **Keep Changes Localized but Complete:** Ensure that fixing a signature in one package completes the entire chain of dependency for that specific type change across the workspace.
 
-## 3. Verification Protocol
+## 3. Do not mutate git history
+It is important that the user keeps control over what is commited to the git history. Do not mutate it.
+
+## 4. Software development practices
+When implementing code, interpret the prompt minimally so that git history can be kept clean. Make minimal edits that satisfy the requirement, following the
+verification protocol in point ## 5. below.
+
+After implementing a piece of code, provide a commit message that details what was done in typically 10-20 lines, prefering short messages with good overall information.
+The commit message must always provide two items:
+* What was your contributioin (the agent).
+* What was the contribution of the user.
+
+
+## 5. Verification Protocol
 Before declaring a compiler error resolved, the workspace must be validated using standard Go tooling:
 1. `go fmt ./...` (To enforce strict style consistency)
 2. `go vet ./...` (To catch structural, shadow variables, and copy locks)
 3. `go build ./...` (To ensure the workspace compiles seamlessly)
 4. `go test ./...` (Check unit test state vs. what was before fixes)
+5. `go test -race ./...` (Check for race conditions)
 
