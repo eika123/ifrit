@@ -36,6 +36,18 @@ func (n *Note) IsMoreRecent(other uint64) bool {
 	return n.epoch < other
 }
 
+func (n *Note) Epoch() uint64 {
+	return n.epoch
+}
+
+func (n *Note) Mask() uint32 {
+	return n.mask
+}
+
+func (n *Note) Id() string {
+	return n.id
+}
+
 func (n *Note) ToPbMsg() *pb.Note {
 	return &pb.Note{
 		Epoch: n.epoch,

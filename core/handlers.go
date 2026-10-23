@@ -84,7 +84,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 			}
 		}
 	} else if observed {
-		if !peer.IsAccused() {
+		if !n.view.IsAccused(peer) {
 			err := n.evalNote(args.GetOwnNote())
 			if err != nil {
 				log.Debug(err.Error())
@@ -97,7 +97,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 			log.Debug(err.Error())
 		}
 
-		for _, a := range peer.AllAccusations() {
+		for _, a := range n.view.ActiveAccusationsForPeer(peer) {
 			reply.Accusations = append(reply.Accusations, a.ToPbMsg())
 		}
 	} else {
@@ -220,13 +220,10 @@ func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {
 		} else if note := p.Note(); note != nil && note.IsMoreRecent(epoch) {
 			reply.Notes = append(reply.Notes, note.ToPbMsg())
 		}
+	}
 
-		// No solution yet to avoid transferring all accusations.
-		// Transferring all notes are avoided by checking epoch numbers.
-		accs := p.AllAccusations()
-		for _, a := range accs {
-			reply.Accusations = append(reply.Accusations, a.ToPbMsg())
-		}
+	for _, a := range n.view.Accusations() {
+		reply.Accusations = append(reply.Accusations, a.ToPbMsg())
 	}
 
 	localNote := n.self.Note()
@@ -371,26 +368,28 @@ func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPe
 	return nil
 }
 
-// applyValidAccusation records a validated accusation on the accused peer and starts a suspicion
-// removal timer if the peer is live.
+// applyValidAccusation records a validated accusation in the view's accusationStore and starts a suspicion
+// removal timer if the peer is live and the accusation epoch is active against the current note.
 func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) error {
 	sign := a.GetSignature()
-	err := p.AddAccusation(p.Id, accuserPeer.Id, a.GetEpoch(), a.GetRingNum(), sign.GetR(), sign.GetS())
+	err := n.view.AddAccusation(p.Id, accuserPeer.Id, a.GetEpoch(), a.GetRingNum(), sign.GetR(), sign.GetS())
 	if err != nil {
 		return err
 	}
 
-	// start timer if there isn't already one and the peer is considered alive
-	if n.view.IsAlive(p) && !n.view.HasTimer(p) {
-		n.view.StartTimer(p, p.Note(), accuserPeer)
+	// start timer if there isn't already one, peer is considered alive, and accusation epoch >= peer note epoch
+	note := p.Note()
+	if n.view.IsAlive(p) && !n.view.HasTimer(p) && note != nil && a.GetEpoch() >= note.Epoch() {
+		n.view.StartTimer(p, note, accuserPeer)
 	}
 	return nil
 }
 
 // ensureAccusationTimer ensures a suspicion timer is active for an already recorded accusation if the peer is live.
 func (n *Node) ensureAccusationTimer(accusedPeer, accuserPeer *discovery.Peer) {
-	if n.view.IsAlive(accusedPeer) && !n.view.HasTimer(accusedPeer) {
-		n.view.StartTimer(accusedPeer, accusedPeer.Note(), accuserPeer)
+	note := accusedPeer.Note()
+	if n.view.IsAlive(accusedPeer) && !n.view.HasTimer(accusedPeer) && note != nil {
+		n.view.StartTimer(accusedPeer, note, accuserPeer)
 		log.Debug("Had accusation with no timer, starting timer.")
 	}
 }
@@ -419,8 +418,11 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discov
 	ringNum := a.GetRingNum()
 	epoch := a.GetEpoch()
 
-	if acc := accusedPeer.RingAccusation(ringNum); acc != nil && acc.Equal(accusedPeer.Id, accuserPeer.Id, ringNum, epoch) {
-		n.ensureAccusationTimer(accusedPeer, accuserPeer)
+	if n.view.HasAccusation(accusedPeer.Id, accuserPeer.Id, ringNum, epoch) {
+		note := accusedPeer.Note()
+		if note != nil && epoch >= note.Epoch() {
+			n.ensureAccusationTimer(accusedPeer, accuserPeer)
+		}
 		return errAccAlreadyExists
 	}
 
@@ -466,51 +468,28 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return err
 	}
 
-	accusations := peer.AllAccusations()
-	// Not accused, only need to check if newnote is more recent
-	if len(accusations) == 0 {
-		// Want to store the most recent note
-		if note == nil || note.IsMoreRecent(epoch) {
-			if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
-				return errInvalidSignature
-			}
+	if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
+		return errInvalidSignature
+	}
 
-			peer.AddNote(mask, epoch, r, s)
+	if note == nil || note.IsMoreRecent(epoch) {
+		peer.AddNote(mask, epoch, r, s)
+	}
 
-			if alive := node.view.IsAlive(peer); !alive {
-				node.view.AddLive(peer)
-			}
-		}
-	} else {
-		if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
-			return errInvalidSignature
+	// If peer is not accused under its most recent note, ensure timers are stopped
+	// and peer is restored to live status.
+	if !node.view.IsAccused(peer) {
+		peer.ResetPingCount()
+
+		if exists := node.view.HasTimer(peer); exists {
+			node.view.DeleteTimeout(peer)
 		}
 
-		// Peer is accused, need to check if this note invalidates any accusations.
-		for _, acc := range accusations {
-			if acc.IsMoreRecent(epoch) {
-				peer.RemoveAccusation(acc)
-			}
+		if alive := node.view.IsAlive(peer); !alive {
+			node.view.AddLive(peer)
 		}
 
-		if note == nil || note.IsMoreRecent(epoch) {
-			peer.AddNote(mask, epoch, r, s)
-		}
-
-		// All accusations has to be invalidated before we add peer back to full view.
-		if !peer.IsAccused() {
-			peer.ResetPingCount()
-
-			if exists := node.view.HasTimer(peer); exists {
-				node.view.DeleteTimeout(peer)
-			}
-
-			if alive := node.view.IsAlive(peer); !alive {
-				node.view.AddLive(peer)
-			}
-
-			log.Debug("Rebuttal received", "epoch", epoch, "addr", peer.Addr)
-		}
+		log.Debug("Rebuttal received or live peer updated", "epoch", epoch, "addr", peer.Addr)
 	}
 	return nil
 }

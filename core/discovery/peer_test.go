@@ -9,9 +9,7 @@ import (
 	"math"
 	"math/big"
 	"os"
-	"sync"
 	"testing"
-	"time"
 
 	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/assert"
@@ -29,7 +27,6 @@ type PeerTestSuite struct {
 }
 
 func (suite *PeerTestSuite) SetupTest() {
-	var i uint32
 	var numRings uint32 = 5
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
@@ -40,8 +37,7 @@ func (suite *PeerTestSuite) SetupTest() {
 	id := "selfId"
 
 	p := &Peer{
-		Id:          id,
-		accusations: make(map[uint32]*Accusation),
+		Id: id,
 		note: &Note{
 			id:    id,
 			epoch: 5,
@@ -58,10 +54,6 @@ func (suite *PeerTestSuite) SetupTest() {
 	}
 
 	require.NoError(suite.T(), signNote(p.note, suite.priv), "Failed to sign note")
-
-	for i = 1; i <= numRings; i++ {
-		p.accusations[i] = nil
-	}
 
 	suite.p = p
 	suite.numRings = numRings
@@ -112,22 +104,20 @@ func (suite *PeerTestSuite) TestNewPeer() {
 		numRings uint32
 		err      error
 
-		addr      string
-		pingAddr  string
-		httpAddr  string
-		accMapLen int
-		id        string
-		pub       ecdsa.PublicKey
+		addr     string
+		pingAddr string
+		httpAddr string
+		id       string
+		pub      ecdsa.PublicKey
 	}{
 		{
-			in:        validCert,
-			numRings:  suite.numRings,
-			err:       nil,
-			addr:      validCert.Subject.Locality[0],
-			pingAddr:  validCert.Subject.Locality[1],
-			httpAddr:  validCert.Subject.Locality[2],
-			accMapLen: int(suite.numRings),
-			id:        string(validCert.SubjectKeyId),
+			in:       validCert,
+			numRings: suite.numRings,
+			err:      nil,
+			addr:     validCert.Subject.Locality[0],
+			pingAddr: validCert.Subject.Locality[1],
+			httpAddr: validCert.Subject.Locality[2],
+			id:       string(validCert.SubjectKeyId),
 		},
 
 		{
@@ -173,8 +163,6 @@ func (suite *PeerTestSuite) TestNewPeer() {
 			require.Equalf(suite.T(), t.pingAddr, p.PingAddr,
 				"Invalid pingAddr for test %d", i)
 			require.Equalf(suite.T(), t.httpAddr, p.HttpAddr, "Invalid error for test %d", i)
-			require.Equalf(suite.T(), t.accMapLen, len(p.accusations),
-				"Invalid len of accusations for test %d", i)
 			require.Equalf(suite.T(), t.id, p.Id, "Invalid id for test %d", i)
 		}
 
@@ -238,508 +226,6 @@ func (suite *PeerTestSuite) TestPublicKey() {
 	for i, t := range tests {
 		require.Equalf(suite.T(), t.out, t.p.PublicKey(), "Invalid output for test %d", i)
 	}
-}
-func (suite *PeerTestSuite) TestCreateAccusation() {
-	var i uint32
-
-	accId := "testId"
-
-	accused := &Peer{
-		Id: accId,
-		note: &Note{
-			epoch: 10,
-			id:    accId,
-		},
-		accusations: make(map[uint32]*Accusation),
-	}
-
-	for i = 1; i <= suite.numRings; i++ {
-		accused.accusations[i] = nil
-	}
-
-	tests := []struct {
-		accused *Peer
-		self    *Peer
-		note    *Note
-		ringNum uint32
-		s       signer
-		err     error
-	}{
-		{
-			accused: accused,
-			self:    suite.p,
-			note:    accused.Note(),
-			ringNum: suite.numRings,
-			s:       suite.signer,
-			err:     nil,
-		},
-
-		{
-
-			accused: accused,
-			self:    suite.p,
-			note:    accused.Note(),
-			ringNum: suite.numRings,
-			s:       suite.signer,
-			err:     ErrAccAlreadyExists,
-		},
-
-		{
-
-			accused: accused,
-			self:    suite.p,
-			note:    accused.Note(),
-			ringNum: suite.numRings + 1,
-			s:       suite.signer,
-			err:     errInvalidRing,
-		},
-	}
-
-	for i, t := range tests {
-		require.Equalf(suite.T(), t.err,
-			t.accused.CreateAccusation(t.note, t.self, t.ringNum, t.s),
-			"Invalid output for test %d", i)
-
-		if t.err == nil {
-			a, ok := t.accused.accusations[t.ringNum]
-			require.Truef(suite.T(), ok, "Accusation not added to map, test %d", i)
-
-			require.Equalf(suite.T(), a.accused, t.accused.Id,
-				"Wrong accused id, test %d", i)
-
-			require.Equalf(suite.T(), a.accuser, t.self.Id,
-				"Wrong accuser id, test %d", i)
-
-			require.Equalf(suite.T(), a.epoch, t.note.epoch,
-				"Wrong epoch, test %d", i)
-
-			require.Equalf(suite.T(), a.ringNum, t.ringNum,
-				"Wrong ringNum, test %d", i)
-
-			require.NotNilf(suite.T(), a.signature, "Signature should not be nil, test %d", i)
-		} else if t.err != ErrAccAlreadyExists {
-			_, ok := t.accused.accusations[t.ringNum]
-			require.Falsef(suite.T(), ok,
-				"Accusation should not be added when error is returned, test %d", i)
-		}
-	}
-}
-
-func (suite *PeerTestSuite) TestAddAccusation() {
-	peer := suite.p
-
-	tests := []struct {
-		p       *Peer
-		acc     string
-		accuser string
-		epoch   uint64
-		ringNum uint32
-		r       []byte
-		s       []byte
-		err     error
-	}{
-		{
-			p:       peer,
-			acc:     peer.Id,
-			accuser: "accuserId",
-			epoch:   0,
-			ringNum: suite.numRings,
-			r:       []byte("signature"),
-			s:       []byte("signature"),
-			err:     errOldEpoch,
-		},
-
-		{
-			p:       peer,
-			acc:     peer.Id,
-			accuser: "accuserId",
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings + 1,
-			r:       []byte("signature"),
-			s:       []byte("signature"),
-			err:     errInvalidRing,
-		},
-
-		{
-			p:       peer,
-			acc:     peer.Id,
-			accuser: "accuserId",
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings,
-			s:       []byte("signature"),
-			err:     errAccuserSign,
-		},
-
-		{
-			p:       peer,
-			acc:     peer.Id,
-			accuser: "accuserId",
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings,
-			r:       []byte("signature"),
-			err:     errAccuserSign,
-		},
-
-		{
-			p:       peer,
-			accuser: "accuserId",
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings,
-			r:       []byte("signature"),
-			s:       []byte("signature"),
-			err:     errAccusedId,
-		},
-
-		{
-			p:       peer,
-			acc:     peer.Id,
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings,
-			r:       []byte("signature"),
-			s:       []byte("signature"),
-			err:     errAccuserId,
-		},
-
-		{
-			p:       peer,
-			acc:     peer.Id,
-			accuser: "accuserId",
-			epoch:   peer.note.epoch,
-			ringNum: suite.numRings,
-			r:       []byte("signature"),
-			s:       []byte("signature"),
-			err:     nil,
-		},
-	}
-
-	for i, t := range tests {
-		err := t.p.AddAccusation(t.acc, t.accuser, t.epoch, t.ringNum, t.r, t.s)
-		require.Equalf(suite.T(), t.err, err, "Invalid error for test %d", i)
-
-		if t.err == nil {
-			a, ok := t.p.accusations[t.ringNum]
-			require.Truef(suite.T(), ok, "Accusation not added to map, test %d", i)
-
-			require.Equalf(suite.T(), a.accused, t.acc,
-				"Wrong accused id, test %d", i)
-
-			require.Equalf(suite.T(), a.accuser, t.accuser,
-				"Wrong accuser id, test %d", i)
-
-			require.Equalf(suite.T(), a.epoch, t.p.note.epoch,
-				"Wrong epoch, test %d", i)
-
-			require.Equalf(suite.T(), a.ringNum, t.ringNum,
-				"Wrong ringNum, test %d", i)
-
-			require.NotNilf(suite.T(), a.signature, "Signature should not be nil, test %d", i)
-
-			require.Equalf(suite.T(), a.signature.r, t.r,
-				"Wrong signature r component, test %d", i)
-
-			require.Equalf(suite.T(), a.signature.s, t.s,
-				"Wrong signature s component, test %d", i)
-
-		} else {
-			acc := t.p.accusations[t.ringNum]
-			require.Nil(suite.T(), acc,
-				"Accusation should not be added when error is returned, test %d", i)
-		}
-	}
-}
-
-func (suite *PeerTestSuite) TestRemoveAccusation() {
-	p := suite.p
-
-	nonExistingAcc := &Accusation{
-		ringNum: suite.numRings,
-	}
-
-	invalidRingNumAcc := &Accusation{
-		ringNum: suite.numRings + 1,
-	}
-
-	validAcc := &Accusation{
-		ringNum: suite.numRings - 1,
-	}
-
-	p.accusations[validAcc.ringNum] = validAcc
-
-	tests := []struct {
-		in     *Accusation
-		pre    bool
-		exists bool
-	}{
-		{
-			in:     nonExistingAcc,
-			pre:    false,
-			exists: false,
-		},
-
-		{
-			in:     invalidRingNumAcc,
-			pre:    false,
-			exists: false,
-		},
-
-		{
-			in:     validAcc,
-			pre:    true,
-			exists: false,
-		},
-	}
-
-	for i, t := range tests {
-		acc := p.accusations[t.in.ringNum]
-
-		if !t.pre {
-			require.Nilf(suite.T(), acc, "Invalid pre status for test %d", i)
-		} else {
-			require.NotNilf(suite.T(), acc, "Invalid pre status for test %d", i)
-		}
-
-		p.RemoveAccusation(t.in)
-
-		acc = p.accusations[t.in.ringNum]
-
-		if !t.exists {
-			require.Nilf(suite.T(), acc, "Invalid existence status for test %d", i)
-		} else {
-			require.NotNilf(suite.T(), acc, "Invalid existence status for test %d", i)
-		}
-	}
-}
-
-func (suite *PeerTestSuite) TestRemoveRingAccusation() {
-	p := suite.p
-
-	acc := &Accusation{
-		ringNum: suite.numRings,
-	}
-
-	p.accusations[acc.ringNum] = acc
-
-	tests := []struct {
-		in     uint32
-		pre    bool
-		exists bool
-	}{
-		{
-			in:     acc.ringNum,
-			pre:    true,
-			exists: false,
-		},
-
-		{
-			in:     suite.numRings + 1,
-			pre:    false,
-			exists: false,
-		},
-
-		{
-			in:     suite.numRings - 1,
-			pre:    false,
-			exists: false,
-		},
-	}
-
-	for i, t := range tests {
-		acc := p.accusations[t.in]
-
-		if !t.pre {
-			require.Nilf(suite.T(), acc, "Invalid pre status for test %d", i)
-		} else {
-			require.NotNilf(suite.T(), acc, "Invalid pre status for test %d", i)
-		}
-
-		p.RemoveRingAccusation(t.in)
-
-		acc = p.accusations[t.in]
-
-		if !t.exists {
-			require.Nilf(suite.T(), acc, "Invalid existence status for test %d", i)
-		} else {
-			require.NotNilf(suite.T(), acc, "Invalid existence status for test %d", i)
-		}
-	}
-}
-
-func (suite *PeerTestSuite) TestClearAccusations() {
-	var i uint32
-
-	for i = 1; i <= suite.numRings; i++ {
-		a := &Accusation{
-			ringNum: i,
-		}
-		suite.p.accusations[a.ringNum] = a
-	}
-
-	suite.p.ClearAccusations()
-
-	for i = 1; i <= suite.numRings; i++ {
-		assert.Nil(suite.T(), suite.p.accusations[i], "Accusation was not removed after clearing all accusations.")
-	}
-}
-
-func (suite *PeerTestSuite) TestConcurrentAccusationRemovalAndRead() {
-	p := suite.p
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
-
-	// Pre-populate some accusations
-	for i := uint32(1); i <= suite.numRings; i++ {
-		p.accusations[i] = &Accusation{ringNum: i, epoch: 1}
-	}
-
-	// Concurrent remover 1
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				for i := uint32(1); i <= suite.numRings; i++ {
-					p.RemoveRingAccusation(i)
-				}
-			}
-		}
-	}()
-
-	// Concurrent remover 2
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				for i := uint32(1); i <= suite.numRings; i++ {
-					p.RemoveAccusation(&Accusation{ringNum: i})
-				}
-			}
-		}
-	}()
-
-	// Concurrent adder
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				for i := uint32(1); i <= suite.numRings; i++ {
-					p.accuseMutex.Lock()
-					p.accusations[i] = &Accusation{ringNum: i, epoch: 1}
-					p.accuseMutex.Unlock()
-				}
-			}
-		}
-	}()
-
-	// Concurrent readers
-	for r := 0; r < 3; r++ {
-		wg.Add(1)
-		go func(readerId int) {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					_ = p.AllAccusations()
-					_ = p.IsAccused()
-					_ = p.AnyAccusation()
-					_ = p.RingAccusation(1)
-				}
-			}
-		}(r)
-	}
-
-	time.Sleep(50 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-}
-
-func (suite *PeerTestSuite) TestRingAccusation() {
-	var i uint32
-
-	for i = 1; i <= suite.numRings; i++ {
-		a := &Accusation{
-			ringNum: i,
-		}
-		suite.p.accusations[a.ringNum] = a
-	}
-
-	for i = 1; i <= suite.numRings; i++ {
-		acc := suite.p.RingAccusation(i)
-		require.NotNil(suite.T(), acc, "Returned nil accusation.")
-		assert.Equal(suite.T(), i, acc.ringNum,
-			"Returned wrong accusation, different ring number.")
-	}
-
-	require.Nil(suite.T(), suite.p.RingAccusation(suite.numRings+1),
-		"Returned non-nil accusation with invalid ring number.")
-}
-
-func (suite *PeerTestSuite) TestAnyAccusations() {
-	assert.Nil(suite.T(), suite.p.AnyAccusation(),
-		"Returned non-nil accusations, when non exists.")
-
-	a := &Accusation{
-		ringNum: suite.numRings,
-	}
-	suite.p.accusations[a.ringNum] = a
-
-	acc := suite.p.AnyAccusation()
-	require.NotNil(suite.T(), acc, "Returned nil accusation when there exists 1")
-
-	assert.Equal(suite.T(), acc.ringNum, a.ringNum,
-		"Returned an accusation with different ring number.")
-}
-
-func (suite *PeerTestSuite) TestAllAccusations() {
-	var i uint32
-
-	accs := suite.p.AllAccusations()
-	require.NotNil(suite.T(), accs, "Returned nil slice with no accusations present.")
-	assert.Zero(suite.T(), len(accs),
-		"Returned slice with non-zero length with no accusations existed.")
-
-	a := &Accusation{
-		ringNum: suite.numRings,
-	}
-	suite.p.accusations[a.ringNum] = a
-
-	accs2 := suite.p.AllAccusations()
-	require.NotNil(suite.T(), accs2, "Returned nil slice with accusations present.")
-	assert.Equal(suite.T(), 1, len(accs2),
-		"Returned slice with different length than amount of accusations.")
-
-	for i = 1; i <= suite.numRings; i++ {
-		a := &Accusation{
-			ringNum: i,
-		}
-		suite.p.accusations[a.ringNum] = a
-	}
-
-	accs3 := suite.p.AllAccusations()
-	require.NotNil(suite.T(), accs3, "Returned nil slice with accusations present.")
-	assert.Equal(suite.T(), int(suite.numRings), len(accs3),
-		"Returned slice with different length than amount of accusations.")
-
-}
-
-func (suite *PeerTestSuite) TestIsAccused() {
-	require.False(suite.T(), suite.p.IsAccused(), "Returned true when peer is not accused.")
-
-	suite.p.accusations[suite.numRings] = &Accusation{ringNum: suite.numRings}
-
-	require.True(suite.T(), suite.p.IsAccused(), "Returned false when peer is accused")
 }
 
 func (suite *PeerTestSuite) TestAddNote() {
@@ -822,20 +308,10 @@ func (suite *PeerTestSuite) TestNote() {
 }
 
 func (suite *PeerTestSuite) TestInfo() {
-	suite.p.accusations[suite.numRings] = &Accusation{
-		ringNum: suite.numRings,
-		signature: &signature{
-			r: []byte("signatureR"),
-			s: []byte("signatureS"),
-		},
-	}
-
-	cert, note, accs := suite.p.Info()
+	cert, note := suite.p.Info()
 
 	assert.NotNil(suite.T(), cert, "Returned certificate was nil.")
 	assert.NotNil(suite.T(), note, "Returned note was nil.")
-	require.NotNil(suite.T(), accs, "Returned accusations was nil.")
-	assert.NotZero(suite.T(), len(accs), "Returned accusations was empty.")
 }
 
 func (suite *PeerTestSuite) TestIncrementPingCount() {

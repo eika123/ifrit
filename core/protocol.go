@@ -88,7 +88,7 @@ func (c correct) Monitor(n *Node) {
 				continue
 			}
 
-			err := p.CreateAccusation(peerNote, n.self, ringNum, n.cs)
+			err := n.view.CreateAccusation(p, peerNote, ringNum, n.cs)
 			if err == discovery.ErrAccAlreadyExists || err == nil {
 				live := n.view.IsAlive(p)
 				if exists := n.view.HasTimer(p); !exists && live {

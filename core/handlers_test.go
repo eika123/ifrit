@@ -94,11 +94,11 @@ func (suite *HandlerTestSuite) TestSpread() {
 	accusedNonNeighbour := testPeers[1]
 	acc := discovery.NewAccusation(1, accusedNonNeighbour.Id, node.self.Id, 1,
 		suite.priv)
-	accusedNonNeighbour.AddTestAccusation(acc)
+	node.view.AddTestAccusation(acc)
 
 	rebuttalPeer := testPeers[2]
 	acc2 := discovery.NewAccusation(1, rebuttalPeer.Id, node.self.Id, 1, suite.priv)
-	rebuttalPeer.AddTestAccusation(acc2)
+	node.view.AddTestAccusation(acc2)
 
 	nonExistingPeer := testPeers[3]
 	node.view.RemoveTestFull(nonExistingPeer.Id)
@@ -227,7 +227,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			require.Nil(suite.T(), reply, "Invalid response for test %d.", i)
 		}
 
-		require.Equalf(suite.T(), t.isAccused, t.peer.IsAccused(),
+		require.Equalf(suite.T(), t.isAccused, node.view.IsAccused(t.peer),
 			"Invalid accused state for test %d.", i)
 		require.Equalf(suite.T(), t.exists, node.view.Exists(t.peer.Id),
 			"Invalid exists state for test %d.", i)
@@ -307,18 +307,18 @@ func (suite *HandlerTestSuite) TestMergeViews() {
 	state[node.self.Id] = 1
 
 	acc1 := discovery.NewAccusation(2, p3.Id, p2.Id, 1, suite.privMap[p2.Id])
-	p3.AddTestAccusation(acc1)
+	node.view.AddTestAccusation(acc1)
 
 	acc2 := discovery.NewAccusation(2, p3.Id, p2.Id, 2, suite.privMap[p2.Id])
-	p3.AddTestAccusation(acc2)
+	node.view.AddTestAccusation(acc2)
 
 	acc3 := discovery.NewAccusation(2, p3.Id, p2.Id, 3, suite.privMap[p2.Id])
-	p3.AddTestAccusation(acc3)
+	node.view.AddTestAccusation(acc3)
 
 	require.True(suite.T(), node.view.Exists(p1.Id), "Peer 1 should exist in full view.")
 	require.True(suite.T(), node.view.Exists(p2.Id), "Peer 2 should exist in full view.")
 	require.True(suite.T(), node.view.Exists(p3.Id), "Peer 3 should exist in full view.")
-	require.Equal(suite.T(), len(p3.AllAccusations()), 3,
+	require.Equal(suite.T(), len(node.view.AccusationsForPeer(p3.Id)), 3,
 		"Should have 3 accusations on peer 3.")
 
 	tests := []struct {
@@ -545,7 +545,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 			require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.accused),
 				"Invalid timer state for test %d.", i)
 
-			require.Equalf(suite.T(), t.isAccused, t.accused.IsAccused(),
+			require.Equalf(suite.T(), t.isAccused, node.view.IsAccused(t.accused),
 				"Invalid accusation state for test %d.", i)
 		}
 
@@ -575,7 +575,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 	peer2.ClearNote()
 
 	acc := discovery.NewAccusation(2, peer3.Id, peer2.Id, 1, suite.privMap[peer2.Id])
-	peer3.AddTestAccusation(acc)
+	node.view.AddTestAccusation(acc)
 
 	err := node.view.StartTimer(peer3, peer3.Note(), peer2)
 	require.NoError(suite.T(), err, "Failed to start timer.")
@@ -697,7 +697,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 			require.NotNilf(suite.T(), t.note.GetSignature(),
 				"evalNote must restore note signature for test %d.", i)
 		}
-		require.Equalf(suite.T(), t.isAccused, t.noteHolder.IsAccused(),
+		require.Equalf(suite.T(), t.isAccused, node.view.IsAccused(t.noteHolder),
 			"Invalid accusation state for test %d.", i)
 		require.Equalf(suite.T(), t.isAlive, node.view.IsAlive(t.noteHolder),
 			"Invalid live state for test %d.", i)

@@ -272,14 +272,6 @@ func (r *ring) add(p *Peer) []string {
 
 	r.peerToRing[p.Id] = id
 
-	succ := r.succAtIdx(idx).p
-	prev := r.prevAtIdx(idx).p
-
-	acc := succ.RingAccusation(r.ringNum)
-	if acc != nil && acc.IsAccuser(prev.Id) {
-		succ.RemoveRingAccusation(r.ringNum)
-	}
-
 	return oldNeighbours
 }
 

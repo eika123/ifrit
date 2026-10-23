@@ -39,6 +39,29 @@ func (a Accusation) IsAccuser(id string) bool {
 	return a.accuser == id
 }
 
+func (a Accusation) Accused() string {
+	return a.accused
+}
+
+func (a Accusation) Accuser() string {
+	return a.accuser
+}
+
+func (a Accusation) RingNum() uint32 {
+	return a.ringNum
+}
+
+func (a Accusation) Epoch() uint64 {
+	return a.epoch
+}
+
+func (a Accusation) Signature() (r, s []byte) {
+	if a.signature == nil {
+		return nil, nil
+	}
+	return a.r, a.s
+}
+
 // Converts the internal Accusation struct to a protobuf Accusation message.
 func (a Accusation) ToPbMsg() *pb.Accusation {
 	return &pb.Accusation{

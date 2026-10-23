@@ -3,6 +3,7 @@ package discovery
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"hash/fnv"
@@ -34,6 +35,8 @@ type View struct {
 	viewMutex sync.RWMutex
 
 	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
+
+	accusationStore revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol]
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -131,10 +134,27 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
+	accHasher := func(a *Accusation) revIdxStore.DigestSymbol {
+		h := fnv.New64a()
+		h.Write([]byte(a.accused))
+		h.Write([]byte(a.accuser))
+		var buf [12]byte
+		binary.BigEndian.PutUint32(buf[0:4], a.ringNum)
+		binary.BigEndian.PutUint64(buf[4:12], a.epoch)
+		h.Write(buf[:])
+		return revIdxStore.DigestSymbol(h.Sum64())
+	}
+
+	accusationStore, err := revIdxStore.NewDigestSet(accHasher)
+	if err != nil {
+		return nil, err
+	}
+
 	v := &View{
 		rings:           rings,
 		viewStore:       viewStore,
 		liveStore:       liveStore,
+		accusationStore: accusationStore,
 		timeoutMap:      make(map[string]*timeout),
 		maxByz:          maxByz,
 		currGossipRing:  1,
@@ -777,6 +797,193 @@ func hasBit(n uint32, pos uint32) bool {
 	return (val > 0)
 }
 
+// AccusationStore returns the underlying ReverseIndexStore for accusations.
+func (v *View) AccusationStore() revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol] {
+	return v.accusationStore
+}
+
+// AccusationFingerprint returns the XOR fingerprint representing the entire accusation set.
+func (v *View) AccusationFingerprint() revIdxStore.DigestSymbol {
+	return v.accusationStore.Fingerprint()
+}
+
+// Accusations returns all accusations currently stored in the view.
+func (v *View) Accusations() []*Accusation {
+	return v.accusationStore.Elements()
+}
+
+// HasAccusation checks if an exact accusation exists matching (accused, accuser, ringNum, epoch).
+func (v *View) HasAccusation(accused, accuser string, ringNum uint32, epoch uint64) bool {
+	dummy := &Accusation{
+		accused: accused,
+		accuser: accuser,
+		ringNum: ringNum,
+		epoch:   epoch,
+	}
+	stored, ok := v.accusationStore.Contains(dummy)
+	return ok && stored.Equal(accused, accuser, ringNum, epoch)
+}
+
+// Accusation returns the stored accusation matching (accused, accuser, ringNum, epoch), or nil if absent.
+func (v *View) Accusation(accused, accuser string, ringNum uint32, epoch uint64) *Accusation {
+	dummy := &Accusation{
+		accused: accused,
+		accuser: accuser,
+		ringNum: ringNum,
+		epoch:   epoch,
+	}
+	stored, ok := v.accusationStore.Contains(dummy)
+	if ok && stored.Equal(accused, accuser, ringNum, epoch) {
+		return stored
+	}
+	return nil
+}
+
+// AccusationsForPeer returns all accusations (historic and active) against the given accused peer ID.
+func (v *View) AccusationsForPeer(accusedId string) []*Accusation {
+	var accs []*Accusation
+	for _, a := range v.accusationStore.Elements() {
+		if a.accused == accusedId {
+			accs = append(accs, a)
+		}
+	}
+	return accs
+}
+
+// ActiveAccusationsForPeer returns accusations against peer p whose epoch is greater than or equal
+// to the peer's current note epoch (i.e. not superseded by a rebuttal note).
+func (v *View) ActiveAccusationsForPeer(p *Peer) []*Accusation {
+	if p == nil {
+		return nil
+	}
+	note := p.Note()
+	var accs []*Accusation
+	for _, a := range v.accusationStore.Elements() {
+		if a.accused == p.Id {
+			if note == nil || a.epoch >= note.epoch {
+				accs = append(accs, a)
+			}
+		}
+	}
+	return accs
+}
+
+// IsAccused returns true if peer p has at least one active accusation whose epoch is >= current note epoch.
+func (v *View) IsAccused(p *Peer) bool {
+	if p == nil {
+		return false
+	}
+	note := p.Note()
+	for _, a := range v.accusationStore.Elements() {
+		if a.accused == p.Id {
+			if note == nil || a.epoch >= note.epoch {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RingAccusation returns the most recent active accusation against accusedId on ring ringNum.
+func (v *View) RingAccusation(accusedId string, ringNum uint32) *Accusation {
+	peer := v.Peer(accusedId)
+	var note *Note
+	if peer != nil {
+		note = peer.Note()
+	}
+	var mostRecent *Accusation
+	for _, a := range v.accusationStore.Elements() {
+		if a.accused == accusedId && a.ringNum == ringNum {
+			if note != nil && a.epoch < note.epoch {
+				continue
+			}
+			if mostRecent == nil || a.epoch > mostRecent.epoch {
+				mostRecent = a
+			}
+		}
+	}
+	return mostRecent
+}
+
+// CreateAccusation creates and signs a new accusation targeting an accused peer and note on ringNum,
+// inserting it into the grow-only accusationStore.
+func (v *View) CreateAccusation(accused *Peer, accusedNote *Note, ringNum uint32, sign signer) error {
+	if accused == nil || accusedNote == nil {
+		return errAccusedIsNil
+	}
+	if ringNum == 0 || ringNum > v.rings.numRings {
+		return errInvalidRing
+	}
+
+	if v.HasAccusation(accused.Id, v.self.Id, ringNum, accusedNote.epoch) {
+		return ErrAccAlreadyExists
+	}
+
+	acc := &Accusation{
+		accused: accused.Id,
+		accuser: v.self.Id,
+		epoch:   accusedNote.epoch,
+		ringNum: ringNum,
+	}
+
+	pbAcc := &pb.Accusation{
+		Epoch:   acc.epoch,
+		Accuser: []byte(acc.accuser),
+		Accused: []byte(acc.accused),
+		RingNum: acc.ringNum,
+	}
+
+	b, err := gpb.Marshal(pbAcc)
+	if err != nil {
+		return err
+	}
+
+	r, s, err := sign.Sign(b)
+	if err != nil {
+		return err
+	}
+
+	acc.signature = &signature{
+		r: r,
+		s: s,
+	}
+
+	v.accusationStore.AddElement(acc)
+	log.Debug("Added accusation to view", "accused", accused.Addr, "ring", acc.ringNum, "epoch", acc.epoch)
+	return nil
+}
+
+// AddAccusation validates and records an accusation received from the network into the grow-only accusationStore.
+func (v *View) AddAccusation(accused, accuser string, epoch uint64, ringNum uint32, r, s []byte) error {
+	if ringNum == 0 || ringNum > v.rings.numRings {
+		return errInvalidRing
+	}
+	if r == nil || s == nil {
+		return errAccuserSign
+	}
+	if accused == "" {
+		return errAccusedId
+	}
+	if accuser == "" {
+		return errAccuserId
+	}
+
+	a := &Accusation{
+		accused: accused,
+		accuser: accuser,
+		epoch:   epoch,
+		ringNum: ringNum,
+		signature: &signature{
+			r: r,
+			s: s,
+		},
+	}
+
+	v.accusationStore.AddElement(a)
+	log.Debug("Added accusation to view", "accused", accused, "accuser", accuser, "ring", ringNum, "epoch", epoch)
+	return nil
+}
+
 /*
 
 ########## METHODS ONLY USED FOR TESTING BELOW THIS LINE ##########
@@ -804,6 +1011,21 @@ func (v *View) AddTestLivePeer(p *Peer) {
 }
 
 // ONLY for testing
+func (v *View) AddTestAccusation(a *pb.Accusation) {
+	acc := &Accusation{
+		epoch:   a.GetEpoch(),
+		accuser: string(a.GetAccuser()),
+		accused: string(a.GetAccused()),
+		ringNum: a.GetRingNum(),
+		signature: &signature{
+			r: a.GetSignature().GetR(),
+			s: a.GetSignature().GetS(),
+		},
+	}
+	v.accusationStore.AddElement(acc)
+}
+
+// ONLY for testing
 func (v *View) Compare(other *View) error {
 	for _, p := range v.viewStore.Elements() {
 		id := p.Id
@@ -815,22 +1037,6 @@ func (v *View) Compare(other *View) error {
 			p2, ok = other.viewStore.Contains(p)
 			if !ok || p2.Id != id {
 				return errors.New("Peer not present in both views.")
-			}
-		}
-
-		for ringNum, a := range p.accusations {
-			a2, ok := p2.accusations[ringNum]
-			if !ok {
-				return errors.New("Accusation not present in both views.")
-			}
-			if a == nil && a2 == nil {
-				continue
-			}
-			if a == nil || a2 == nil {
-				return errors.New("Accusation presence mismatch in views.")
-			}
-			if !a.Equal(a2.accused, a2.accuser, a2.ringNum, a2.epoch) {
-				return errors.New("Accusation were not equal in both views.")
 			}
 		}
 
@@ -851,6 +1057,17 @@ func (v *View) Compare(other *View) error {
 		}
 		if !other.IsAlive(p) {
 			return errors.New("Did not have peer in both live views.")
+		}
+	}
+
+	if len(v.accusationStore.Elements()) != len(other.accusationStore.Elements()) {
+		return errors.New("Accusation counts mismatch in views.")
+	}
+
+	for _, a := range v.accusationStore.Elements() {
+		a2, ok := other.accusationStore.Contains(a)
+		if !ok || !a.Equal(a2.accused, a2.accuser, a2.ringNum, a2.epoch) {
+			return errors.New("Accusation not equal in both views.")
 		}
 	}
 

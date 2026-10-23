@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -977,4 +979,137 @@ type signerStub struct {
 
 func (s *signerStub) Sign(data []byte) ([]byte, []byte, error) {
 	return nil, nil, nil
+}
+
+type mockSigner struct {
+	priv *ecdsa.PrivateKey
+}
+
+func (m *mockSigner) Sign(data []byte) ([]byte, []byte, error) {
+	if m.priv != nil {
+		h := sha256.Sum256(data)
+		r, s, err := ecdsa.Sign(rand.Reader, m.priv, h[:])
+		if err != nil {
+			return nil, nil, err
+		}
+		return r.Bytes(), s.Bytes(), nil
+	}
+	return []byte("dummy-r"), []byte("dummy-s"), nil
+}
+
+func (suite *ViewTestSuite) TestViewCreateAccusation() {
+	signer := &mockSigner{}
+	peerId := "accusedPeer"
+	peer := &Peer{Id: peerId, Addr: "127.0.0.1:1000"}
+	note := &Note{id: peerId, epoch: 5}
+
+	// Successful creation
+	err := suite.v.CreateAccusation(peer, note, 1, signer)
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), suite.v.HasAccusation(peerId, suite.v.self.Id, 1, 5))
+	assert.NotNil(suite.T(), suite.v.Accusation(peerId, suite.v.self.Id, 1, 5))
+
+	// Duplicate creation returns ErrAccAlreadyExists
+	err = suite.v.CreateAccusation(peer, note, 1, signer)
+	assert.Equal(suite.T(), ErrAccAlreadyExists, err)
+
+	// Invalid ring returns errInvalidRing
+	err = suite.v.CreateAccusation(peer, note, 0, signer)
+	assert.Equal(suite.T(), errInvalidRing, err)
+
+	err = suite.v.CreateAccusation(peer, note, suite.v.NumRings()+1, signer)
+	assert.Equal(suite.T(), errInvalidRing, err)
+}
+
+func (suite *ViewTestSuite) TestViewAddAccusation() {
+	peerId := "remoteAccused"
+	accuserId := "remoteAccuser"
+
+	// Missing signatures
+	err := suite.v.AddAccusation(peerId, accuserId, 1, 1, nil, []byte("s"))
+	assert.Equal(suite.T(), errAccuserSign, err)
+
+	err = suite.v.AddAccusation(peerId, accuserId, 1, 1, []byte("r"), nil)
+	assert.Equal(suite.T(), errAccuserSign, err)
+
+	// Missing IDs
+	err = suite.v.AddAccusation("", accuserId, 1, 1, []byte("r"), []byte("s"))
+	assert.Equal(suite.T(), errAccusedId, err)
+
+	err = suite.v.AddAccusation(peerId, "", 1, 1, []byte("r"), []byte("s"))
+	assert.Equal(suite.T(), errAccuserId, err)
+
+	// Invalid ring
+	err = suite.v.AddAccusation(peerId, accuserId, 1, 0, []byte("r"), []byte("s"))
+	assert.Equal(suite.T(), errInvalidRing, err)
+
+	// Valid addition
+	err = suite.v.AddAccusation(peerId, accuserId, 2, 2, []byte("r"), []byte("s"))
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), suite.v.HasAccusation(peerId, accuserId, 2, 2))
+}
+
+func (suite *ViewTestSuite) TestViewAccusationActiveAndRebuttal() {
+	peerId := "rebuttalPeer"
+	peer := &Peer{
+		Id:   peerId,
+		Addr: "127.0.0.1:1001",
+		note: &Note{id: peerId, epoch: 2},
+	}
+	suite.v.AddTestPeer(peer)
+
+	// Peer currently has note epoch 2
+	assert.False(suite.T(), suite.v.IsAccused(peer))
+
+	// Add accusation matching epoch 2
+	err := suite.v.AddAccusation(peerId, "accuser1", 2, 1, []byte("r"), []byte("s"))
+	require.NoError(suite.T(), err)
+
+	// Accusation is active because acc.epoch (2) >= peer.note.epoch (2)
+	assert.True(suite.T(), suite.v.IsAccused(peer))
+	assert.Len(suite.T(), suite.v.ActiveAccusationsForPeer(peer), 1)
+	assert.Equal(suite.T(), uint64(2), suite.v.RingAccusation(peerId, 1).Epoch())
+
+	// Peer rebuts by issuing note epoch 3
+	peer.note = &Note{id: peerId, epoch: 3}
+
+	// Under grow-only model, accusation at epoch 2 is NEVER deleted,
+	// but IsAccused becomes false because acc.epoch (2) < peer.note.epoch (3)
+	assert.False(suite.T(), suite.v.IsAccused(peer))
+	assert.Empty(suite.T(), suite.v.ActiveAccusationsForPeer(peer))
+	assert.Len(suite.T(), suite.v.AccusationsForPeer(peerId), 1) // still in store!
+
+	// Peer fails again at epoch 3, new accusation arrives
+	err = suite.v.AddAccusation(peerId, "accuser1", 3, 1, []byte("r3"), []byte("s3"))
+	require.NoError(suite.T(), err)
+
+	// Both epoch 2 and epoch 3 exist in the grow-only store
+	assert.Len(suite.T(), suite.v.AccusationsForPeer(peerId), 2)
+	assert.True(suite.T(), suite.v.IsAccused(peer))
+	assert.Len(suite.T(), suite.v.ActiveAccusationsForPeer(peer), 1)
+	assert.Equal(suite.T(), uint64(3), suite.v.RingAccusation(peerId, 1).Epoch())
+}
+
+func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
+	v1 := suite.v
+	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	require.NoError(suite.T(), err)
+	cert := validCert("otherSelf", privKey.Public())
+	v2, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	require.NoError(suite.T(), err)
+
+	// Both start with empty accusation stores -> fingerprint 0
+	assert.Equal(suite.T(), revIdxStore.DigestSymbol(0), v1.AccusationFingerprint())
+	assert.Equal(suite.T(), revIdxStore.DigestSymbol(0), v2.AccusationFingerprint())
+
+	// Add accusation to v1
+	err = v1.AddAccusation("peerX", "peerY", 1, 1, []byte("r"), []byte("s"))
+	require.NoError(suite.T(), err)
+	fp1 := v1.AccusationFingerprint()
+	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), fp1)
+
+	// Add same accusation to v2
+	err = v2.AddAccusation("peerX", "peerY", 1, 1, []byte("r"), []byte("s"))
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), fp1, v2.AccusationFingerprint())
 }

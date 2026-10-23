@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
@@ -42,11 +41,6 @@ type Peer struct {
 	noteMutex sync.RWMutex
 	note      *Note
 
-	accuseMutex sync.RWMutex
-
-	// maps ring number to an accusation
-	accusations map[uint32]*Accusation
-
 	Id        string
 	cert      *x509.Certificate
 	publicKey *ecdsa.PublicKey
@@ -76,7 +70,6 @@ type timeout struct {
 
 func newPeer(cert *x509.Certificate, numRings uint32) (*Peer, error) {
 	var ok bool
-	var i uint32
 	var http string
 	var pb *ecdsa.PublicKey
 
@@ -102,22 +95,14 @@ func newPeer(cert *x509.Certificate, numRings uint32) (*Peer, error) {
 		return nil, errPubKey
 	}
 
-	accMap := make(map[uint32]*Accusation)
-
-	for i = 1; i <= numRings; i++ {
-		accMap[i] = nil
-	}
-
 	return &Peer{
-		Addr:        cert.Subject.Locality[0],
-		PingAddr:    cert.Subject.Locality[1],
-		HttpAddr:    http,
-		cert:        cert,
-		Id:          string(cert.SubjectKeyId),
-		publicKey:   pb,
-		accusations: accMap,
+		Addr:      cert.Subject.Locality[0],
+		PingAddr:  cert.Subject.Locality[1],
+		HttpAddr:  http,
+		cert:      cert,
+		Id:        string(cert.SubjectKeyId),
+		publicKey: pb,
 	}, nil
-
 }
 
 func (p *Peer) Certificate() []byte {
@@ -131,187 +116,6 @@ func (p *Peer) Certificate() []byte {
 
 func (p *Peer) PublicKey() *ecdsa.PublicKey {
 	return p.publicKey
-}
-
-// Used when a peer believes another peer is untrustworthy based on ping results.
-// This function creates an accusation, signs it and adds it to the peer that created it.
-func (p *Peer) CreateAccusation(accused *Note, self *Peer, ringNum uint32, sign signer) error {
-	p.accuseMutex.Lock()
-	defer p.accuseMutex.Unlock()
-
-	if a, ok := p.accusations[ringNum]; ok && a != nil {
-		if eq := a.Equal(accused.id, self.Id, ringNum, accused.epoch); eq {
-			return ErrAccAlreadyExists
-		}
-	} else if !ok {
-		return errInvalidRing
-	}
-
-	acc := &Accusation{
-		accused: accused.id,
-		accuser: self.Id,
-		epoch:   accused.epoch,
-		ringNum: ringNum,
-	}
-
-	pbAcc := &pb.Accusation{
-		Epoch:   acc.epoch,
-		Accuser: []byte(acc.accuser),
-		Accused: []byte(acc.accused),
-		RingNum: acc.ringNum,
-	}
-
-	b, err := proto.Marshal(pbAcc)
-	if err != nil {
-		return err
-	}
-
-	r, s, err := sign.Sign(b)
-	if err != nil {
-		return err
-	}
-
-	acc.signature = &signature{
-		r: r,
-		s: s,
-	}
-
-	p.accusations[acc.ringNum] = acc
-
-	log.Debug("Added accusation", "addr", p.Addr, "ring", acc.ringNum)
-
-	return nil
-}
-
-// Add a signed accusation from another peer.
-func (p *Peer) AddAccusation(accused, accuser string, epoch uint64, ringNum uint32, r, s []byte) error {
-	p.accuseMutex.Lock()
-	defer p.accuseMutex.Unlock()
-
-	if p.note != nil && p.note.epoch != epoch {
-		return errOldEpoch
-	}
-
-	if _, ok := p.accusations[ringNum]; !ok {
-		return errInvalidRing
-	}
-
-	if r == nil || s == nil {
-		return errAccuserSign
-	}
-
-	if accused == "" {
-		return errAccusedId
-	}
-
-	if accuser == "" {
-		return errAccuserId
-	}
-
-	a := &Accusation{
-		accused: accused,
-		accuser: accuser,
-		epoch:   epoch,
-		ringNum: ringNum,
-		signature: &signature{
-			r: r,
-			s: s,
-		},
-	}
-
-	p.accusations[a.ringNum] = a
-
-	log.Debug("Added accusation", "addr", p.Addr, "ring", a.ringNum)
-
-	return nil
-}
-
-func (p *Peer) RemoveAccusation(a *Accusation) {
-	p.accuseMutex.Lock()
-	defer p.accuseMutex.Unlock()
-
-	if _, ok := p.accusations[a.ringNum]; !ok {
-		log.Debug("Tried to remove accusation from invalid ring number", "ringnum", a.ringNum)
-		return
-	}
-
-	p.accusations[a.ringNum] = nil
-}
-
-func (p *Peer) RemoveRingAccusation(ringNum uint32) {
-	p.accuseMutex.Lock()
-	defer p.accuseMutex.Unlock()
-
-	if _, ok := p.accusations[ringNum]; !ok {
-		log.Debug("Tried to remove accusation from invalid ring number", "ringnum", ringNum)
-		return
-	}
-
-	p.accusations[ringNum] = nil
-}
-
-func (p *Peer) ClearAccusations() {
-	p.accuseMutex.Lock()
-	defer p.accuseMutex.Unlock()
-
-	for k, _ := range p.accusations {
-		p.accusations[k] = nil
-	}
-}
-
-func (p *Peer) RingAccusation(ringNum uint32) *Accusation {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
-
-	if _, ok := p.accusations[ringNum]; !ok {
-		log.Debug("Tried to get accusation from invalid ring number", "ringnum", ringNum)
-		return nil
-	}
-
-	return p.accusations[ringNum]
-}
-
-func (p *Peer) AnyAccusation() *Accusation {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
-
-	for _, acc := range p.accusations {
-		if acc != nil {
-			return acc
-		}
-	}
-
-	return nil
-}
-
-func (p *Peer) AllAccusations() []*Accusation {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
-
-	ret := make([]*Accusation, 0, len(p.accusations))
-
-	for _, v := range p.accusations {
-		// All keys (1-numRings) are always present,
-		// but their values nil if not accused on that ring.
-		if v != nil {
-			ret = append(ret, v)
-		}
-	}
-
-	return ret
-}
-
-func (p *Peer) IsAccused() bool {
-	p.accuseMutex.RLock()
-	defer p.accuseMutex.RUnlock()
-
-	for _, acc := range p.accusations {
-		if acc != nil {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (p *Peer) AddNote(mask uint32, epoch uint64, r, s []byte) {
@@ -338,7 +142,7 @@ func (p *Peer) Note() *Note {
 	return p.note
 }
 
-func (p *Peer) Info() (*pb.Certificate, *pb.Note, []*pb.Accusation) {
+func (p *Peer) Info() (*pb.Certificate, *pb.Note) {
 	var c *pb.Certificate
 	var n *pb.Note
 
@@ -356,14 +160,7 @@ func (p *Peer) Info() (*pb.Certificate, *pb.Note, []*pb.Accusation) {
 		log.Debug("No note existed for peer", "addr", p.Addr)
 	}
 
-	accs := p.AllAccusations()
-	a := make([]*pb.Accusation, 0, len(accs))
-
-	for _, acc := range accs {
-		a = append(a, acc.ToPbMsg())
-	}
-
-	return c, n, a
+	return c, n
 }
 
 func (p *Peer) IncrementPingCount() {
@@ -421,19 +218,4 @@ func (p *Peer) NewNote(priv *ecdsa.PrivateKey, epoch uint64) {
 // ONLY for testing
 func (p *Peer) ClearNote() {
 	p.note = nil
-}
-
-// ONLY for testing
-func (p *Peer) AddTestAccusation(a *pb.Accusation) {
-	acc := &Accusation{
-		epoch:   a.GetEpoch(),
-		accuser: string(a.GetAccuser()),
-		accused: string(a.GetAccused()),
-		ringNum: a.GetRingNum(),
-		signature: &signature{
-			r: a.GetSignature().GetR(),
-			s: a.GetSignature().GetS(),
-		},
-	}
-	p.accusations[acc.ringNum] = acc
 }
