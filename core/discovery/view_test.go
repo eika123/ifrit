@@ -1157,6 +1157,17 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	assert.Equal(suite.T(), uint64(2), ver)
 	assert.Equal(suite.T(), uint64(2), note.Epoch())
 
+	// Test NoteByDigest and NotesByDigests
+	singleNote, foundSingle, err := v.NoteByDigest(key)
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), foundSingle)
+	assert.NotNil(suite.T(), singleNote)
+
+	batchNotes, allFound, err := v.NotesByDigests([]revIdxStore.DigestSymbol{key})
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), allFound)
+	assert.Len(suite.T(), batchNotes, 1)
+
 	// Test uninitialized view errors
 	uninitV := &View{}
 	_, err = uninitV.Fingerprint()
@@ -1165,10 +1176,18 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	_, err = uninitV.Notes()
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
+	_, err = uninitV.NoteDigests()
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
+	_, _, err = uninitV.NoteByDigest(123)
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
+	_, _, err = uninitV.NotesByDigests([]revIdxStore.DigestSymbol{123})
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
 	_, err = uninitV.AddNote(p, 1, 1, []byte("r"), []byte("s"))
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
 	err = uninitV.RemoveTestFull("test")
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 }
-

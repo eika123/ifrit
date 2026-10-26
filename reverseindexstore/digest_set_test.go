@@ -84,6 +84,22 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 
 	_, found = s.GetByDigest(d1)
 	assert.False(t, found)
+
+	// Batch GetByDigests test
+	s.AddElement(u1) // s now contains u1 and u2
+	elems, allFound := s.GetByDigests([]reverseindexstore.DigestSymbol{d1, d2})
+	assert.True(t, allFound)
+	assert.ElementsMatch(t, []userItem{u1, u2}, elems)
+
+	// Partial find
+	elems, allFound = s.GetByDigests([]reverseindexstore.DigestSymbol{d1, 99999})
+	assert.False(t, allFound)
+	assert.Equal(t, []userItem{u1}, elems)
+
+	// Empty input
+	elems, allFound = s.GetByDigests(nil)
+	assert.True(t, allFound)
+	assert.Nil(t, elems)
 }
 
 func TestDigestSet_DefaultHasherVariants(t *testing.T) {
@@ -163,4 +179,24 @@ func TestDigestSet_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Equal(t, 50, s.Size())
+}
+
+func TestDigestSymbolConversions(t *testing.T) {
+	// Nil / empty checks
+	assert.Nil(t, reverseindexstore.AsDigestSymbols(nil))
+	assert.Nil(t, reverseindexstore.AsDigestSymbols([]uint64{}))
+	assert.Nil(t, reverseindexstore.AsUint64Slice(nil))
+	assert.Nil(t, reverseindexstore.AsUint64Slice([]reverseindexstore.DigestSymbol{}))
+	uValues := []uint64{100, 200, 300, 400}
+	symbols := reverseindexstore.AsDigestSymbols(uValues)
+	require.Len(t, symbols, 4)
+	assert.Equal(t, reverseindexstore.DigestSymbol(100), symbols[0])
+	assert.Equal(t, reverseindexstore.DigestSymbol(400), symbols[3])
+
+	backToU := reverseindexstore.AsUint64Slice(symbols)
+	assert.Equal(t, uValues, backToU)
+
+	// Verify zero-allocation reinterpretation shares underlying array
+	symbols[1] = 999
+	assert.Equal(t, uint64(999), uValues[1])
 }

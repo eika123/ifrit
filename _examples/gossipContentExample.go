@@ -66,8 +66,12 @@ func newApp() (*application, error) {
 		return nil, err
 	}
 
-	// Create thread-safe reconcilable store bound to the Ifrit client.
-	store := ifrit.NewNaiveGossipSet[user](c, nil)
+	// Create thread-safe reconcilable store and register it with the client.
+	store, err := ifrit.NewDigestSet[user](ifrit.DefaultHasher[user]())
+	if err != nil {
+		return nil, err
+	}
+	ifrit.RegisterDataStore(c, store)
 
 	app := &application{
 		ifritClient: c,

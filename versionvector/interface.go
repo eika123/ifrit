@@ -27,6 +27,14 @@ type VersionVector[T any, S Symbol[S]] interface {
 	// Get retrieves the current item and version for a given key.
 	Get(key S) (item T, version uint64, found bool)
 
+	// GetByDigest retrieves an item by its digest in O(1) time.
+	GetByDigest(digest S) (item T, found bool)
+
+	// GetByDigests retrieves multiple items by their digests in a single operation.
+	// Returns a slice of all found items and true if every requested digest was found,
+	// or false if one or more digests were missing.
+	GetByDigests(digests []S) (items []T, found bool)
+
 	// ContainsKey reports whether an entry for key exists.
 	ContainsKey(key S) bool
 
@@ -48,6 +56,9 @@ type VersionVector[T any, S Symbol[S]] interface {
 
 	// Versions returns a map of all keys and their latest version numbers.
 	Versions() map[S]uint64
+
+	// DigestsCopy returns a slice of all digests currently contributing to the fingerprint.
+	DigestsCopy() []S
 
 	// Clear removes all entries and resets the fingerprint to zero.
 	Clear()

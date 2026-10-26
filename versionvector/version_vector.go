@@ -27,6 +27,36 @@ func NewVersionVector[T any, S Symbol[S]](keyFunc KeyExtractor[T, S], hasher Ite
 	}
 }
 
+func (vv *versionVector[T, S]) GetByDigest(digest S) (T, bool) {
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
+	entry, exists := vv.items[digest]
+	if !exists {
+		var zero T
+		return zero, false
+	}
+	return entry.item, true
+}
+
+func (vv *versionVector[T, S]) GetByDigests(digests []S) ([]T, bool) {
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
+
+	elements := make([]T, 0, len(digests))
+
+	found_all := true
+	for idx := range digests {
+		sym := digests[idx]
+		entry, exists := vv.items[sym]
+		if !exists {
+			found_all = false
+			continue
+		}
+		elements = append(elements, entry.item)
+	}
+	return elements, found_all
+}
+
 func (vv *versionVector[T, S]) AddItem(item T, versionNumber uint64) bool {
 	key := vv.keyFunc(item)
 
@@ -126,6 +156,17 @@ func (vv *versionVector[T, S]) Versions() map[S]uint64 {
 		vers[k] = entry.version
 	}
 	return vers
+}
+
+func (vv *versionVector[T, S]) DigestsCopy() []S {
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
+
+	digests := make([]S, 0, len(vv.items))
+	for _, entry := range vv.items {
+		digests = append(digests, entry.digest)
+	}
+	return digests
 }
 
 func (vv *versionVector[T, S]) Clear() {

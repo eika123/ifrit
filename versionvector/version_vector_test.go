@@ -55,6 +55,21 @@ func TestVersionVector_BasicOperations(t *testing.T) {
 	// Fingerprint should equal the single digest
 	expectedDigest := testHasher(key1, e1, 1)
 	assert.Equal(t, expectedDigest, vv.Fingerprint())
+	assert.ElementsMatch(t, []DigestSymbol{expectedDigest}, vv.DigestsCopy())
+
+	// GetByDigest and GetByDigests (keyed by slot key)
+	byDig, foundDig := vv.GetByDigest(key1)
+	assert.True(t, foundDig)
+	assert.Equal(t, e1, byDig)
+
+	byDigs, allFound := vv.GetByDigests([]DigestSymbol{key1})
+	assert.True(t, allFound)
+	assert.Equal(t, []testEntity{e1}, byDigs)
+
+	// Partial / missing
+	byDigs, allFound = vv.GetByDigests([]DigestSymbol{key1, 999999})
+	assert.False(t, allFound)
+	assert.Equal(t, []testEntity{e1}, byDigs)
 }
 
 func TestVersionVector_MonotonicAdvancement(t *testing.T) {

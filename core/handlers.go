@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"
@@ -48,7 +50,11 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		return nil, err
 	}
 
-	reply := &pb.StateResponse{}
+	reply := &pb.StateResponse{
+		FingerprintData:        n.FingerprintData(),
+		FingerprintAccusations: n.AccusationFingerprintBytes(),
+		FingerprintView:        n.ViewFingerprintBytes(),
+	}
 
 	remoteId := string(cert.SubjectKeyId[:])
 	peer := n.view.Peer(remoteId)
@@ -70,10 +76,17 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		extGossip := args.GetExternalGossip()
 		hosts := args.GetExistingHosts()
 
-		// If hosts is nil gossip message was only a rebuttal,
-		// no need to merge views.
-		if hosts != nil {
-			n.mergeViews(hosts, reply)
+		hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil
+
+		if hasFingerprints {
+			n.reconcileAccusations(args, reply)
+			n.reconcileNotes(args, reply)
+			n.reconcileData(args, reply)
+		} else {
+			// Legacy caller
+			if hosts != nil {
+				n.mergeViews(hosts, reply)
+			}
 		}
 
 		if handler := n.getGossipHandler(); handler != nil && extGossip != nil {
@@ -223,6 +236,103 @@ func (n *Node) replyStream(reply chan []byte, srv pb.Gossip_StreamServer) {
 
 func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 	handler(input, reply)
+}
+
+func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) {
+	callerFp := args.GetFingerprintAccusations()
+	if callerFp != nil {
+		if bytes.Equal(callerFp, n.AccusationFingerprintBytes()) {
+			return
+		}
+
+		localDelta, requestedDigests, err := ReconcileStore(
+			n.getAccusationSessionFactory(),
+			n.view.AccusationStore(),
+			revIdxStore.AsDigestSymbols(args.GetAccusationDigests()),
+		)
+		if err != nil {
+			log.Error("Failed to reconcile accusations", "err", err)
+			return
+		}
+
+		// actually local accusations held on this node
+		for _, acc := range localDelta {
+			reply.Accusations = append(reply.Accusations, acc.ToPbMsg())
+		}
+		reply.RequestedAccusationDigests = revIdxStore.AsUint64Slice(requestedDigests)
+		return
+	}
+
+	// Legacy fallback: append all local accusations
+	for _, a := range n.view.Accusations() {
+		reply.Accusations = append(reply.Accusations, a.ToPbMsg())
+	}
+}
+
+func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
+	callerFp := args.GetFingerprintView()
+	if callerFp != nil {
+		if bytes.Equal(callerFp, n.ViewFingerprintBytes()) {
+			return
+		}
+	}
+
+	hosts := args.GetExistingHosts()
+	if hosts == nil {
+		return
+	}
+
+	lookupEpoch := func(rawId string) (uint64, bool) {
+		if epoch, ok := hosts[hex.EncodeToString([]byte(rawId))]; ok {
+			return epoch, true
+		}
+		if epoch, ok := hosts[rawId]; ok {
+			return epoch, true
+		}
+		return 0, false
+	}
+
+	for _, p := range n.view.Full() {
+		epoch, ok := lookupEpoch(p.Id)
+		if !ok {
+			reply.Certificates = append(reply.Certificates,
+				&pb.Certificate{Raw: p.Certificate()})
+
+			if note := p.Note(); note != nil {
+				reply.Notes = append(reply.Notes, note.ToPbMsg())
+			}
+		} else if note := p.Note(); note != nil && note.IsMoreRecent(epoch) {
+			reply.Notes = append(reply.Notes, note.ToPbMsg())
+		}
+	}
+
+	localNote := n.self.Note()
+	if localNote != nil {
+		if epoch, exists := lookupEpoch(n.self.Id); !exists || localNote.IsMoreRecent(epoch) {
+			reply.Notes = append(reply.Notes, localNote.ToPbMsg())
+		}
+	}
+}
+
+func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) {
+	callerFp := args.GetFingerprintData()
+	if callerFp != nil {
+		if bytes.Equal(callerFp, n.FingerprintData()) {
+			return
+		}
+
+		reconciler := n.GetDataReconciler()
+		if reconciler == nil {
+			return
+		}
+
+		remoteDiff, err := reconciler.Reconcile(revIdxStore.AsDigestSymbols(args.GetDataDigests()))
+		if err != nil {
+			log.Error("Failed to reconcile data", "err", err)
+			return
+		}
+		reply.RequestedDataDigests = revIdxStore.AsUint64Slice(remoteDiff)
+	}
 }
 
 func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {

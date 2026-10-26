@@ -38,8 +38,10 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 	}
 	symbolSize := uint32(8)
 	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](symbolSize, encodeDigest, decodeDigest)
-	aliceSession := sessionFactory.NewSession(aliceStore)
-	bobSession := sessionFactory.NewSession(bobStore)
+	aliceSession, err := sessionFactory.NewSession(aliceStore)
+	require.NoError(t, err)
+	bobSession, err := sessionFactory.NewSession(bobStore)
+	require.NoError(t, err)
 
 	cost := 0
 	for !bobSession.Done() {
@@ -84,8 +86,10 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](8, encodeDigest, decodeDigest)
 
 	// Create sessions (snapshots taken)
-	aliceSession := sessionFactory.NewSession(aliceStore)
-	bobSession := sessionFactory.NewSession(bobStore)
+	aliceSession, err := sessionFactory.NewSession(aliceStore)
+	require.NoError(t, err)
+	bobSession, err := sessionFactory.NewSession(bobStore)
+	require.NoError(t, err)
 
 	// Mutate the stores AFTER session creation (should not affect active sessions)
 	aliceStore.AddElement(DigestSymbol(1001))
@@ -165,8 +169,10 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 
 	// While writers are actively writing to both stores, create sessions here to test proper isolation
 	// for the sessions
-	aliceSession := sessionFactory.NewSession(aliceStore)
-	bobSession := sessionFactory.NewSession(bobStore)
+	aliceSession, err := sessionFactory.NewSession(aliceStore)
+	require.NoError(t, err)
+	bobSession, err := sessionFactory.NewSession(bobStore)
+	require.NoError(t, err)
 
 	// Perform reconciliation while writes continue in background
 	cost := 0
@@ -190,4 +196,22 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 	assert.True(t, bobSession.Done())
 	// Alice definitely had 999 in her snapshot which was never added to Bob's store
 	assert.Contains(t, bobSession.RemoteDigests(), DigestSymbol(999))
+}
+
+func TestSession_NilStoreReturnsError(t *testing.T) {
+	// Naive session
+	naiveSession, err := NewNaiveExchangeSession[string, DigestSymbol](nil)
+	assert.Nil(t, naiveSession)
+	assert.ErrorIs(t, err, ErrNilStore)
+
+	naiveFactory := NewNaiveSessionFactory[string, DigestSymbol]()
+	facSession, err := naiveFactory.NewSession(nil)
+	assert.Nil(t, facSession)
+	assert.ErrorIs(t, err, ErrNilStore)
+
+	// RIBLT session
+	ribltFactory := RIBLTSessionFactoryConstructor[string, DigestSymbol](8, func(DigestSymbol) []byte { return nil }, func([]byte) DigestSymbol { return 0 })
+	ribSession, err := ribltFactory.NewSession(nil)
+	assert.Nil(t, ribSession)
+	assert.ErrorIs(t, err, ErrNilStore)
 }

@@ -251,13 +251,13 @@ func NewDigestSet[T any](hasher revIdxStore.Hasher[T, revIdxStore.DigestSymbol])
 	return revIdxStore.NewDigestSet(hasher)
 }
 
-// NewNaiveGossipSet creates and initializes a push-based reconcilable store bound to the specified Ifrit Client.
-func NewNaiveGossipSet[T any](c *Client, initial ReverseIndexStore[T]) ReverseIndexStore[T] {
-	var n *core.Node
-	if c != nil {
-		n = c.node
+// RegisterDataStore registers an application's typed data store with the Ifrit client.
+// Ifrit selects and manages the underlying set reconciliation protocol.
+func RegisterDataStore[T any](c *Client, store ReverseIndexStore[T]) {
+	if c == nil || c.node == nil {
+		return
 	}
-	return core.NewNaiveGossipSet(n, initial)
+	core.RegisterDataStore(c.node, store)
 }
 
 func (c *Client) SavePrivateKey() error {

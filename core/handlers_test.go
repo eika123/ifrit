@@ -22,6 +22,7 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	proto "github.com/joonnna/ifrit/protobuf"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/net/context"
@@ -840,6 +841,190 @@ func (suite *HandlerTestSuite) TestValidateCtx() {
 		require.Equalf(suite.T(), t.cert, c, "Invalid output for test %d.", i)
 	}
 
+}
+
+func (suite *HandlerTestSuite) TestSpread_InSyncAccusationsReturnsZeroAccusations() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	args := &proto.State{
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		FingerprintView:        node.ViewFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Empty(suite.T(), reply.GetAccusations(), "In-sync accusations must return 0 accusations")
+	require.Empty(suite.T(), reply.GetRequestedAccusationDigests())
+	require.Equal(suite.T(), node.AccusationFingerprintBytes(), reply.GetFingerprintAccusations())
+}
+
+func (suite *HandlerTestSuite) TestSpread_DivergentAccusationDigestsReturnsOnlyMissingDelta() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	// Add an accusation to the node
+	acc := discovery.NewAccusation(1, succ.Id, node.self.Id, 1, suite.priv)
+	node.view.AddTestAccusation(acc)
+
+	// Caller diverges (different fingerprint and 0 digests)
+	args := &proto.State{
+		FingerprintAccusations: []byte("divergent-fp"),
+		AccusationDigests:      []uint64{},
+		FingerprintView:        node.ViewFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Len(suite.T(), reply.GetAccusations(), 1, "Divergent accusation set must return missing delta")
+	require.Equal(suite.T(), succ.Id, string(reply.GetAccusations()[0].GetAccused()))
+	require.Equal(suite.T(), node.AccusationFingerprintBytes(), reply.GetFingerprintAccusations())
+}
+
+type spyAccusationSessionFactory struct {
+	invoked bool
+	inner   SessionFactory[*discovery.Accusation, DigestSymbol]
+}
+
+func (s *spyAccusationSessionFactory) NewSession(store ReverseIndexStore[*discovery.Accusation, DigestSymbol]) (ReconcilerSession[*discovery.Accusation, DigestSymbol], error) {
+	s.invoked = true
+	return s.inner.NewSession(store)
+}
+
+func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticAccusationReconciliation() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	spy := &spyAccusationSessionFactory{
+		inner: NewNaiveSessionFactory[*discovery.Accusation, DigestSymbol](),
+	}
+	node.SetAccusationSessionFactory(spy)
+	defer node.SetAccusationSessionFactory(nil)
+
+	args := &proto.State{
+		FingerprintAccusations: []byte("divergent-fp"),
+		AccusationDigests:      []uint64{},
+		FingerprintView:        node.ViewFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply)
+	require.True(suite.T(), spy.invoked, "Accusation reconciliation must use pluggable session factory")
+}
+
+func (suite *HandlerTestSuite) TestSpread_InSyncNotesReturnsZeroNotes() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	args := &proto.State{
+		FingerprintView:        node.ViewFingerprintBytes(),
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		ExistingHosts:          node.view.ExistingHostsMap(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Empty(suite.T(), reply.GetNotes(), "In-sync view must return 0 notes")
+	require.Empty(suite.T(), reply.GetCertificates(), "In-sync view must return 0 certificates")
+	require.Equal(suite.T(), node.ViewFingerprintBytes(), reply.GetFingerprintView())
+}
+
+func (suite *HandlerTestSuite) TestSpread_DataDigestReconciliationOmitsBulkBytes() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	store, err := revIdxStore.NewDigestSet[uint64, DigestSymbol](func(elem uint64) DigestSymbol {
+		return DigestSymbol(elem)
+	})
+	require.NoError(suite.T(), err)
+	store.AddElement(101)
+	store.AddElement(102)
+
+	node.SetFingerprintData([]byte("local-data-fp-8b"))
+	RegisterDataStore(node, store)
+	defer func() {
+		node.SetDataReconciler(nil)
+	}()
+
+	// Caller has item 101 and 103 (node is missing 103 from caller)
+	args := &proto.State{
+		FingerprintData:        []byte("caller-data-fp-8"),
+		DataDigests:            []uint64{101, 103},
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		FingerprintView:        node.ViewFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Nil(suite.T(), reply.GetExternalGossip(), "Spread must never send bulk data bytes during reconciliation")
+	require.Equal(suite.T(), []uint64{103}, reply.GetRequestedDataDigests(), "Node must request missing digest 103 from caller")
+	require.Equal(suite.T(), []byte("local-data-fp-8b"), reply.GetFingerprintData())
+}
+
+func (suite *HandlerTestSuite) TestSpread_DataReconciliationWithTypedDataStore() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	type testItem struct {
+		ID   string
+		Data string
+	}
+
+	hasher := func(item testItem) DigestSymbol {
+		return DigestSymbol(len(item.ID)*1000 + len(item.Data))
+	}
+
+	store, err := revIdxStore.NewDigestSet[testItem, DigestSymbol](hasher)
+	require.NoError(suite.T(), err)
+
+	store.AddElement(testItem{ID: "item1", Data: "alpha"})
+	store.AddElement(testItem{ID: "item2", Data: "beta"})
+
+	RegisterDataStore(node, store)
+	defer func() {
+		node.SetDataReconciler(nil)
+	}()
+
+	// Caller is missing one local item and has an unknown item 9999
+	args := &proto.State{
+		FingerprintData:        []byte("caller-different-fp"),
+		DataDigests:            []uint64{5005, 9999},
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		FingerprintView:        node.ViewFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Equal(suite.T(), []uint64{9999}, reply.GetRequestedDataDigests(), "Node must request missing digest 9999 from caller")
+	require.Equal(suite.T(), node.FingerprintData(), reply.GetFingerprintData())
+}
+
+func (suite *HandlerTestSuite) TestSpread_LegacyFallbackWithoutFingerprints() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	node.SetGossipHandler(func(b []byte) ([]byte, error) {
+		return []byte("echo-legacy"), nil
+	})
+
+	args := &proto.State{
+		ExistingHosts:  node.view.ExistingHostsMap(),
+		ExternalGossip: []byte("legacy-data"),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Equal(suite.T(), []byte("echo-legacy"), reply.GetExternalGossip(), "Legacy external gossip handler must be called")
+	require.NotNil(suite.T(), reply.GetFingerprintView(), "Responder must always attach its own fingerprints")
+	require.NotNil(suite.T(), reply.GetFingerprintAccusations())
 }
 
 func peerContext(p *discovery.Peer) context.Context {

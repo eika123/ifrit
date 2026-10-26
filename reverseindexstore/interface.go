@@ -3,6 +3,7 @@ package reverseindexstore
 import (
 	"encoding/binary"
 	"io"
+	"unsafe"
 
 	"github.com/dchest/siphash"
 	"github.com/yangl1996/riblt"
@@ -27,6 +28,23 @@ func (d DigestSymbol) Hash() uint64 {
 	buf := [8]byte{}
 	binary.LittleEndian.PutUint64(buf[:], uint64(d))
 	return siphash.Hash(50683, 19283, buf[:])
+}
+
+// AsDigestSymbols casts a []uint64 slice to []DigestSymbol with zero allocations.
+// Safe because DigestSymbol is defined with underlying type uint64 (identical size, alignment, and GC layout).
+func AsDigestSymbols(in []uint64) []DigestSymbol {
+	if len(in) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*DigestSymbol)(unsafe.Pointer(unsafe.SliceData(in))), len(in))
+}
+
+// AsUint64Slice casts a []DigestSymbol slice to []uint64 with zero allocations.
+func AsUint64Slice(in []DigestSymbol) []uint64 {
+	if len(in) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.SliceData(in))), len(in))
 }
 
 // ReverseIndexStore defines the standard contract that all data stores must comply with
@@ -58,8 +76,13 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// GetByDigest retrieves an element by its digest in O(1) time.
 	GetByDigest(digest S) (elem T, found bool)
 
-	// Digests returns a slice of all digests currently in the store.
-	Digests() []S
+	// GetByDigests retrieves multiple elements by their digests in a single operation.
+	// Returns a slice containing all found elements and true if all requested digests were present in the store,
+	// or false if one or more digests were missing.
+	GetByDigests(digests []S) (elems []T, found bool)
+
+	// DigestsCopy returns a newly allocated slice containing a snapshot of all digests currently in the store.
+	DigestsCopy() []S
 
 	// Fingerprint returns the commutative XOR sum of all element digests in the store.
 	Fingerprint() S

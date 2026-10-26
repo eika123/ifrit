@@ -42,7 +42,8 @@ func TestSetUnionMerging(t *testing.T) {
 }
 
 func TestApplicationGossipSetIntegration(t *testing.T) {
-	gSet := ifrit.NewNaiveGossipSet[user](nil, nil)
+	gSet, err := ifrit.NewDigestSet[user](ifrit.DefaultHasher[user]())
+	require.NoError(t, err)
 	defer gSet.Close()
 
 	app := &application{

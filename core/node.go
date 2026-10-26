@@ -76,6 +76,12 @@ type Node struct {
 	streamHandler      streamMsg
 	streamHandlerMutex sync.RWMutex
 
+	accusationSessionFactory      SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]
+	accusationSessionFactoryMutex sync.RWMutex
+
+	dataReconciler      DataReconciler
+	dataReconcilerMutex sync.RWMutex
+
 	dispatcher *workerpool.Dispatcher
 
 	entryAddrs []string
@@ -281,7 +287,17 @@ func (n *Node) SetFingerprintData(fp []byte) {
 }
 
 func (n *Node) FingerprintData() []byte {
-	return n.self.FingerprintData()
+	if selfFp := n.self.FingerprintData(); len(selfFp) > 0 {
+		return selfFp
+	}
+	n.dataReconcilerMutex.RLock()
+	defer n.dataReconcilerMutex.RUnlock()
+	if n.dataReconciler != nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], uint64(n.dataReconciler.Fingerprint()))
+		return buf[:]
+	}
+	return nil
 }
 
 func (n *Node) AccusationFingerprint() revIdxStore.DigestSymbol {
@@ -331,6 +347,83 @@ func (n *Node) DivergentSets(p *discovery.Peer) (dataDiff, accDiff, viewDiff boo
 	accDiff = !bytes.Equal(p.FingerprintAccusations(), n.AccusationFingerprintBytes())
 	viewDiff = !bytes.Equal(p.FingerprintView(), n.ViewFingerprintBytes())
 	return
+}
+
+// AccusationDigests returns the digest symbols of all local accusations.
+func (n *Node) AccusationDigests() []revIdxStore.DigestSymbol {
+	return n.view.AccusationStore().DigestsCopy()
+}
+
+// AccusationDigestsUint64 returns the 64-bit uint64 digests of all local accusations for wire serialization.
+func (n *Node) AccusationDigestsUint64() []uint64 {
+	return revIdxStore.AsUint64Slice(n.AccusationDigests())
+}
+
+// NoteDigests returns the digest symbols of all local notes in the version vector.
+func (n *Node) NoteDigests() []revIdxStore.DigestSymbol {
+	digests, err := n.view.NoteDigests()
+	if err != nil {
+		log.Error("Failed to get note digests", "err", err)
+		return nil
+	}
+	return digests
+}
+
+// NoteDigestsUint64 returns the 64-bit uint64 digests of all local notes in the version vector for wire serialization.
+func (n *Node) NoteDigestsUint64() []uint64 {
+	return revIdxStore.AsUint64Slice(n.NoteDigests())
+}
+
+// DataDigests returns the local digest symbols, or nil if no reconciler is registered.
+func (n *Node) DataDigests() []revIdxStore.DigestSymbol {
+	n.dataReconcilerMutex.RLock()
+	defer n.dataReconcilerMutex.RUnlock()
+	if n.dataReconciler != nil {
+		return n.dataReconciler.Digests()
+	}
+	return nil
+}
+
+// DataDigestsUint64 returns the local 64-bit uint64 data digests, or nil if no provider is registered.
+func (n *Node) DataDigestsUint64() []uint64 {
+	return revIdxStore.AsUint64Slice(n.DataDigests())
+}
+
+// SetDataReconciler registers a DataReconciler on the node.
+func (n *Node) SetDataReconciler(r DataReconciler) {
+	n.dataReconcilerMutex.Lock()
+	defer n.dataReconcilerMutex.Unlock()
+	n.dataReconciler = r
+}
+
+// GetDataReconciler returns the currently registered DataReconciler, or nil.
+func (n *Node) GetDataReconciler() DataReconciler {
+	n.dataReconcilerMutex.RLock()
+	defer n.dataReconcilerMutex.RUnlock()
+	return n.dataReconciler
+}
+
+// RegisterDataStore registers an application's typed data store on the node,
+// wrapping it into a DataReconciler using the default or configured session factory.
+func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, revIdxStore.DigestSymbol]) {
+	if n == nil {
+		return
+	}
+	n.SetDataReconciler(NewTypedDataReconciler(store, nil))
+}
+
+// SetAccusationSessionFactory allows the Fireflies layer (e.g. tests or internal protocol configuration)
+// to specify a custom reconciliation session factory (e.g. RIBLTSessionFactory or NaiveSessionFactory).
+func (n *Node) SetAccusationSessionFactory(f SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]) {
+	n.accusationSessionFactoryMutex.Lock()
+	defer n.accusationSessionFactoryMutex.Unlock()
+	n.accusationSessionFactory = f
+}
+
+func (n *Node) getAccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
+	n.accusationSessionFactoryMutex.RLock()
+	defer n.accusationSessionFactoryMutex.RUnlock()
+	return n.accusationSessionFactory
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

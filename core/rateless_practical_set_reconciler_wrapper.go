@@ -34,6 +34,7 @@ type DigestSymbol = revIdxStore.DigestSymbol
 
 // -----------------------------------------------------------------------------
 type RIBLTSession[T any, S Symbol[S]] struct {
+	store        ReverseIndexStore[T, S]
 	storeDigests []S
 	encoder      riblt.Encoder[S]
 	decoder      riblt.Decoder[S]
@@ -45,12 +46,20 @@ type RIBLTSession[T any, S Symbol[S]] struct {
 	receivedSymbols int
 }
 
-func newRIBLTSession[T any, S Symbol[S]](storeDigests []S,
+var _ ReconcilerSession[string, DigestSymbol] = (*RIBLTSession[string, DigestSymbol])(nil)
+
+// newRIBLTSession constructs a new RIBLT reconciliation session backed by the given store.
+// Returns ErrNilStore if store is nil.
+func newRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
 	symbolSize uint32,
 	encodeSymbol func(S) []byte,
-	decodeSymbol func([]byte) S) *RIBLTSession[T, S] {
+	decodeSymbol func([]byte) S) (*RIBLTSession[T, S], error) {
+	if store == nil {
+		return nil, ErrNilStore
+	}
 	session := &RIBLTSession[T, S]{
-		storeDigests: storeDigests,
+		store:        store,
+		storeDigests: store.DigestsCopy(),
 		symbolSize:   symbolSize,
 		encodeSymbol: encodeSymbol,
 		decodeSymbol: decodeSymbol,
@@ -58,7 +67,7 @@ func newRIBLTSession[T any, S Symbol[S]](storeDigests []S,
 
 	session.initCodecs()
 
-	return session
+	return session, nil
 }
 
 type RIBLTSessionFactory[T any, S Symbol[S]] struct {
@@ -80,9 +89,9 @@ func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
 	}
 }
 
-// NewSession implements SessionFactory[S]
-func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) ReconcilerSession[T, S] {
-	return newRIBLTSession[T](store.Digests(), f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
+// NewSession implements SessionFactory[T, S]
+func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error) {
+	return newRIBLTSession[T](store, f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
 }
 
 func (session *RIBLTSession[T, S]) initCodecs() {
@@ -104,6 +113,22 @@ func hashDigestsToDigests[S sym[S]](h []riblt.HashedSymbol[S]) []S {
 
 func (s *RIBLTSession[T, S]) RemoteDigests() []S { return hashDigestsToDigests(s.decoder.Remote()) }
 func (s *RIBLTSession[T, S]) LocalDigests() []S  { return hashDigestsToDigests(s.decoder.Local()) }
+
+// DiffDigests returns the union of RemoteDigests and LocalDigests (the symmetric difference).
+func (s *RIBLTSession[T, S]) DiffDigests() []S {
+	return DiffDigests(s.LocalDigests(), s.RemoteDigests())
+}
+
+// LocalElements returns the local elements from the underlying store corresponding to LocalDigests.
+func (s *RIBLTSession[T, S]) LocalElements() []T {
+	return SessionLocalElements(s.store, s.LocalDigests())
+}
+
+func (s *RIBLTSession[T, S]) ProcessIncomingDigests(incoming []S) {
+	for _, d := range incoming {
+		s.decoder.AddSymbol(d)
+	}
+}
 
 func (s *RIBLTSession[T, S]) Done() bool {
 	return s.receivedSymbols > 0 && s.decoder.Decoded()

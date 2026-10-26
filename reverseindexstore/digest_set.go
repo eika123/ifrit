@@ -218,6 +218,29 @@ func (s *digestSet[T, S]) GetByDigest(digest S) (T, bool) {
 	return item, exists
 }
 
+// GetByDigests retrieves multiple elements by their digests in a single operation under one read lock.
+// Returns a slice containing all found elements and true if all requested digests were found,
+// or false if one or more digests were missing.
+func (s *digestSet[T, S]) GetByDigests(digests []S) ([]T, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if len(digests) == 0 {
+		return nil, true
+	}
+
+	elems := make([]T, 0, len(digests))
+	allFound := true
+	for _, d := range digests {
+		if item, exists := s.itemsByDigest[d]; exists {
+			elems = append(elems, item)
+		} else {
+			allFound = false
+		}
+	}
+	return elems, allFound
+}
+
 // Size returns the total count of items in the set.
 func (s *digestSet[T, S]) Size() int {
 	s.mu.RLock()
@@ -242,8 +265,8 @@ func (s *digestSet[T, S]) Fingerprint() S {
 	return s.fingerprint
 }
 
-// Digests returns a slice containing the digests of all elements in the set.
-func (s *digestSet[T, S]) Digests() []S {
+// DigestsCopy returns a slice containing the digests of all elements in the set.
+func (s *digestSet[T, S]) DigestsCopy() []S {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

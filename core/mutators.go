@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/protobuf"
 )
 
@@ -12,10 +13,45 @@ var (
 	errPeerNotFound = errors.New("No peer info found")
 )
 
+func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
+	msg := &proto.State{
+		FingerprintData:        n.FingerprintData(),
+		FingerprintAccusations: n.AccusationFingerprintBytes(),
+		FingerprintView:        n.ViewFingerprintBytes(),
+	}
+
+	if n.self != nil && n.self.Note() != nil {
+		msg.OwnNote = n.self.Note().ToPbMsg()
+	}
+
+	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
+
+	if accDiff {
+		msg.AccusationDigests = n.AccusationDigestsUint64()
+	}
+
+	if viewDiff {
+		msg.ExistingHosts = n.view.ExistingHostsMap()
+		msg.NoteDigests = n.NoteDigestsUint64()
+	}
+
+	if dataDiff {
+		msg.DataDigests = n.DataDigestsUint64()
+	}
+
+	return msg
+}
+
 func (n *Node) collectGossipContent() *proto.State {
 	msg := n.view.State()
 
 	msg.ExternalGossip = n.getExternalGossip()
+	msg.FingerprintData = n.FingerprintData()
+	msg.FingerprintAccusations = n.AccusationFingerprintBytes()
+	msg.FingerprintView = n.ViewFingerprintBytes()
+	msg.AccusationDigests = n.AccusationDigestsUint64()
+	msg.NoteDigests = n.NoteDigestsUint64()
+	msg.DataDigests = n.DataDigestsUint64()
 
 	return msg
 }

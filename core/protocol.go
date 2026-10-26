@@ -36,14 +36,14 @@ func (c correct) Rebuttal(n *Node) {
 }
 
 func (c correct) Gossip(n *Node) {
-	msg := n.collectGossipContent()
-
 	neighbours := n.view.GossipPartners()
 
 	for _, p := range neighbours {
 		if !n.IsDivergent(p) {
 			continue
 		}
+
+		msg := n.collectGossipContentForPeer(p)
 
 		// the comm.Gossip actually does the RPC
 		reply, err := n.comm.Gossip(p.Addr, msg)
@@ -57,6 +57,17 @@ func (c correct) Gossip(n *Node) {
 		n.mergeCertificates(reply.GetCertificates())
 		n.mergeNotes(reply.GetNotes())
 		n.mergeAccusations(reply.GetAccusations())
+
+		// Update cached peer fingerprints from responder's reply
+		if fpData := reply.GetFingerprintData(); fpData != nil {
+			p.SetFingerprintData(fpData)
+		}
+		if fpAcc := reply.GetFingerprintAccusations(); fpAcc != nil {
+			p.SetFingerprintAccusations(fpAcc)
+		}
+		if fpView := reply.GetFingerprintView(); fpView != nil {
+			p.SetFingerprintView(fpView)
+		}
 
 		if handler := n.getResponseHandler(); handler != nil {
 			if replyGossip := reply.GetExternalGossip(); replyGossip != nil {

@@ -21,11 +21,11 @@ import (
 )
 
 var (
-	errInvalidNeighbours  = errors.New("Neighbours are nil ?!")
-	errPeerAlreadyExists  = errors.New("Peer id already exists in the full view")
-	errAlreadyDeactivated = errors.New("Ring was already deactivated")
-	errZeroDeactivate     = errors.New("No ring can be deactivated, maxbyz is 0")
-	errNoNote             = errors.New("Note was nil.")
+	errInvalidNeighbours   = errors.New("Neighbours are nil ?!")
+	errPeerAlreadyExists   = errors.New("Peer id already exists in the full view")
+	errAlreadyDeactivated  = errors.New("Ring was already deactivated")
+	errZeroDeactivate      = errors.New("No ring can be deactivated, maxbyz is 0")
+	errNoNote              = errors.New("Note was nil.")
 	errAccusedIsNil        = errors.New("Accused was nil.")
 	errObsIsNil            = errors.New("Observer was nil")
 	errWrongNote           = errors.New("Note does not belong to accused.")
@@ -327,6 +327,35 @@ func (v *View) Notes() (versionvector.VersionVector[*Note, revIdxStore.DigestSym
 		return nil, ErrNotesNotInitialized
 	}
 	return v.notes, nil
+}
+
+// NoteDigests returns the digests of all active notes currently contributing to the view fingerprint.
+// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+func (v *View) NoteDigests() ([]revIdxStore.DigestSymbol, error) {
+	if v.notes == nil {
+		return nil, ErrNotesNotInitialized
+	}
+	return v.notes.DigestsCopy(), nil
+}
+
+// NoteByDigest retrieves a Note by its digest symbol from the version vector.
+// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+func (v *View) NoteByDigest(d revIdxStore.DigestSymbol) (*Note, bool, error) {
+	if v.notes == nil {
+		return nil, false, ErrNotesNotInitialized
+	}
+	note, found := v.notes.GetByDigest(d)
+	return note, found, nil
+}
+
+// NotesByDigests retrieves multiple Notes by their digests from the version vector in a single operation.
+// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+func (v *View) NotesByDigests(digests []revIdxStore.DigestSymbol) ([]*Note, bool, error) {
+	if v.notes == nil {
+		return nil, false, ErrNotesNotInitialized
+	}
+	notes, found := v.notes.GetByDigests(digests)
+	return notes, found, nil
 }
 
 // AddNote updates or applies a verified note to both the peer and the view's monotonic Note version vector.
