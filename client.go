@@ -90,7 +90,7 @@ func NewClient(config *Config) (*Client, error) {
 		}
 	}
 
-	commService, err := comm.NewComm(cu.Certificate(), cu.CaCertificate(), cu.Priv(), l)
+	commService, err := comm.NewComm(cu.Certificate(), cu.CaCertificate(), cu.Priv(), l, tcpAddr)
 	if err != nil {
 		return nil, err
 	}

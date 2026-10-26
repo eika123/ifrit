@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/binary"
@@ -44,6 +45,12 @@ type Node struct {
 
 	exitFlag  bool
 	exitMutex sync.RWMutex
+
+	// startedChan is closed once Start() has initialized all background workers (gossipLoop, monitorLoop, etc.).
+	// This prevents a data race where Stop() could call wg.Wait() concurrently with Start() calling wg.Add(2).
+	startedChan chan struct{}
+	startCalled bool
+	startMutex  sync.Mutex
 
 	viewUpdateTimeout time.Duration
 
@@ -166,6 +173,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 	n := &Node{
 		exitChan:       make(chan bool, 1),
+		startedChan:    make(chan struct{}),
 		wg:             &sync.WaitGroup{},
 		gossipTimeout:  time.Second * time.Duration(viper.GetInt32("gossip_interval")),
 		monitorTimeout: time.Second * time.Duration(viper.GetInt32("monitor_interval")),
@@ -299,6 +307,23 @@ func (n *Node) ViewFingerprintBytes() []byte {
 	return buf[:]
 }
 
+// IsDivergent checks if peer p's reported fingerprints differ from local node's current fingerprints.
+func (n *Node) IsDivergent(p *discovery.Peer) bool {
+	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
+	return dataDiff || accDiff || viewDiff
+}
+
+// DivergentSets returns boolean indicators for which specific sets differ between peer p and the local node.
+func (n *Node) DivergentSets(p *discovery.Peer) (dataDiff, accDiff, viewDiff bool) {
+	if p == nil {
+		return false, false, false
+	}
+	dataDiff = !bytes.Equal(p.FingerprintData(), n.FingerprintData())
+	accDiff = !bytes.Equal(p.FingerprintAccusations(), n.AccusationFingerprintBytes())
+	viewDiff = !bytes.Equal(p.FingerprintView(), n.ViewFingerprintBytes())
+	return
+}
+
 func (n *Node) IdToAddr(id []byte) (string, error) {
 	p := n.view.Peer(string(id))
 	if p == nil {
@@ -355,6 +380,15 @@ func (n *Node) sendMsg(dest string, ch chan *Message, msg *pb.Msg) {
 	ch <- &Message{Data: reply.GetContent(), Error: err}
 }
 
+// isStopped safely reports whether teardown has already been initiated on this node.
+func (n *Node) isStopped() bool {
+	n.exitMutex.RLock()
+	defer n.exitMutex.RUnlock()
+	return n.exitFlag
+}
+
+// isStopping atomically sets exitFlag and closes exitChan on the first call.
+// Returns true if the node was already stopping.
 func (n *Node) isStopping() bool {
 	n.exitMutex.Lock()
 	defer n.exitMutex.Unlock()
@@ -372,6 +406,17 @@ func (n *Node) isStopping() bool {
 func (n *Node) Stop() {
 	if n.isStopping() {
 		return
+	}
+
+	// Concurrency guard: If Start() was invoked in a background goroutine, wait until
+	// background workers have completed registration (n.wg.Add(2)) and closed startedChan.
+	// This guarantees that n.wg.Wait() below never executes concurrently with n.wg.Add(2).
+	n.startMutex.Lock()
+	started := n.startCalled
+	n.startMutex.Unlock()
+
+	if started {
+		<-n.startedChan
 	}
 
 	if n.useViz && n.viz != nil {
@@ -422,6 +467,15 @@ func (n *Node) Addr() string {
 }
 
 func (n *Node) Start() {
+	n.startMutex.Lock()
+	// If Stop() was already called before Start() began, abort immediately to avoid spawning orphaned goroutines.
+	if n.isStopped() {
+		n.startMutex.Unlock()
+		return
+	}
+	n.startCalled = true
+	n.startMutex.Unlock()
+
 	log.Info("Started Node")
 
 	go n.fd.start()
@@ -438,12 +492,22 @@ func (n *Node) Start() {
 		n.viz.start()
 	}
 
+	// Signal to Stop() that all background workers have completed n.wg registration.
+	close(n.startedChan)
+
 	msg := n.collectGossipContent()
 
 	// With no ca we need to contact existing hosts.
 	// TODO retry if we fail to contact them?
 	if n.cm.CaCertificate() == nil {
 		for _, addr := range n.entryAddrs {
+			// Fast exit check so we don't attempt network dials if Stop() was requested.
+			select {
+			case <-n.exitChan:
+				log.Info("Exiting node")
+				return
+			default:
+			}
 			reply, err := n.comm.Gossip(addr, msg)
 			if err != nil {
 				log.Error(err.Error(), "addr", addr)
@@ -456,9 +520,11 @@ func (n *Node) Start() {
 		}
 	}
 
+	// Block until Stop() is called by the owner/consumer.
+	// Note: We deliberately do NOT call n.Stop() here on exit because n.exitChan is ONLY
+	// closed by n.Stop(). Calling n.Stop() here would race with the caller's ongoing teardown.
 	<-n.exitChan
 	log.Info("Exiting node")
-	n.Stop()
 }
 
 func (n *Node) SavePrivateKey() error {

@@ -107,6 +107,16 @@ func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) erro
 	done := make(chan bool)
 	defer close(reply)
 
+	// Concurrency guard: Multiple goroutines (Recv EOF, Recv error, or ctx.Done) can
+	// encounter exit conditions concurrently. sync.Once ensures done is closed exactly once,
+	// preventing "close of closed channel" panics while avoiding deadlocks on <-done.
+	var once sync.Once
+	safeCloseDone := func() {
+		once.Do(func() {
+			close(done)
+		})
+	}
+
 	// Sending messages from input stream to the server.
 	// Runs until the producer closes the channel
 	go func() {
@@ -117,6 +127,7 @@ func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) erro
 
 			if err := srv.Send(msg); err != nil {
 				log.Error(err.Error())
+				break
 			}
 		}
 
@@ -130,13 +141,14 @@ func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) erro
 		for {
 			req, err := srv.Recv()
 			if err == io.EOF {
-				close(done)
+				safeCloseDone()
 				return
 			}
 
 			if err != nil {
 				log.Error(err.Error())
-				continue
+				safeCloseDone()
+				return
 			}
 
 			reply <- req.GetContent()
@@ -148,7 +160,7 @@ func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) erro
 		if err := ctx.Err(); err != nil {
 			log.Error(err.Error())
 		}
-		//close(done) // might need to call close here?
+		safeCloseDone()
 	}()
 
 	<-done

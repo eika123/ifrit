@@ -41,6 +41,10 @@ func (c correct) Gossip(n *Node) {
 	neighbours := n.view.GossipPartners()
 
 	for _, p := range neighbours {
+		if !n.IsDivergent(p) {
+			continue
+		}
+
 		// the comm.Gossip actually does the RPC
 		reply, err := n.comm.Gossip(p.Addr, msg)
 		if err != nil {

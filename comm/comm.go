@@ -22,7 +22,7 @@ type Comm struct {
 	telemetryLogger TelemetryLogger
 }
 
-func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Listener) (*Comm, error) {
+func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Listener, advertisedAddr ...string) (*Comm, error) {
 	if cert == nil {
 		return nil, errNilCert
 	}
@@ -42,7 +42,7 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 
 	serverConf := serverConfig(cert, caCert, priv)
 
-	server, err := newServer(serverConf, l, telemetryLogger)
+	server, err := newServer(serverConf, l, telemetryLogger, advertisedAddr...)
 	if err != nil {
 		return nil, err
 	}

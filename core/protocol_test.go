@@ -143,3 +143,109 @@ func TestAccusationStore_AuditabilityAndGrowOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, fp2, n.AccusationFingerprint(), "idempotent addition must preserve fingerprint")
 }
+
+func TestNode_DivergenceDetection(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	cert := genCert(priv, 1)
+
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(t, err)
+
+	p, _, err := createTestPeer()
+	require.NoError(t, err)
+
+	// Initially node and peer both have nil data fingerprints, but acc and view differ (node has 8-byte fingerprints, peer has nil)
+	assert.True(t, n.IsDivergent(p))
+	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
+	assert.False(t, dataDiff)
+	assert.True(t, accDiff)
+	assert.True(t, viewDiff)
+
+	// Set peer fingerprints to match local node fingerprints
+	p.SetFingerprintData(n.FingerprintData())
+	p.SetFingerprintAccusations(n.AccusationFingerprintBytes())
+	p.SetFingerprintView(n.ViewFingerprintBytes())
+
+	// Now peer is fully in sync
+	assert.False(t, n.IsDivergent(p))
+	dataDiff, accDiff, viewDiff = n.DivergentSets(p)
+	assert.False(t, dataDiff)
+	assert.False(t, accDiff)
+	assert.False(t, viewDiff)
+
+	// Tamper data fingerprint -> only data diverges
+	p.SetFingerprintData([]byte("different-data"))
+	assert.True(t, n.IsDivergent(p))
+	dataDiff, accDiff, viewDiff = n.DivergentSets(p)
+	assert.True(t, dataDiff)
+	assert.False(t, accDiff)
+	assert.False(t, viewDiff)
+
+	// Restore data, alter accusation -> only accusation diverges
+	p.SetFingerprintData(n.FingerprintData())
+	p.SetFingerprintAccusations([]byte("different-acc"))
+	assert.True(t, n.IsDivergent(p))
+	dataDiff, accDiff, viewDiff = n.DivergentSets(p)
+	assert.False(t, dataDiff)
+	assert.True(t, accDiff)
+	assert.False(t, viewDiff)
+
+	// Restore accusation, alter view -> only view diverges
+	p.SetFingerprintAccusations(n.AccusationFingerprintBytes())
+	p.SetFingerprintView([]byte("different-view"))
+	assert.True(t, n.IsDivergent(p))
+	dataDiff, accDiff, viewDiff = n.DivergentSets(p)
+	assert.False(t, dataDiff)
+	assert.False(t, accDiff)
+	assert.True(t, viewDiff)
+}
+
+type recordingGossipComm struct {
+	commStub
+	gossipedAddrs []string
+}
+
+func (c *recordingGossipComm) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) {
+	c.gossipedAddrs = append(c.gossipedAddrs, addr)
+	return &pb.StateResponse{}, nil
+}
+
+func TestProtocol_GossipSkipsNonDivergentPeers(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	cert := genCert(priv, 1)
+
+	comm := &recordingGossipComm{}
+	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(t, err)
+
+	// Create two peers
+	p1, _, err := createTestPeer()
+	require.NoError(t, err)
+	p1.Addr = "peer-1-addr"
+
+	p2, _, err := createTestPeer()
+	require.NoError(t, err)
+	p2.Addr = "peer-2-addr"
+
+	// p1 is in sync
+	p1.SetFingerprintData(n.FingerprintData())
+	p1.SetFingerprintAccusations(n.AccusationFingerprintBytes())
+	p1.SetFingerprintView(n.ViewFingerprintBytes())
+
+	// p2 is divergent
+	p2.SetFingerprintData([]byte("different-data"))
+	p2.SetFingerprintAccusations(n.AccusationFingerprintBytes())
+	p2.SetFingerprintView(n.ViewFingerprintBytes())
+
+	n.view.AddLive(p1)
+	n.view.AddLive(p2)
+
+	// Run gossip
+	n.p.Gossip(n)
+
+	// Only p2 (divergent) should have been gossiped with; p1 was skipped
+	assert.NotContains(t, comm.gossipedAddrs, "peer-1-addr")
+	assert.Contains(t, comm.gossipedAddrs, "peer-2-addr")
+}

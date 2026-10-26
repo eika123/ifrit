@@ -147,37 +147,65 @@ func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, er
 }
 
 func (n *Node) Stream(srv pb.Gossip_StreamServer) error {
+	handler := n.getStreamHandler()
+	if handler == nil {
+		return nil
+	}
+
 	// Channels used for bi-directional communication
 	input := make(chan []byte)
 	reply := make(chan []byte)
-	defer close(input)
 
-	if handler := n.getStreamHandler(); handler != nil {
-		go n.runStreamHandler(handler, input, reply)
-		go n.replyStream(reply, srv)
-		ctx := srv.Context()
+	// Concurrency guard: Ensure replyStream finishes transmitting all generated responses
+	// before Stream() returns. Returning early on io.EOF cancels the gRPC stream context
+	// on the server, prematurely severing the connection and dropping in-flight responses.
+	replyDone := make(chan struct{})
+	go func() {
+		defer close(replyDone)
+		n.replyStream(reply, srv)
+	}()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+	go n.runStreamHandler(handler, input, reply)
 
-			req, err := srv.Recv()
-			if err == io.EOF {
-				return nil
-			}
+	ctx := srv.Context()
+	var recvErr error
 
-			if err != nil {
-				log.Error(err.Error())
-				continue
-			}
+	for {
+		select {
+		case <-ctx.Done():
+			recvErr = ctx.Err()
+			goto done
+		default:
+		}
 
-			input <- req.GetContent()
+		req, err := srv.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			recvErr = err
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			recvErr = ctx.Err()
+			goto done
+		case input <- req.GetContent():
 		}
 	}
 
+done:
+	// Signal to stream handler that client has closed its send side (no more inputs).
+	close(input)
+
+	// Wait for handler to finish processing remaining messages and replyStream to flush
+	// all replies across the gRPC transport before completing the RPC.
+	<-replyDone
+
+	if recvErr != nil && recvErr != io.EOF {
+		return recvErr
+	}
 	return nil
 }
 
