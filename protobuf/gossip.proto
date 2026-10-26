@@ -13,6 +13,12 @@ message State {
     map<string, uint64> existingHosts = 1;
     Note ownNote = 2;
     bytes externalGossip = 3;
+    bytes fingerprint_data = 4;
+    bytes fingerprint_accusations = 5;
+    bytes fingerprint_view = 6;
+    repeated uint64 accusation_digests = 7;
+    repeated uint64 note_digests = 8;
+    repeated uint64 data_digests = 9;
 }
 /*
 message HostState {
@@ -39,6 +45,12 @@ message StateResponse {
     repeated Note notes = 2;
     repeated Accusation accusations = 3;
     bytes externalGossip = 4;
+    bytes fingerprint_data = 5;
+    bytes fingerprint_accusations = 6;
+    bytes fingerprint_view = 7;
+    repeated uint64 requested_accusation_digests = 8;
+    repeated uint64 requested_note_digests = 9;
+    repeated uint64 requested_data_digests = 10;
 }
 
 //Raw certificate

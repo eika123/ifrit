@@ -501,7 +501,9 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 	}
 
 	if note == nil || note.IsMoreRecent(epoch) {
-		peer.AddNote(mask, epoch, r, s)
+		if _, err := node.view.AddNote(peer, mask, epoch, r, s); err != nil {
+			return err
+		}
 	}
 
 	// If peer is not accused under its most recent note, ensure timers are stopped

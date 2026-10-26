@@ -177,7 +177,9 @@ func (suite *ViewTestSuite) TestAddFull() {
 
 	assert.NoError(suite.T(), suite.v.AddFull(certId, cert), "Should not return error with valid parameters.")
 	assert.True(suite.T(), suite.v.Exists(certId), "Peer not added to map.")
-	assert.NotZero(suite.T(), suite.v.Fingerprint(), "View fingerprint should be non-zero.")
+	fp, err := suite.v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotZero(suite.T(), fp, "View fingerprint should be non-zero.")
 	assert.Equal(suite.T(), 2, suite.v.ViewStore().Size(), "ViewStore should contain added peers.")
 }
 
@@ -1113,3 +1115,60 @@ func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), fp1, v2.AccusationFingerprint())
 }
+
+func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity() {
+	v := suite.v
+	initialFP, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), initialFP, "Initial fingerprint must include self note")
+
+	// Create a test peer
+	p := &Peer{Id: "test-peer-1"}
+	applied, err := v.AddNote(p, 1, 1, []byte("r1"), []byte("s1"))
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), applied)
+
+	fpAfterNote1, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), initialFP, fpAfterNote1, "Adding a note must alter view fingerprint")
+
+	// Adding older or equal epoch must be rejected and preserve fingerprint
+	appliedStale, err := v.AddNote(p, 1, 1, []byte("r1"), []byte("s1"))
+	require.NoError(suite.T(), err)
+	assert.False(suite.T(), appliedStale, "Equal epoch note must be rejected")
+	fpDuplicate, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), fpAfterNote1, fpDuplicate, "Fingerprint must not change on duplicate note")
+
+	// Adding newer epoch (rebuttal) must advance version vector and alter fingerprint
+	appliedNewer, err := v.AddNote(p, 1, 2, []byte("r2"), []byte("s2"))
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), appliedNewer, "Higher epoch note must be accepted")
+	fpAfterNote2, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), fpAfterNote1, fpAfterNote2, "Rebuttal epoch must alter view fingerprint")
+
+	// Verify retrieval from VersionVector
+	key := v.hashId("test-peer-1")
+	notesVV, err := v.Notes()
+	require.NoError(suite.T(), err)
+	note, ver, found := notesVV.Get(key)
+	assert.True(suite.T(), found)
+	assert.Equal(suite.T(), uint64(2), ver)
+	assert.Equal(suite.T(), uint64(2), note.Epoch())
+
+	// Test uninitialized view errors
+	uninitV := &View{}
+	_, err = uninitV.Fingerprint()
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
+	_, err = uninitV.Notes()
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
+	_, err = uninitV.AddNote(p, 1, 1, []byte("r"), []byte("s"))
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+
+	err = uninitV.RemoveTestFull("test")
+	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+}
+

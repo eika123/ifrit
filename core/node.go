@@ -297,11 +297,20 @@ func (n *Node) AccusationFingerprintBytes() []byte {
 }
 
 func (n *Node) ViewFingerprint() revIdxStore.DigestSymbol {
-	return n.view.Fingerprint()
+	fp, err := n.view.Fingerprint()
+	if err != nil {
+		log.Error("Failed to get view fingerprint", "err", err)
+		return 0
+	}
+	return fp
 }
 
 func (n *Node) ViewFingerprintBytes() []byte {
-	fp := n.view.Fingerprint()
+	fp, err := n.view.Fingerprint()
+	if err != nil {
+		log.Error("Failed to get view fingerprint", "err", err)
+		return nil
+	}
 	var buf [8]byte
 	binary.BigEndian.PutUint64(buf[:], uint64(fp))
 	return buf[:]

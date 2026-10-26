@@ -16,6 +16,7 @@ import (
 	pb "github.com/joonnna/ifrit/protobuf"
 	proto "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/versionvector"
 	"github.com/spf13/viper"
 )
 
@@ -25,9 +26,10 @@ var (
 	errAlreadyDeactivated = errors.New("Ring was already deactivated")
 	errZeroDeactivate     = errors.New("No ring can be deactivated, maxbyz is 0")
 	errNoNote             = errors.New("Note was nil.")
-	errAccusedIsNil       = errors.New("Accused was nil.")
-	errObsIsNil           = errors.New("Observer was nil")
-	errWrongNote          = errors.New("Note does not belong to accused.")
+	errAccusedIsNil        = errors.New("Accused was nil.")
+	errObsIsNil            = errors.New("Observer was nil")
+	errWrongNote           = errors.New("Note does not belong to accused.")
+	ErrNotesNotInitialized = errors.New("Notes version vector is not initialized")
 )
 
 type View struct {
@@ -37,6 +39,8 @@ type View struct {
 	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 
 	accusationStore revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol]
+
+	notes versionvector.VersionVector[*Note, revIdxStore.DigestSymbol]
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -150,11 +154,30 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
+	noteKeyFunc := func(n *Note) revIdxStore.DigestSymbol {
+		h := fnv.New64a()
+		h.Write([]byte(n.id))
+		return revIdxStore.DigestSymbol(h.Sum64())
+	}
+
+	noteHasher := func(key revIdxStore.DigestSymbol, n *Note, version uint64) revIdxStore.DigestSymbol {
+		h := fnv.New64a()
+		var buf [20]byte
+		binary.BigEndian.PutUint64(buf[0:8], uint64(key))
+		binary.BigEndian.PutUint32(buf[8:12], n.mask)
+		binary.BigEndian.PutUint64(buf[12:20], version)
+		h.Write(buf[:])
+		return revIdxStore.DigestSymbol(h.Sum64())
+	}
+
+	notesVV := versionvector.NewVersionVector(noteKeyFunc, noteHasher)
+
 	v := &View{
 		rings:           rings,
 		viewStore:       viewStore,
 		liveStore:       liveStore,
 		accusationStore: accusationStore,
+		notes:           notesVV,
 		timeoutMap:      make(map[string]*timeout),
 		maxByz:          maxByz,
 		currGossipRing:  1,
@@ -289,15 +312,38 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	return nil
 }
 
-// Fingerprint returns the commutative XOR fingerprint of all admitted members in the full view (including self).
-// By XORing self's identity hash with the remote peers in viewStore, every node in the cluster with an
-// identical membership view calculates the exact same fingerprint.
-func (v *View) Fingerprint() revIdxStore.DigestSymbol {
-	fp := v.viewStore.Fingerprint()
-	if v.self != nil {
-		fp = fp.XOR(v.hashId(v.self.Id))
+// Fingerprint returns the commutative XOR fingerprint of all active peer notes in the view (including self).
+// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+func (v *View) Fingerprint() (revIdxStore.DigestSymbol, error) {
+	if v.notes == nil {
+		return 0, ErrNotesNotInitialized
 	}
-	return fp
+	return v.notes.Fingerprint(), nil
+}
+
+// Notes returns the underlying VersionVector backing peer notes, or ErrNotesNotInitialized if uninitialized.
+func (v *View) Notes() (versionvector.VersionVector[*Note, revIdxStore.DigestSymbol], error) {
+	if v.notes == nil {
+		return nil, ErrNotesNotInitialized
+	}
+	return v.notes, nil
+}
+
+// AddNote updates or applies a verified note to both the peer and the view's monotonic Note version vector.
+// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, error) {
+	if v.notes == nil {
+		return false, ErrNotesNotInitialized
+	}
+	if p == nil {
+		return false, errors.New("peer is nil")
+	}
+	p.AddNote(mask, epoch, r, s)
+	n := p.Note()
+	if n == nil {
+		return false, errNoNote
+	}
+	return v.notes.AddItem(n, epoch), nil
 }
 
 // ViewStore returns the underlying ReverseIndexStore backing the full view.
@@ -688,6 +734,23 @@ func (v *View) State() *proto.State {
 	return ret
 }
 
+// ExistingHostsMap returns a map of hex-encoded peer IDs to their latest known note epoch.
+func (v *View) ExistingHostsMap() map[string]uint64 {
+	v.viewMutex.RLock()
+	defer v.viewMutex.RUnlock()
+
+	hosts := make(map[string]uint64, v.viewStore.Size())
+	for _, p := range v.viewStore.Elements() {
+		id := hex.EncodeToString([]byte(p.Id))
+		if note := p.Note(); note != nil {
+			hosts[id] = note.epoch
+		} else {
+			hosts[id] = 0
+		}
+	}
+	return hosts
+}
+
 // ValidMask checks whether a ring bitmask does not deactivate more rings than allowed by Byzantine fault tolerance limits.
 //
 // Prerequisites / Expected Services:
@@ -760,8 +823,12 @@ func (v *View) signLocalNote(n *Note) error {
 	}
 
 	v.self.note = n
+	if v.notes == nil {
+		return ErrNotesNotInitialized
+	}
+	v.notes.AddItem(n, n.epoch)
 
-	return err
+	return nil
 }
 
 func validMask(mask, numRings, maxByz uint32) error {
@@ -991,13 +1058,18 @@ func (v *View) AddAccusation(accused, accuser string, epoch uint64, ringNum uint
 */
 
 // ONLY for testing
-func (v *View) RemoveTestFull(id string) {
+func (v *View) RemoveTestFull(id string) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
+	if v.notes == nil {
+		return ErrNotesNotInitialized
+	}
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		v.viewStore.Remove(p)
+		v.notes.Remove(v.hashId(id))
 	}
+	return nil
 }
 
 // ONLY for testing
