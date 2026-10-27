@@ -783,10 +783,33 @@ def main():
     parser.add_argument(
         "-p", "--port",
         type=int,
-        default=8080,
-        help="Port to bind server (default: 8080)",
+        default=None,
+        help="Port to bind server (default: 8080 or next available, also respects $PORT)",
     )
     args = parser.parse_args()
+
+    port = args.port
+    if port is None:
+        env_port = os.environ.get("PORT")
+        if env_port and env_port.isdigit():
+            port = int(env_port)
+        else:
+            port = 8080
+            import socket
+            def is_port_busy(p: int, h: str) -> bool:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    try:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind((h, p))
+                        return False
+                    except OSError:
+                        return True
+
+            if is_port_busy(port, args.host):
+                orig_port = port
+                while is_port_busy(port, args.host) and port < 65535:
+                    port += 1
+                print(f"⚠️  Port {orig_port} is already in use; automatically selected port {port}.")
 
     global DB_TARGET
     DB_TARGET = os.path.abspath(args.target)
@@ -794,10 +817,10 @@ def main():
     print(f"==================================================")
     print(f"🔥 Starting Ifrit Telemetry Explorer (FastAPI)")
     print(f"📁 Target DB path or dir: {DB_TARGET}")
-    print(f"🌐 Dashboard URL: http://localhost:{args.port}")
+    print(f"🌐 Dashboard URL: http://localhost:{port}")
     print(f"==================================================")
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 
 if __name__ == "__main__":
