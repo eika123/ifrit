@@ -53,6 +53,12 @@ func AsUint64Slice(in []DigestSymbol) []uint64 {
 type ReverseIndexStore[T any, S Symbol[S]] interface {
 	io.Closer
 
+	// Insert adds an element to the store and returns its digest symbol and whether it was newly inserted.
+	Insert(elem T) (digest S, newlyAdded bool)
+
+	// Digest returns the deterministic digest symbol for an element according to the store's configured hasher.
+	Digest(elem T) S
+
 	// AddElement adds an element to the store. Returns true if the element was newly added.
 	AddElement(elem T) bool
 

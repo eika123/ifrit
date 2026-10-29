@@ -58,3 +58,4 @@ experiments/observer/filter_bpf.o
 __pycache__
 ca
 gossipContentExample
+.plans

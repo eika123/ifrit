@@ -32,13 +32,20 @@ var (
 	ErrNotesNotInitialized = errors.New("Notes version vector is not initialized")
 )
 
+type activeAccusationEntry struct {
+	epoch  uint64
+	digest revIdxStore.DigestSymbol
+}
+
 type View struct {
 	viewStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 	viewMutex sync.RWMutex
 
 	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
 
-	accusationStore revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol]
+	accusationStore   revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol]
+	activeAccusations map[string]map[uint32]activeAccusationEntry
+	activeAccMutex    sync.RWMutex
 
 	notes versionvector.VersionVector[*Note, revIdxStore.DigestSymbol]
 
@@ -138,18 +145,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	accHasher := func(a *Accusation) revIdxStore.DigestSymbol {
-		h := fnv.New64a()
-		h.Write([]byte(a.accused))
-		h.Write([]byte(a.accuser))
-		var buf [12]byte
-		binary.BigEndian.PutUint32(buf[0:4], a.ringNum)
-		binary.BigEndian.PutUint64(buf[4:12], a.epoch)
-		h.Write(buf[:])
-		return revIdxStore.DigestSymbol(h.Sum64())
-	}
-
-	accusationStore, err := revIdxStore.NewDigestSet(accHasher)
+	accusationStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Accusation]())
 	if err != nil {
 		return nil, err
 	}
@@ -173,19 +169,20 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 	notesVV := versionvector.NewVersionVector(noteKeyFunc, noteHasher)
 
 	v := &View{
-		rings:           rings,
-		viewStore:       viewStore,
-		liveStore:       liveStore,
-		accusationStore: accusationStore,
-		notes:           notesVV,
-		timeoutMap:      make(map[string]*timeout),
-		maxByz:          maxByz,
-		currGossipRing:  1,
-		currMonitorRing: 1,
-		self:            self,
-		cm:              cm,
-		exitChan:        make(chan bool, 1),
-		s:               s,
+		rings:             rings,
+		viewStore:         viewStore,
+		liveStore:         liveStore,
+		accusationStore:   accusationStore,
+		activeAccusations: make(map[string]map[uint32]activeAccusationEntry),
+		notes:             notesVV,
+		timeoutMap:        make(map[string]*timeout),
+		maxByz:            maxByz,
+		currGossipRing:    1,
+		currMonitorRing:   1,
+		self:              self,
+		cm:                cm,
+		exitChan:          make(chan bool, 1),
+		s:                 s,
 
 		removalTimeout: removalTimeout,
 		updateTimeout:  time.Second * time.Duration(updateInterval),
@@ -372,6 +369,7 @@ func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, e
 	if n == nil {
 		return false, errNoNote
 	}
+	v.pruneActiveAccusations(p.Id, epoch)
 	return v.notes.AddItem(n, epoch), nil
 }
 
@@ -659,6 +657,7 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 		}
 
 		v.self.note = newNote
+		v.pruneActiveAccusations(v.self.Id, newNote.epoch)
 
 		return true
 	} else {
@@ -935,6 +934,59 @@ func (v *View) Accusation(accused, accuser string, ringNum uint32, epoch uint64)
 	return nil
 }
 
+func (v *View) recordActiveAccusation(a *Accusation, d revIdxStore.DigestSymbol) {
+	if a == nil {
+		return
+	}
+	v.activeAccMutex.Lock()
+	defer v.activeAccMutex.Unlock()
+
+	if v.activeAccusations == nil {
+		v.activeAccusations = make(map[string]map[uint32]activeAccusationEntry)
+	}
+
+	p := v.Peer(a.accused)
+	if p != nil && p.note != nil && a.epoch < p.note.epoch {
+		return
+	}
+
+	rings, exists := v.activeAccusations[a.accused]
+	if !exists {
+		rings = make(map[uint32]activeAccusationEntry)
+		v.activeAccusations[a.accused] = rings
+	}
+
+	if curr, hasRing := rings[a.ringNum]; !hasRing || a.epoch >= curr.epoch {
+		rings[a.ringNum] = activeAccusationEntry{
+			epoch:  a.epoch,
+			digest: d,
+		}
+	}
+}
+
+func (v *View) pruneActiveAccusations(accusedId string, rebuttalEpoch uint64) {
+	v.activeAccMutex.Lock()
+	defer v.activeAccMutex.Unlock()
+
+	if v.activeAccusations == nil {
+		return
+	}
+
+	rings, exists := v.activeAccusations[accusedId]
+	if !exists {
+		return
+	}
+
+	for ringNum, entry := range rings {
+		if entry.epoch < rebuttalEpoch {
+			delete(rings, ringNum)
+		}
+	}
+	if len(rings) == 0 {
+		delete(v.activeAccusations, accusedId)
+	}
+}
+
 // AccusationsForPeer returns all accusations (historic and active) against the given accused peer ID.
 func (v *View) AccusationsForPeer(accusedId string) []*Accusation {
 	var accs []*Accusation
@@ -952,13 +1004,26 @@ func (v *View) ActiveAccusationsForPeer(p *Peer) []*Accusation {
 	if p == nil {
 		return nil
 	}
+	v.activeAccMutex.RLock()
+	defer v.activeAccMutex.RUnlock()
+
+	if v.activeAccusations == nil {
+		return nil
+	}
+
+	rings, exists := v.activeAccusations[p.Id]
+	if !exists || len(rings) == 0 {
+		return nil
+	}
+
 	note := p.Note()
 	var accs []*Accusation
-	for _, a := range v.accusationStore.Elements() {
-		if a.accused == p.Id {
-			if note == nil || a.epoch >= note.epoch {
-				accs = append(accs, a)
-			}
+	for _, entry := range rings {
+		if note != nil && entry.epoch < note.epoch {
+			continue
+		}
+		if acc, found := v.accusationStore.GetByDigest(entry.digest); found {
+			accs = append(accs, acc)
 		}
 	}
 	return accs
@@ -969,12 +1034,26 @@ func (v *View) IsAccused(p *Peer) bool {
 	if p == nil {
 		return false
 	}
+	v.activeAccMutex.RLock()
+	defer v.activeAccMutex.RUnlock()
+
+	if v.activeAccusations == nil {
+		return false
+	}
+
+	rings, exists := v.activeAccusations[p.Id]
+	if !exists || len(rings) == 0 {
+		return false
+	}
+
 	note := p.Note()
-	for _, a := range v.accusationStore.Elements() {
-		if a.accused == p.Id {
-			if note == nil || a.epoch >= note.epoch {
-				return true
-			}
+	if note == nil {
+		return true
+	}
+
+	for _, entry := range rings {
+		if entry.epoch >= note.epoch {
+			return true
 		}
 	}
 	return false
@@ -982,23 +1061,33 @@ func (v *View) IsAccused(p *Peer) bool {
 
 // RingAccusation returns the most recent active accusation against accusedId on ring ringNum.
 func (v *View) RingAccusation(accusedId string, ringNum uint32) *Accusation {
+	v.activeAccMutex.RLock()
+	defer v.activeAccMutex.RUnlock()
+
+	if v.activeAccusations == nil {
+		return nil
+	}
+
+	rings, exists := v.activeAccusations[accusedId]
+	if !exists {
+		return nil
+	}
+
+	entry, hasRing := rings[ringNum]
+	if !hasRing {
+		return nil
+	}
+
 	peer := v.Peer(accusedId)
-	var note *Note
-	if peer != nil {
-		note = peer.Note()
+	if peer != nil && peer.note != nil && entry.epoch < peer.note.epoch {
+		return nil
 	}
-	var mostRecent *Accusation
-	for _, a := range v.accusationStore.Elements() {
-		if a.accused == accusedId && a.ringNum == ringNum {
-			if note != nil && a.epoch < note.epoch {
-				continue
-			}
-			if mostRecent == nil || a.epoch > mostRecent.epoch {
-				mostRecent = a
-			}
-		}
+
+	acc, found := v.accusationStore.GetByDigest(entry.digest)
+	if !found {
+		return nil
 	}
-	return mostRecent
+	return acc
 }
 
 // CreateAccusation creates and signs a new accusation targeting an accused peer and note on ringNum,
@@ -1044,7 +1133,8 @@ func (v *View) CreateAccusation(accused *Peer, accusedNote *Note, ringNum uint32
 		s: s,
 	}
 
-	v.accusationStore.AddElement(acc)
+	d, _ := v.accusationStore.Insert(acc)
+	v.recordActiveAccusation(acc, d)
 	log.Debug("Added accusation to view", "accused", accused.Addr, "ring", acc.ringNum, "epoch", acc.epoch)
 	return nil
 }
@@ -1075,7 +1165,8 @@ func (v *View) AddAccusation(accused, accuser string, epoch uint64, ringNum uint
 		},
 	}
 
-	v.accusationStore.AddElement(a)
+	d, _ := v.accusationStore.Insert(a)
+	v.recordActiveAccusation(a, d)
 	log.Debug("Added accusation to view", "accused", accused, "accuser", accuser, "ring", ringNum, "epoch", epoch)
 	return nil
 }
@@ -1123,7 +1214,8 @@ func (v *View) AddTestAccusation(a *pb.Accusation) {
 			s: a.GetSignature().GetS(),
 		},
 	}
-	v.accusationStore.AddElement(acc)
+	d, _ := v.accusationStore.Insert(acc)
+	v.recordActiveAccusation(acc, d)
 }
 
 // ONLY for testing

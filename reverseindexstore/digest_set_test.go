@@ -200,3 +200,27 @@ func TestDigestSymbolConversions(t *testing.T) {
 	symbols[1] = 999
 	assert.Equal(t, uint64(999), uValues[1])
 }
+
+func TestDigestSet_InsertAndDigest(t *testing.T) {
+	hasher := reverseindexstore.DefaultHasher[string]()
+	s, err := reverseindexstore.NewDigestSet[string, reverseindexstore.DigestSymbol](hasher)
+	require.NoError(t, err)
+
+	item := "test-item"
+	expectedDigest := hasher(item)
+
+	// Digest method
+	assert.Equal(t, expectedDigest, s.Digest(item))
+
+	// Insert returns digest and newlyAdded=true
+	d, newlyAdded := s.Insert(item)
+	assert.Equal(t, expectedDigest, d)
+	assert.True(t, newlyAdded)
+	assert.Equal(t, 1, s.Size())
+
+	// Re-inserting returns digest and newlyAdded=false
+	d2, newlyAdded2 := s.Insert(item)
+	assert.Equal(t, expectedDigest, d2)
+	assert.False(t, newlyAdded2)
+	assert.Equal(t, 1, s.Size())
+}

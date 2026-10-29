@@ -101,6 +101,14 @@ func (s *digestSet[T, S]) Insert(item T) (S, bool) {
 	return d, true
 }
 
+// Digest computes and returns the deterministic digest symbol for the given item.
+func (s *digestSet[T, S]) Digest(item T) S {
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	return s.hasher(item)
+}
+
 // AddElement inserts an element into the set and returns true if newly added.
 func (s *digestSet[T, S]) AddElement(elem T) bool {
 	_, inserted := s.Insert(elem)

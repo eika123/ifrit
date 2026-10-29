@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"errors"
+	"fmt"
 
 	"github.com/golang/protobuf/proto"
 	pb "github.com/joonnna/ifrit/protobuf"
@@ -19,6 +20,12 @@ type Accusation struct {
 	accuser string
 	accused string
 	*signature
+}
+
+// ID returns the canonical string identifier for this accusation,
+// binding (accused, accuser, ringNum, epoch).
+func (a Accusation) ID() string {
+	return fmt.Sprintf("%s:%s:%d:%d", a.accused, a.accuser, a.ringNum, a.epoch)
 }
 
 // Checks that for this accusation a:

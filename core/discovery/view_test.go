@@ -1092,6 +1092,64 @@ func (suite *ViewTestSuite) TestViewAccusationActiveAndRebuttal() {
 	assert.Equal(suite.T(), uint64(3), suite.v.RingAccusation(peerId, 1).Epoch())
 }
 
+func (suite *ViewTestSuite) TestViewActiveAccusationsMultiRingAndRebuttalPruning() {
+	peerId := "multiRingPeer"
+	peer := &Peer{
+		Id:   peerId,
+		Addr: "127.0.0.1:2001",
+		note: &Note{id: peerId, epoch: 1},
+	}
+	suite.v.AddTestPeer(peer)
+
+	// Initially not accused
+	assert.False(suite.T(), suite.v.IsAccused(peer))
+	assert.Empty(suite.T(), suite.v.ActiveAccusationsForPeer(peer))
+
+	// Accuse on Ring 1 and Ring 2 at epoch 1
+	err := suite.v.AddAccusation(peerId, "accuser-ring1", 1, 1, []byte("r1"), []byte("s1"))
+	require.NoError(suite.T(), err)
+	err = suite.v.AddAccusation(peerId, "accuser-ring2", 1, 2, []byte("r2"), []byte("s2"))
+	require.NoError(suite.T(), err)
+
+	// Both rings active
+	assert.True(suite.T(), suite.v.IsAccused(peer))
+	activeAccs := suite.v.ActiveAccusationsForPeer(peer)
+	assert.Len(suite.T(), activeAccs, 2)
+	assert.NotNil(suite.T(), suite.v.RingAccusation(peerId, 1))
+	assert.NotNil(suite.T(), suite.v.RingAccusation(peerId, 2))
+	assert.Nil(suite.T(), suite.v.RingAccusation(peerId, 3))
+
+	// Peer rebuts with new note via AddNote at epoch 2
+	applied, err := suite.v.AddNote(peer, 1, 2, []byte("r_reb"), []byte("s_reb"))
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), applied)
+
+	// Rebuttal prunes all epoch 1 accusations from active index
+	assert.False(suite.T(), suite.v.IsAccused(peer))
+	assert.Empty(suite.T(), suite.v.ActiveAccusationsForPeer(peer))
+	assert.Nil(suite.T(), suite.v.RingAccusation(peerId, 1))
+	assert.Nil(suite.T(), suite.v.RingAccusation(peerId, 2))
+
+	// Historical store retains both epoch 1 accusations
+	assert.Len(suite.T(), suite.v.AccusationsForPeer(peerId), 2)
+
+	// New accusation arrives targeting epoch 2 on Ring 2
+	err = suite.v.AddAccusation(peerId, "accuser-ring2", 2, 2, []byte("r_new"), []byte("s_new"))
+	require.NoError(suite.T(), err)
+
+	// Now only Ring 2 is active at epoch 2
+	assert.True(suite.T(), suite.v.IsAccused(peer))
+	activeNow := suite.v.ActiveAccusationsForPeer(peer)
+	require.Len(suite.T(), activeNow, 1)
+	assert.Equal(suite.T(), uint32(2), activeNow[0].RingNum())
+	assert.Equal(suite.T(), uint64(2), activeNow[0].Epoch())
+	assert.Nil(suite.T(), suite.v.RingAccusation(peerId, 1))
+	assert.NotNil(suite.T(), suite.v.RingAccusation(peerId, 2))
+
+	// Historical store has all 3 accusations
+	assert.Len(suite.T(), suite.v.AccusationsForPeer(peerId), 3)
+}
+
 func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
 	v1 := suite.v
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
