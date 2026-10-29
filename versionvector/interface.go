@@ -24,16 +24,16 @@ type VersionVector[T any, S Symbol[S]] interface {
 	// Returns false if an existing entry has an equal or newer version.
 	AddItem(item T, versionNumber uint64) bool
 
-	// Get retrieves the current item and version for a given key.
-	Get(key S) (item T, version uint64, found bool)
+	// GetByDigest retrieves an item by its identity key in O(1) time.
+	// Note: This method serves as a compatibility adapter for ReverseIndexStore
+	// and reconciler interfaces, where the item's identity slot key serves as the lookup key.
+	GetByDigest(key S) (item T, found bool)
 
-	// GetByDigest retrieves an item by its digest in O(1) time.
-	GetByDigest(digest S) (item T, found bool)
-
-	// GetByDigests retrieves multiple items by their digests in a single operation.
-	// Returns a slice of all found items and true if every requested digest was found,
-	// or false if one or more digests were missing.
-	GetByDigests(digests []S) (items []T, found bool)
+	// GetByDigests retrieves multiple items by their identity keys in a single operation.
+	// Acts as a compatibility adapter for ReverseIndexStore and reconciler interfaces.
+	// Returns a slice of all found items and true if every requested key was found,
+	// or false if one or more keys were missing.
+	GetByDigests(keys []S) (items []T, found bool)
 
 	// ContainsKey reports whether an entry for key exists.
 	ContainsKey(key S) bool

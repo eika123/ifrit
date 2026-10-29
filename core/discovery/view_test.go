@@ -1152,9 +1152,8 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	key := v.hashId("test-peer-1")
 	notesVV, err := v.Notes()
 	require.NoError(suite.T(), err)
-	note, ver, found := notesVV.Get(key)
+	note, found := notesVV.GetByDigest(key)
 	assert.True(suite.T(), found)
-	assert.Equal(suite.T(), uint64(2), ver)
 	assert.Equal(suite.T(), uint64(2), note.Epoch())
 
 	// Test NoteByDigest and NotesByDigests

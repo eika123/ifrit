@@ -27,10 +27,13 @@ func NewVersionVector[T any, S Symbol[S]](keyFunc KeyExtractor[T, S], hasher Ite
 	}
 }
 
-func (vv *versionVector[T, S]) GetByDigest(digest S) (T, bool) {
+// GetByDigest retrieves an item by its identity key in O(1) time.
+// Note: This method is a pluggability adapter for ReverseIndexStore-compatible reconcilers.
+// The parameter 'key' is the slot identity key, NOT the item's hash/fingerprint digest.
+func (vv *versionVector[T, S]) GetByDigest(key S) (T, bool) {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
-	entry, exists := vv.items[digest]
+	entry, exists := vv.items[key]
 	if !exists {
 		var zero T
 		return zero, false
@@ -38,23 +41,23 @@ func (vv *versionVector[T, S]) GetByDigest(digest S) (T, bool) {
 	return entry.item, true
 }
 
-func (vv *versionVector[T, S]) GetByDigests(digests []S) ([]T, bool) {
+// GetByDigests retrieves multiple items by their identity keys in a single operation under one read lock.
+// Acts as a pluggability adapter for ReverseIndexStore-compatible reconcilers.
+func (vv *versionVector[T, S]) GetByDigests(keys []S) ([]T, bool) {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 
-	elements := make([]T, 0, len(digests))
-
-	found_all := true
-	for idx := range digests {
-		sym := digests[idx]
-		entry, exists := vv.items[sym]
+	elements := make([]T, 0, len(keys))
+	foundAll := true
+	for _, key := range keys {
+		entry, exists := vv.items[key]
 		if !exists {
-			found_all = false
+			foundAll = false
 			continue
 		}
 		elements = append(elements, entry.item)
 	}
-	return elements, found_all
+	return elements, foundAll
 }
 
 func (vv *versionVector[T, S]) AddItem(item T, versionNumber uint64) bool {
@@ -82,18 +85,6 @@ func (vv *versionVector[T, S]) AddItem(item T, versionNumber uint64) bool {
 		digest:  digest,
 	}
 	return true
-}
-
-func (vv *versionVector[T, S]) Get(key S) (T, uint64, bool) {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
-	entry, found := vv.items[key]
-	if !found {
-		var zero T
-		return zero, 0, false
-	}
-	return entry.item, entry.version, true
 }
 
 func (vv *versionVector[T, S]) ContainsKey(key S) bool {

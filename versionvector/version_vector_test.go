@@ -47,10 +47,10 @@ func TestVersionVector_BasicOperations(t *testing.T) {
 	key1 := testKeyFunc(e1)
 	assert.True(t, vv.ContainsKey(key1))
 
-	retrieved, ver, found := vv.Get(key1)
+	retrieved, found := vv.GetByDigest(key1)
 	assert.True(t, found)
-	assert.Equal(t, uint64(1), ver)
 	assert.Equal(t, "initial", retrieved.Payload)
+	assert.Equal(t, uint64(1), vv.Versions()[key1])
 
 	// Fingerprint should equal the single digest
 	expectedDigest := testHasher(key1, e1, 1)
@@ -89,9 +89,9 @@ func TestVersionVector_MonotonicAdvancement(t *testing.T) {
 	fp2 := vv.Fingerprint()
 	assert.NotEqual(t, fp1, fp2, "Fingerprint must change when version advances")
 
-	retrieved, ver, found := vv.Get(key1)
+	retrieved, found := vv.GetByDigest(key1)
 	assert.True(t, found)
-	assert.Equal(t, uint64(2), ver)
+	assert.Equal(t, uint64(2), vv.Versions()[key1])
 	assert.Equal(t, "v2", retrieved.Payload)
 
 	// Mathematical verification: fp2 == fp1 XOR digest(v1) XOR digest(v2)
@@ -131,8 +131,8 @@ func TestVersionVector_RejectsStaleAndEqualVersions(t *testing.T) {
 	assert.Equal(t, fpCurrent, vv.Fingerprint(), "Fingerprint must be unchanged on rejection")
 
 	// Verify state was not modified
-	retrieved, ver, _ := vv.Get(key1)
-	assert.Equal(t, uint64(5), ver)
+	retrieved, _ := vv.GetByDigest(key1)
+	assert.Equal(t, uint64(5), vv.Versions()[key1])
 	assert.Equal(t, "v5", retrieved.Payload)
 }
 
@@ -225,7 +225,7 @@ func TestVersionVector_ConcurrentAccessAndRaceDetector(t *testing.T) {
 				}, uint64(i))
 
 				// Concurrent reads
-				vv.Get(key)
+				vv.GetByDigest(key)
 				vv.ContainsKey(key)
 				vv.Fingerprint()
 				vv.Size()
