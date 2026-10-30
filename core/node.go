@@ -215,7 +215,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 	n.comm.Register(n)
 
 	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
-		fpSetter.SetFingerprintDataProvider(n.self.FingerprintData)
+		fpSetter.SetFingerprintDataProvider(n.FingerprintData)
 	} else if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintProvider(n.self.Fingerprint)
 	}
@@ -297,7 +297,7 @@ func (n *Node) FingerprintData() []byte {
 	defer n.dataReconcilerMutex.RUnlock()
 	if n.dataReconciler != nil {
 		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], uint64(n.dataReconciler.Fingerprint()))
+		binary.BigEndian.PutUint64(buf[:], uint64(n.dataReconciler.Fingerprint()))
 		return buf[:]
 	}
 	return nil
@@ -307,7 +307,6 @@ func (n *Node) AccusationFingerprint() revIdxStore.DigestSymbol {
 	return n.view.AccusationFingerprint()
 }
 
-// TODO: Check this big endian stuff
 func (n *Node) AccusationFingerprintBytes() []byte {
 	fp := n.view.AccusationFingerprint()
 	var buf [8]byte

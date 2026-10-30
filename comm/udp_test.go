@@ -54,3 +54,20 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	assert.Equal(t, expectedFPView, pong.GetFingerprintView())
 	assert.Equal(t, PongContent(nonce, expectedFPData, expectedFPAcc, expectedFPView), signer.lastSigned, "signature must cover PongContent(nonce, fpData, fpAcc, fpView)")
 }
+
+func TestPongContent_FieldBoundaryShifting(t *testing.T) {
+	nonce := []byte("test-nonce-12345678901234567890")
+	val := []byte("boundary-test")
+
+	// Shift bytes between fpData and fpAcc:
+	// Case 1: fpData has val, fpAcc is nil
+	c1 := PongContent(nonce, val, nil, nil)
+	// Case 2: fpData is nil, fpAcc has val
+	c2 := PongContent(nonce, nil, val, nil)
+	// Case 3: fpData and fpAcc are nil, fpView has val
+	c3 := PongContent(nonce, nil, nil, val)
+
+	assert.NotEqual(t, c1, c2, "framed PongContent must prevent field-boundary shifting between fpData and fpAcc")
+	assert.NotEqual(t, c1, c3, "framed PongContent must prevent field-boundary shifting between fpData and fpView")
+	assert.NotEqual(t, c2, c3, "framed PongContent must prevent field-boundary shifting between fpAcc and fpView")
+}

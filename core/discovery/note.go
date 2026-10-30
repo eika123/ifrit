@@ -16,10 +16,8 @@ type Note struct {
 	*signature
 }
 
-// CryptographicIdentity returns the canonical byte representation of this note
-// binding (id, epoch, mask) for cryptographic hashing via SHA-256 in ReverseIndexStore.
 func (n Note) CryptographicIdentity() []byte {
-	return []byte(fmt.Sprintf("%s:%d:%d", n.id, n.epoch, n.mask))
+	return fmt.Appendf(nil, "%s:%d:%d", n.id, n.epoch, n.mask)
 }
 
 func (n Note) IsRingDisabled(ringNum, numRings uint32) bool {

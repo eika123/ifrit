@@ -1,6 +1,7 @@
 package comm
 
 import (
+	"encoding/binary"
 	"net"
 	"sync"
 	"time"
@@ -9,6 +10,11 @@ import (
 	log "github.com/inconshreveable/log15"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
+
+// udpBufferSize defines the maximum UDP receive buffer size for ping/pong datagrams.
+// Set to 4096 bytes to accommodate large P-521 ECDSA signatures, nonces, and framed fingerprints
+// without risking packet truncation.
+const udpBufferSize = 4096
 
 type UDPServer struct {
 	conn *net.UDPConn
@@ -70,7 +76,7 @@ func (us *UDPServer) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 		return nil, err
 	}
 
-	bytes := make([]byte, 256)
+	bytes := make([]byte, udpBufferSize)
 
 	n, err := c.Read(bytes)
 	if err != nil {
@@ -88,7 +94,7 @@ func (us *UDPServer) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 }
 
 func (us *UDPServer) Start() {
-	bytes := make([]byte, 256)
+	bytes := make([]byte, udpBufferSize)
 	for {
 		select {
 		case d := <-us.pauseChan:
@@ -228,13 +234,22 @@ func (us *UDPServer) Stop() {
 	us.conn.Close()
 }
 
-// PongContent returns the canonical serialized semantic content of a Pong message (nonce, fingerprint_data, fingerprint_accusations, and fingerprint_view).
+func appendFramed(dst []byte, field []byte) []byte {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(field)))
+	dst = append(dst, lenBuf[:]...)
+	return append(dst, field...)
+}
+
+// PongContent returns the canonical serialized semantic content of a Pong message (nonce, fingerprint_data, fingerprint_accusations, and fingerprint_view)
+// using length-prefixed framing to prevent field-boundary shifting attacks.
 func PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	content := make([]byte, 0, len(nonce)+len(fpData)+len(fpAcc)+len(fpView))
-	content = append(content, nonce...)
-	content = append(content, fpData...)
-	content = append(content, fpAcc...)
-	content = append(content, fpView...)
+	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
+	content := make([]byte, 0, totalLen)
+	content = appendFramed(content, nonce)
+	content = appendFramed(content, fpData)
+	content = appendFramed(content, fpAcc)
+	content = appendFramed(content, fpView)
 	return content
 }
 

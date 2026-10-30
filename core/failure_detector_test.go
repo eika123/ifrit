@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -26,12 +27,20 @@ func (s *mockPingService) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 	return nil, errors.New("connection timeout")
 }
 
+func appendFramed(dst []byte, field []byte) []byte {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(field)))
+	dst = append(dst, lenBuf[:]...)
+	return append(dst, field...)
+}
+
 func (s *mockPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	content := make([]byte, 0, len(nonce)+len(fpData)+len(fpAcc)+len(fpView))
-	content = append(content, nonce...)
-	content = append(content, fpData...)
-	content = append(content, fpAcc...)
-	content = append(content, fpView...)
+	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
+	content := make([]byte, 0, totalLen)
+	content = appendFramed(content, nonce)
+	content = appendFramed(content, fpData)
+	content = appendFramed(content, fpAcc)
+	content = appendFramed(content, fpView)
 	return content
 }
 

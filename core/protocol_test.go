@@ -29,12 +29,20 @@ func (r *recordingPingServer) SetFingerprintViewProvider(f func() []byte) {
 	r.fpViewProvider = f
 }
 
+func appendProtocolFramed(dst []byte, field []byte) []byte {
+	var lenBuf [4]byte
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(field)))
+	dst = append(dst, lenBuf[:]...)
+	return append(dst, field...)
+}
+
 func (r *recordingPingServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	content := make([]byte, 0, len(nonce)+len(fpData)+len(fpAcc)+len(fpView))
-	content = append(content, nonce...)
-	content = append(content, fpData...)
-	content = append(content, fpAcc...)
-	content = append(content, fpView...)
+	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
+	content := make([]byte, 0, totalLen)
+	content = appendProtocolFramed(content, nonce)
+	content = appendProtocolFramed(content, fpData)
+	content = appendProtocolFramed(content, fpAcc)
+	content = appendProtocolFramed(content, fpView)
 	return content
 }
 
@@ -72,6 +80,37 @@ func TestNode_PiggybacksAccusationFingerprintOnPingServer(t *testing.T) {
 	require.Len(t, updatedAccFP, 8)
 	assert.NotEqual(t, initialAccFP, updatedAccFP)
 	assert.Equal(t, uint64(n.AccusationFingerprint()), binary.BigEndian.Uint64(updatedAccFP))
+}
+
+func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+
+	cert := genCert(priv, 1)
+
+	ps := &recordingPingServer{}
+	cs := &cryptoStub{priv: priv}
+
+	n, err := NewNode(&commStub{}, ps, &cmStub{cert: cert}, cs)
+	require.NoError(t, err)
+	defer n.Stop()
+
+	require.NotNil(t, ps.fpDataProvider, "data fingerprint provider should be registered")
+	assert.Nil(t, ps.fpDataProvider(), "unregistered data store must produce nil data fingerprint")
+
+	// Register an application data store with an element
+	store, err := revIdxStore.NewDigestSet[string, revIdxStore.DigestSymbol](revIdxStore.DefaultHasher[string]())
+	require.NoError(t, err)
+	store.AddElement("app-data-element-1")
+
+	RegisterDataStore(n, store)
+
+	dataFP := ps.fpDataProvider()
+	require.Len(t, dataFP, 8, "registered store must advertise 8-byte data fingerprint over UDP")
+	assert.Equal(t, n.FingerprintData(), dataFP, "UDP provider must return n.FingerprintData()")
+
+	expectedDigest := uint64(store.Fingerprint())
+	assert.Equal(t, expectedDigest, binary.BigEndian.Uint64(dataFP), "data fingerprint must encode in BigEndian")
 }
 
 func TestFailureDetector_ProbeCapturesPiggybackedFingerprints(t *testing.T) {
