@@ -101,7 +101,10 @@ func (suite *HandlerTestSuite) TestSpread() {
 	acc2 := discovery.NewAccusation(1, rebuttalPeer.Id, node.self.Id, 1, suite.priv)
 	node.view.AddTestAccusation(acc2)
 
+	accusedNote, _ := node.view.ActiveNote(accusedNonNeighbour.Id)
+
 	nonExistingPeer := testPeers[3]
+	nonExistingNote, _ := node.view.ActiveNote(nonExistingPeer.Id)
 	node.view.RemoveTestFull(nonExistingPeer.Id)
 
 	invalidNonExisting := testPeers[4]
@@ -158,7 +161,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			isAccused: true,
 			accs:      []string{accusedNonNeighbour.Id},
 			args: &proto.State{
-				OwnNote: accusedNonNeighbour.Note().ToPbMsg(),
+				OwnNote: accusedNote.ToPbMsg(),
 			},
 			exists: true,
 			live:   false,
@@ -204,7 +207,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			live:   true,
 			peer:   nonExistingPeer,
 			args: &proto.State{
-				OwnNote: nonExistingPeer.Note().ToPbMsg(),
+				OwnNote: nonExistingNote.ToPbMsg(),
 			},
 			findNeighbours: true,
 		},
@@ -292,7 +295,7 @@ func (suite *HandlerTestSuite) TestMergeViews() {
 	p2 := full[1]
 	p3 := full[2]
 
-	p1.ClearNote()
+	node.view.ClearTestNote(p1)
 
 	state := make(map[string]uint64)
 
@@ -384,7 +387,7 @@ func (suite *HandlerTestSuite) TestMergeViews_FullViewAntiEntropyWithBinaryIds()
 	require.NoError(suite.T(), err)
 
 	// Also simulate that remote peer already knows local node's latest note epoch
-	unmarshaled.ExistingHosts[hex.EncodeToString([]byte(node.self.Id))] = node.self.Note().ToPbMsg().GetEpoch()
+	unmarshaled.ExistingHosts[hex.EncodeToString([]byte(node.self.Id))] = node.view.SelfNote().ToPbMsg().GetEpoch()
 
 	// 2. Since unmarshaled state already contains all peers in node.view with matching epochs,
 	// anti-entropy must NOT re-transmit any certificates or notes!
@@ -412,7 +415,9 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 	stored, found := node.view.NoteStore().Contains(rawValid)
 	require.True(suite.T(), found, "Valid note must be present in NoteStore")
 	require.Equal(suite.T(), rawValid.Epoch(), stored.Epoch())
-	require.Equal(suite.T(), uint64(2), p.Note().Epoch(), "Valid note must update peer active note")
+	activeNote, found := node.view.ActiveNote(p.Id)
+	require.True(suite.T(), found)
+	require.Equal(suite.T(), uint64(2), activeNote.Epoch(), "Valid note must update peer active note")
 	fpAfterValid := node.view.NoteStore().Fingerprint()
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
@@ -424,7 +429,9 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 	rawBadSig := discovery.NoteFromPb(badSigPb)
 	_, found = node.view.NoteStore().Contains(rawBadSig)
 	require.True(suite.T(), found, "Note with invalid signature MUST be ingested into NoteStore")
-	require.Equal(suite.T(), uint64(2), p.Note().Epoch(), "Invalid signature note must NOT update active peer note")
+	activeNote, found = node.view.ActiveNote(p.Id)
+	require.True(suite.T(), found)
+	require.Equal(suite.T(), uint64(2), activeNote.Epoch(), "Invalid signature note must NOT update active peer note")
 
 	// 3. Note from completely unknown peer: MUST be stored in NoteStore
 	unknownPb := discovery.NewNote("unknown-peer-id-999", 5, math.MaxUint32, priv)
@@ -476,8 +483,13 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 
 	initialFp := node.view.AccusationStore().Fingerprint()
 
+	succNote, found := node.view.ActiveNote(succ.Id)
+	require.True(suite.T(), found)
+	pNote, found := node.view.ActiveNote(p.Id)
+	require.True(suite.T(), found)
+
 	// 1. Valid Accusation
-	validAccPb := discovery.NewAccusation(succ.Note().Epoch(), succ.Id, prev.Id, 1, priv)
+	validAccPb := discovery.NewAccusation(succNote.Epoch(), succ.Id, prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{validAccPb})
 
 	rawValid := discovery.AccusationFromPb(validAccPb)
@@ -488,7 +500,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
 	// 2. Accusation with invalid signature: MUST be ingested into AccusationStore
-	badSigAccPb := discovery.NewAccusation(succ.Note().Epoch(), succ.Id, prev.Id, 1, priv)
+	badSigAccPb := discovery.NewAccusation(succNote.Epoch(), succ.Id, prev.Id, 1, priv)
 	badSigAccPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
 	node.mergeAccusations([]*proto.Accusation{badSigAccPb})
 
@@ -505,7 +517,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.True(suite.T(), found, "Accusation targeting unknown peer MUST be ingested into AccusationStore")
 
 	// 4. Accusation from unknown accuser: MUST be ingested into AccusationStore
-	unknownAccuserPb := discovery.NewAccusation(p.Note().Epoch(), p.Id, "unknown-accuser", 1, priv)
+	unknownAccuserPb := discovery.NewAccusation(pNote.Epoch(), p.Id, "unknown-accuser", 1, priv)
 	node.mergeAccusations([]*proto.Accusation{unknownAccuserPb})
 
 	rawUnknownAccuser := discovery.AccusationFromPb(unknownAccuserPb)
@@ -581,7 +593,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		}
 	}
 
-	randomPeer.ClearNote()
+	node.view.ClearTestNote(randomPeer)
 
 	selfId := node.self.Id
 
@@ -617,7 +629,8 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewAccusation(2, selfId, prev.Id, 1, suite.privMap[prev.Id]),
+			// Stale epoch (0 < current epoch 1) against self is invalid and should not trigger rebuttal.
+			acc:       discovery.NewAccusation(0, selfId, prev.Id, 1, suite.privMap[prev.Id]),
 			accuser:   prev,
 			accused:   node.self,
 			out:       errInvalidSelfAccusation,
@@ -627,6 +640,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
+			// Accusation matching current epoch (1) triggers rebuttal and advances epoch.
 			acc: discovery.NewAccusation(1, selfId, prev.Id, 1,
 				suite.privMap[prev.Id]),
 			accuser:   prev,
@@ -634,7 +648,21 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 			out:       nil,
 			timer:     false,
 			rebuttal:  true,
-			prevNote:  node.self.Note(),
+			prevNote:  node.view.SelfNote(),
+			isAccused: false,
+		},
+
+		{
+			// Catch-up: accusation with higher epoch (10 > current epoch 2, e.g. after restart)
+			// should advance the local epoch beyond it (11) and trigger rebuttal.
+			acc: discovery.NewAccusation(10, selfId, prev.Id, 1,
+				suite.privMap[prev.Id]),
+			accuser:   prev,
+			accused:   node.self,
+			out:       nil,
+			timer:     false,
+			rebuttal:  true,
+			prevNote:  node.view.SelfNote(),
 			isAccused: false,
 		},
 
@@ -708,8 +736,8 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		}
 
 		if t.rebuttal {
-			require.NotEqualf(suite.T(), t.prevNote, t.accused.Note(),
-				"Note note changed after rebuttal for test %d.", i)
+			require.NotEqualf(suite.T(), t.prevNote, node.view.SelfNote(),
+				"Note not changed after rebuttal for test %d.", i)
 		}
 
 		node.view.DeleteTimeout(succ)
@@ -735,8 +763,12 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 	acc := discovery.NewAccusation(2, peer3.Id, peer2.Id, 1, suite.privMap[peer2.Id])
 	node.view.AddTestAccusation(acc)
 
-	err := node.view.StartTimer(peer3, peer3.Note(), peer2)
+	peer3Note, _ := node.view.ActiveNote(peer3.Id)
+	err := node.view.StartTimer(peer3, peer3Note, peer2)
 	require.NoError(suite.T(), err, "Failed to start timer.")
+
+	peerNote, _ := node.view.ActiveNote(peer.Id)
+	peer2Note, _ := node.view.ActiveNote(peer2.Id)
 
 	tests := []struct {
 		note *proto.Note
@@ -797,7 +829,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 			isAlive:     true,
 			timer:       false,
 			replaceNote: true,
-			prevNote:    peer.Note(),
+			prevNote:    peerNote,
 		},
 
 		{
@@ -808,7 +840,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 			isAlive:     true,
 			timer:       false,
 			replaceNote: true,
-			prevNote:    peer2.Note(),
+			prevNote:    peer2Note,
 		},
 
 		{
@@ -839,7 +871,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 			isAlive:     true,
 			timer:       false,
 			replaceNote: true,
-			prevNote:    peer3.Note(),
+			prevNote:    peer3Note,
 		},
 	}
 
@@ -863,7 +895,8 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 			"Invalid timer state for test %d.", i)
 
 		if t.replaceNote {
-			require.NotEqualf(suite.T(), t.prevNote, t.noteHolder.Note(),
+			currNote, _ := node.view.ActiveNote(t.noteHolder.Id)
+			require.NotEqualf(suite.T(), t.prevNote, currNote,
 				"Invalid timer state for test %d.", i)
 		}
 

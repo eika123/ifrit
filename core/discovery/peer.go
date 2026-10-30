@@ -4,12 +4,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/x509"
 	"errors"
-	"math"
 	"sync"
 	"time"
 
 	log "github.com/inconshreveable/log15"
-	pb "github.com/joonnna/ifrit/protobuf"
 )
 
 var (
@@ -37,9 +35,6 @@ type Peer struct {
 
 	// Debuging and experiments only.
 	HttpAddr string
-
-	noteMutex sync.RWMutex
-	note      *Note
 
 	Id        string
 	cert      *x509.Certificate
@@ -120,51 +115,6 @@ func (p *Peer) PublicKey() *ecdsa.PublicKey {
 	return p.publicKey
 }
 
-func (p *Peer) AddNote(mask uint32, epoch uint64, r, s []byte) {
-	p.noteMutex.Lock()
-	defer p.noteMutex.Unlock()
-
-	if p.note == nil || p.note.IsMoreRecent(epoch) {
-		p.note = &Note{
-			id:    p.Id,
-			mask:  mask,
-			epoch: epoch,
-			signature: &signature{
-				r: r,
-				s: s,
-			},
-		}
-	}
-}
-
-func (p *Peer) Note() *Note {
-	p.noteMutex.RLock()
-	defer p.noteMutex.RUnlock()
-
-	return p.note
-}
-
-func (p *Peer) Info() (*pb.Certificate, *pb.Note) {
-	var c *pb.Certificate
-	var n *pb.Note
-
-	if p.cert != nil {
-		c = &pb.Certificate{
-			Raw: p.cert.Raw,
-		}
-	} else {
-		log.Error("Had no certificate for peer", "addr", p.Addr)
-	}
-
-	if note := p.Note(); note != nil {
-		n = note.ToPbMsg()
-	} else {
-		log.Debug("No note existed for peer", "addr", p.Addr)
-	}
-
-	return c, n
-}
-
 func (p *Peer) IncrementPingCount() {
 	p.nPingMutex.Lock()
 	defer p.nPingMutex.Unlock()
@@ -236,25 +186,4 @@ func (p *Peer) Fingerprint() []byte {
 
 func (p *Peer) SetFingerprint(fp []byte) {
 	p.SetFingerprintData(fp)
-}
-
-/*
-
-########## METHODS ONLY USED FOR TESTING BELOW THIS LINE ##########
-
-*/
-
-// ONLY for testing
-func (p *Peer) NewNote(priv *ecdsa.PrivateKey, epoch uint64) {
-	p.note = &Note{
-		id:    p.Id,
-		mask:  math.MaxUint32,
-		epoch: epoch,
-	}
-	signNote(p.note, priv)
-}
-
-// ONLY for testing
-func (p *Peer) ClearNote() {
-	p.note = nil
 }

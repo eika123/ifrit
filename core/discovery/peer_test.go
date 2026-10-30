@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"math"
 	"math/big"
 	"os"
 	"testing"
@@ -37,12 +36,7 @@ func (suite *PeerTestSuite) SetupTest() {
 	id := "selfId"
 
 	p := &Peer{
-		Id: id,
-		note: &Note{
-			id:    id,
-			epoch: 5,
-			mask:  6,
-		},
+		Id:        id,
 		publicKey: suite.priv.Public().(*ecdsa.PublicKey),
 		cert: &x509.Certificate{
 			SubjectKeyId: []byte(id),
@@ -52,8 +46,6 @@ func (suite *PeerTestSuite) SetupTest() {
 			PublicKey: suite.priv.Public(),
 		},
 	}
-
-	require.NoError(suite.T(), signNote(p.note, suite.priv), "Failed to sign note")
 
 	suite.p = p
 	suite.numRings = numRings
@@ -226,92 +218,6 @@ func (suite *PeerTestSuite) TestPublicKey() {
 	for i, t := range tests {
 		require.Equalf(suite.T(), t.out, t.p.PublicKey(), "Invalid output for test %d", i)
 	}
-}
-
-func (suite *PeerTestSuite) TestAddNote() {
-	suite.p.note = nil
-
-	tests := []struct {
-		p       *Peer
-		mask    uint32
-		epoch   uint64
-		r       []byte
-		s       []byte
-		replace bool
-	}{
-		{
-			p:       suite.p,
-			mask:    math.MaxUint32,
-			epoch:   1,
-			r:       []byte("signature r"),
-			s:       []byte("signature s"),
-			replace: true,
-		},
-
-		{
-			p:       suite.p,
-			mask:    math.MaxUint32,
-			epoch:   2,
-			r:       []byte("signature r"),
-			s:       []byte("signature s"),
-			replace: true,
-		},
-
-		{
-			p:       suite.p,
-			mask:    math.MaxUint32,
-			epoch:   2,
-			r:       []byte("signature r"),
-			s:       []byte("signature s"),
-			replace: false,
-		},
-
-		{
-			p:       suite.p,
-			mask:    math.MaxUint32,
-			epoch:   1,
-			r:       []byte("signature r"),
-			s:       []byte("signature s"),
-			replace: false,
-		},
-	}
-
-	for i, t := range tests {
-		old := t.p.Note()
-		t.p.AddNote(t.mask, t.epoch, t.r, t.s)
-		new := t.p.Note()
-
-		if t.replace {
-			require.Equalf(suite.T(), t.epoch, new.epoch, "Epoch not updated, test %d", i)
-			require.Equalf(suite.T(), t.mask, new.mask, "Mask not updated, test %d", i)
-			require.Equalf(suite.T(), t.r, new.signature.r,
-				"Signature r not updated, test %d", i)
-			require.Equalf(suite.T(), t.s, new.signature.s,
-				"Signature s not updated, test %d", i)
-		} else {
-			require.Equalf(suite.T(), old, new,
-				"Should be equal when not replacing notes, test %d", i)
-		}
-	}
-}
-
-func (suite *PeerTestSuite) TestNote() {
-	p := suite.p
-
-	assert.Equal(suite.T(), p.note, p.Note(), "Returns wrong note address value.")
-
-	newNote := &Note{}
-	p.note = newNote
-
-	assert.Equal(suite.T(), newNote, p.Note(),
-		"Returns wrong note address value after replacing note.")
-}
-
-func (suite *PeerTestSuite) TestInfo() {
-	cert, note := suite.p.Info()
-
-	assert.NotNil(suite.T(), cert, "Returned certificate was nil.")
-	assert.NotNil(suite.T(), note, "Returned note was nil.")
 }
 
 func (suite *PeerTestSuite) TestIncrementPingCount() {

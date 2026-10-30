@@ -20,7 +20,11 @@ type experiment struct {
 func (c correct) Rebuttal(n *Node) {
 	neighbours := n.view.GossipPartners()
 
-	noteMsg := n.self.Note().ToPbMsg()
+	selfNote := n.view.SelfNote()
+	if selfNote == nil {
+		return
+	}
+	noteMsg := selfNote.ToPbMsg()
 
 	msg := &pb.State{
 		OwnNote: noteMsg,
@@ -90,13 +94,13 @@ func (c correct) Monitor(n *Node) {
 		err := n.fd.probe(p)
 		if err == errDead {
 			log.Debug("Monitor --> Successor dead, accusing", "succ", p.Addr, "ringNum", ringNum)
-			peerNote := p.Note()
+			peerNote, found := n.view.ActiveNote(p.Id)
 
 			// Will always have note for a peer in our liveView, except when the peer stems
 			// from the initial contact list of the CA, if it's dead
 			// we should remove it to ensure it doesn't stay in our liveView.
 			// Not possible to accuse a peer without a note.
-			if peerNote == nil {
+			if !found || peerNote == nil {
 				n.view.RemoveLive(p)
 				log.Debug("Monitor -- Removing live peer due to not having note and being accused",
 					"addr", p.Addr)

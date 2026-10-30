@@ -20,8 +20,8 @@ func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
 		FingerprintView:        n.ViewFingerprintBytes(),
 	}
 
-	if n.self != nil && n.self.Note() != nil {
-		msg.OwnNote = n.self.Note().ToPbMsg()
+	if selfNote := n.view.SelfNote(); selfNote != nil {
+		msg.OwnNote = selfNote.ToPbMsg()
 	}
 
 	dataDiff, accDiff, viewDiff := n.DivergentSets(p)

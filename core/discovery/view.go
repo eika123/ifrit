@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"math/bits"
 	"sync"
 	"time"
@@ -396,6 +397,61 @@ func (v *View) ActiveNote(id string) (*Note, bool) {
 	return entry.Item, true
 }
 
+// SelfNote returns the local node's current active note.
+func (v *View) SelfNote() *Note {
+	if v.self == nil {
+		return nil
+	}
+	n, _ := v.ActiveNote(v.self.Id)
+	return n
+}
+
+// ActiveNotes returns all currently active notes in the indirection layer.
+func (v *View) ActiveNotes() []*Note {
+	if v.activeNotes == nil {
+		return nil
+	}
+	items := v.activeNotes.Elements()
+	notes := make([]*Note, 0, len(items))
+	for _, item := range items {
+		notes = append(notes, item.Item)
+	}
+	return notes
+}
+
+// PromoteNote advances the active note for a peer in the version vector indirection layer
+// and prunes active accusations that targeted older epochs.
+// Returns true if the note advanced the peer's active epoch.
+func (v *View) PromoteNote(n *Note) bool {
+	if n == nil || v.activeNotes == nil {
+		return false
+	}
+	_, advanced := v.activeNotes.AddItem(versionvector.VersionedItem[*Note]{
+		Item:    n,
+		Version: n.epoch,
+	})
+	if advanced {
+		v.pruneActiveAccusations(n.id, n.epoch)
+	}
+	return advanced
+}
+
+// PromoteAccusation records an active accusation in the version vector indirection layer.
+// Returns true if the accusation was added or advanced the active accusation epoch for the ring.
+func (v *View) PromoteAccusation(a *Accusation) bool {
+	if a == nil || v.activeAccusations == nil {
+		return false
+	}
+	if activeNote, ok := v.ActiveNote(a.accused); ok && a.epoch < activeNote.epoch {
+		return false
+	}
+	_, advanced := v.activeAccusations.AddItem(versionvector.VersionedItem[*Accusation]{
+		Item:    a,
+		Version: a.epoch,
+	})
+	return advanced
+}
+
 // ActiveNoteFingerprint returns the XOR fingerprint of the active notes version vector.
 func (v *View) ActiveNoteFingerprint() revIdxStore.DigestSymbol {
 	if v.activeNotes == nil {
@@ -446,7 +502,7 @@ func (v *View) RecordedEpochs() map[string][]uint64 {
 	return result
 }
 
-// AddNote records a verified note into both the peer and the view's grow-only Note store.
+// AddNote records a verified note into both the view's active indirection layer and the grow-only Note store.
 // Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, error) {
 	if v.noteStore == nil {
@@ -455,7 +511,6 @@ func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, e
 	if p == nil {
 		return false, errors.New("peer is nil")
 	}
-	p.AddNote(mask, epoch, r, s)
 	n := &Note{
 		id:    p.Id,
 		mask:  mask,
@@ -465,14 +520,7 @@ func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, e
 			s: s,
 		},
 	}
-	v.pruneActiveAccusations(p.Id, epoch)
-	var advanced bool
-	if v.activeNotes != nil {
-		_, advanced = v.activeNotes.AddItem(versionvector.VersionedItem[*Note]{
-			Item:    n,
-			Version: epoch,
-		})
-	}
+	advanced := v.PromoteNote(n)
 	v.noteStore.Insert(n)
 	return advanced, nil
 }
@@ -728,19 +776,22 @@ func (v *View) checkTimeouts() {
 	}
 }
 
-// ShouldRebuttal verifies if an accusation against the local node targets the current epoch.
-// If valid, it increments the node's epoch, deactivates the accused ring if allowed, signs a new Note, and returns true.
+// ShouldRebuttal verifies if an accusation against the local node targets the current or a newer epoch.
+// If valid (epoch >= local epoch), it advances the node's epoch beyond the accusation (epoch + 1),
+// deactivates the accused ring if allowed, signs a new Note, and returns true.
 //
 // Prerequisites / Expected Services:
 //   - The cryptoService / signer must be active to sign the newly created rebuttal Note.
 //   - Invoked by accusation handling logic when an incoming accusation targets the local node.
 //   - If true is returned, the caller is expected to trigger an immediate rebuttal broadcast via the protocol service.
 func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
-	v.self.noteMutex.Lock()
-	defer v.self.noteMutex.Unlock()
+	currNote := v.SelfNote()
+	if currNote == nil {
+		return false
+	}
 
-	if eq := v.self.note.Equal(epoch); eq {
-		newMask := v.self.note.mask
+	if epoch >= currNote.epoch {
+		newMask := currNote.mask
 
 		mask, err := v.deactivateRing(ringNum)
 		if err != nil {
@@ -751,7 +802,7 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 
 		newNote := &Note{
 			id:    v.self.Id,
-			epoch: v.self.note.epoch + 1,
+			epoch: epoch + 1,
 			mask:  newMask,
 		}
 
@@ -760,13 +811,10 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 			log.Error(err.Error())
 		}
 
-		v.self.note = newNote
 		v.pruneActiveAccusations(v.self.Id, newNote.epoch)
-
 		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 // ShouldBeNeighbour reports whether a peer with the given ID should be a direct neighbour of the local node on any ring.
@@ -832,10 +880,10 @@ func (v *View) incrementMonitorRing() {
 }
 
 func (v *View) selfNote() *proto.Note {
-	v.self.noteMutex.RLock()
-	defer v.self.noteMutex.RUnlock()
-
-	return v.self.note.ToPbMsg()
+	if n := v.SelfNote(); n != nil {
+		return n.ToPbMsg()
+	}
+	return nil
 }
 
 // State returns a protobuf State message containing the local node's latest note
@@ -862,7 +910,7 @@ func (v *View) ExistingHostsMap() map[string]uint64 {
 		hexId := hex.EncodeToString([]byte(p.Id))
 		if ep, ok := versions[p.Id]; ok {
 			hosts[hexId] = ep
-		} else if note := p.Note(); note != nil {
+		} else if note, ok := v.ActiveNote(p.Id); ok {
 			hosts[hexId] = note.epoch
 		} else {
 			hosts[hexId] = 0
@@ -901,7 +949,11 @@ func (v *View) deactivateRing(ringNumber uint32) (uint32, error) {
 		return 0, errNonExistingRing
 	}
 
-	currMask := v.self.note.mask
+	currNote := v.SelfNote()
+	if currNote == nil {
+		return 0, errNoNote
+	}
+	currMask := currNote.mask
 	if active := hasBit(currMask, ringIdx); !active {
 		return 0, errAlreadyDeactivated
 	}
@@ -942,7 +994,6 @@ func (v *View) signLocalNote(n *Note) error {
 		s: s,
 	}
 
-	v.self.note = n
 	if v.noteStore == nil {
 		return ErrNotesNotInitialized
 	}
@@ -1026,22 +1077,6 @@ func (v *View) Accusation(accused, accuser string, ringNum uint32, epoch uint64)
 	return nil
 }
 
-func (v *View) recordActiveAccusation(a *Accusation) {
-	if a == nil || v.activeAccusations == nil {
-		return
-	}
-
-	p := v.Peer(a.accused)
-	if p != nil && p.note != nil && a.epoch < p.note.epoch {
-		return
-	}
-
-	v.activeAccusations.AddItem(versionvector.VersionedItem[*Accusation]{
-		Item:    a,
-		Version: a.epoch,
-	})
-}
-
 func (v *View) pruneActiveAccusations(accusedId string, rebuttalEpoch uint64) {
 	if v.activeAccusations == nil {
 		return
@@ -1073,12 +1108,12 @@ func (v *View) ActiveAccusationsForPeer(p *Peer) []*Accusation {
 		return nil
 	}
 
-	note := p.Note()
+	note, hasNote := v.ActiveNote(p.Id)
 	var accs []*Accusation
 	for r := uint32(1); r <= v.rings.numRings; r++ {
 		key := accusationRingKey(p.Id, r)
 		if entry, found := v.activeAccusations.GetOne(key); found {
-			if note != nil && entry.Version < note.epoch {
+			if hasNote && note != nil && entry.Version < note.epoch {
 				continue
 			}
 			accs = append(accs, entry.Item)
@@ -1093,11 +1128,11 @@ func (v *View) IsAccused(p *Peer) bool {
 		return false
 	}
 
-	note := p.Note()
+	note, hasNote := v.ActiveNote(p.Id)
 	for r := uint32(1); r <= v.rings.numRings; r++ {
 		key := accusationRingKey(p.Id, r)
 		if entry, found := v.activeAccusations.GetOne(key); found {
-			if note == nil || entry.Version >= note.epoch {
+			if !hasNote || note == nil || entry.Version >= note.epoch {
 				return true
 			}
 		}
@@ -1117,8 +1152,7 @@ func (v *View) RingAccusation(accusedId string, ringNum uint32) *Accusation {
 		return nil
 	}
 
-	peer := v.Peer(accusedId)
-	if peer != nil && peer.note != nil && entry.Version < peer.note.epoch {
+	if activeNote, ok := v.ActiveNote(accusedId); ok && entry.Version < activeNote.epoch {
 		return nil
 	}
 
@@ -1177,7 +1211,7 @@ func (v *View) CreateAccusation(accused *Peer, accusedNote *Note, ringNum uint32
 	}
 
 	v.accusationStore.Insert(acc)
-	v.recordActiveAccusation(acc)
+	v.PromoteAccusation(acc)
 	log.Debug("Added accusation to view", "accused", accused.Addr, "ring", acc.ringNum, "epoch", acc.epoch)
 	return nil
 }
@@ -1208,7 +1242,7 @@ func (v *View) AddAccusation(accused, accuser string, epoch uint64, ringNum uint
 	}
 
 	v.accusationStore.Insert(a)
-	v.recordActiveAccusation(a)
+	v.PromoteAccusation(a)
 	log.Debug("Added accusation to view", "accused", accused, "accuser", accuser, "ring", ringNum, "epoch", epoch)
 	return nil
 }
@@ -1264,16 +1298,18 @@ func (v *View) AddTestAccusation(a *pb.Accusation) {
 		},
 	}
 	v.accusationStore.Insert(acc)
-	v.recordActiveAccusation(acc)
+	v.PromoteAccusation(acc)
 }
 
 // ONLY for testing
 func (v *View) AddTestNote(p *Peer, priv *ecdsa.PrivateKey, epoch uint64) {
-	p.NewNote(priv, epoch)
-	note := p.Note()
-	if note != nil && note.signature != nil {
-		v.AddNote(p, note.mask, note.epoch, note.r, note.s)
+	n := &Note{
+		id:    p.Id,
+		mask:  math.MaxUint32,
+		epoch: epoch,
 	}
+	signNote(n, priv)
+	v.AddNote(p, n.mask, n.epoch, n.r, n.s)
 }
 
 // ONLY for testing
@@ -1281,7 +1317,6 @@ func (v *View) ClearTestNote(p *Peer) {
 	if p == nil {
 		return
 	}
-	p.ClearNote()
 	if v.activeNotes != nil {
 		v.activeNotes.Remove(p.Id)
 	}
@@ -1309,13 +1344,16 @@ func (v *View) Compare(other *View) error {
 			}
 		}
 
-		if p.note == nil && p2.note == nil {
+		note1, has1 := v.ActiveNote(id)
+		note2, has2 := other.ActiveNote(id)
+
+		if !has1 && !has2 {
 			continue
 		}
-		if p.note == nil || p2.note == nil {
+		if !has1 || !has2 {
 			return errors.New("Did not have note for peer in both views.")
 		}
-		if !p.note.Equal(p2.note.epoch) {
+		if !note1.Equal(note2.epoch) {
 			return errors.New("Did not have same note for peer in both views.")
 		}
 	}

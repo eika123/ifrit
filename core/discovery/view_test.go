@@ -549,22 +549,29 @@ func (suite *ViewTestSuite) TestCheckTimeouts() {
 func (suite *ViewTestSuite) TestShouldRebuttal() {
 	view := suite.v
 
-	currentEpoch := view.self.note.epoch
+	currentEpoch := view.SelfNote().epoch
 
 	var accuseRing uint32 = 1
 
-	assert.False(suite.T(), view.ShouldRebuttal(currentEpoch+1, accuseRing), "Should return false with invalid epoch.")
+	// Stale epoch (less than current epoch) should return false.
+	assert.False(suite.T(), view.ShouldRebuttal(currentEpoch-1, accuseRing), "Should return false with stale epoch.")
 
-	assert.False(suite.T(), view.ShouldRebuttal(currentEpoch-1, accuseRing), "Should return false with invalid epoch.")
+	prevNote := view.SelfNote()
 
-	prevNote := view.self.note
+	// Accusation with current epoch triggers rebuttal and advances epoch by 1.
+	assert.True(suite.T(), view.ShouldRebuttal(currentEpoch, accuseRing), "Should return true with current epoch.")
+	assert.Equal(suite.T(), currentEpoch+1, view.SelfNote().epoch, "Local epoch should advance to currentEpoch + 1.")
 
-	assert.True(suite.T(), view.ShouldRebuttal(currentEpoch, accuseRing), "Should return false with invalid epoch.")
-
-	assert.NotEqual(suite.T(), prevNote, view.self.note, "Old note not replaced.")
-	assert.True(suite.T(), view.self.note.IsRingDisabled(accuseRing, view.NumRings()),
+	assert.NotEqual(suite.T(), prevNote, view.SelfNote(), "Old note not replaced.")
+	assert.True(suite.T(), view.SelfNote().IsRingDisabled(accuseRing, view.NumRings()),
 		"Ring not deactivated in mask.")
-	assert.True(suite.T(), view.ValidMask(view.self.note.mask), "Mask is not valid after disabling.")
+	assert.True(suite.T(), view.ValidMask(view.SelfNote().mask), "Mask is not valid after disabling.")
+
+	// Catch-up: incoming accusation with epoch > current local epoch (e.g. after ungraceful restart)
+	// must jump ahead (epoch + 1) to refute suspicions network-wide.
+	higherEpoch := view.SelfNote().epoch + 5
+	assert.True(suite.T(), view.ShouldRebuttal(higherEpoch, accuseRing), "Should catch up and return true for higher epoch.")
+	assert.Equal(suite.T(), higherEpoch+1, view.SelfNote().epoch, "Local epoch should advance to higherEpoch + 1.")
 }
 
 func (suite *ViewTestSuite) TestShouldBeNeighbour() {
@@ -671,7 +678,7 @@ func (suite *ViewTestSuite) TestIncrementMonitorRing() {
 func (suite *ViewTestSuite) TestSelfNote() {
 	view := suite.v
 
-	localNote := view.self.note
+	localNote := view.SelfNote()
 
 	note := view.selfNote()
 	require.NotNil(suite.T(), note, "Should never be nil.")
@@ -708,10 +715,10 @@ func (suite *ViewTestSuite) TestState() {
 
 		if i%2 == 0 {
 			hasNote = true
-			p.note = &Note{
+			view.PromoteNote(&Note{
 				id:    p.Id,
 				epoch: 1,
-			}
+			})
 		}
 
 		view.AddTestPeer(p)
@@ -739,45 +746,47 @@ func (suite *ViewTestSuite) TestState() {
 func (suite *ViewTestSuite) TestValidMask() {
 	view := suite.v
 
-	assert.True(suite.T(), view.ValidMask(view.self.note.mask), "Returned false with valid mask.")
+	assert.True(suite.T(), view.ValidMask(view.SelfNote().mask), "Returned false with valid mask.")
 
-	assert.False(suite.T(), view.ValidMask(view.self.note.mask+1), "Returned true with invalid mask.")
+	assert.False(suite.T(), view.ValidMask(view.SelfNote().mask+1), "Returned true with invalid mask.")
 }
 
 func (suite *ViewTestSuite) TestIsRingDisabled() {
 	var i, disableIdx uint32
 
 	view := suite.v
+	selfNote := view.SelfNote()
 
 	for i = 1; i <= view.rings.numRings; i++ {
-		require.False(suite.T(), view.self.note.IsRingDisabled(i, view.NumRings()),
+		require.False(suite.T(), selfNote.IsRingDisabled(i, view.NumRings()),
 			"Returned true on an active ring.")
 	}
 
 	disableIdx = 0
 
-	view.self.note.mask = clearBit(view.self.note.mask, disableIdx)
+	selfNote.mask = clearBit(selfNote.mask, disableIdx)
 
-	assert.True(suite.T(), view.self.note.IsRingDisabled(disableIdx+1, view.NumRings()), "Returned false on a disabled ring.")
+	assert.True(suite.T(), selfNote.IsRingDisabled(disableIdx+1, view.NumRings()), "Returned false on a disabled ring.")
 }
 
 func (suite *ViewTestSuite) TestDeactivateRing() {
 	var i, j, deactivated, ringNum uint32
 
 	view := suite.v
+	selfNote := view.SelfNote()
 
 	_, err := view.deactivateRing(view.rings.numRings + 1)
 	require.EqualError(suite.T(), err, errNonExistingRing.Error(), "Should fail with invalid ring number.")
 
 	ringNum = 1
-	view.self.note.mask = clearBit(view.self.note.mask, ringNum)
+	selfNote.mask = clearBit(selfNote.mask, ringNum)
 	_, err = view.deactivateRing(ringNum + 1)
 	require.EqualError(suite.T(), err, errAlreadyDeactivated.Error(), "Should fail when deactivating an already deactivated ring.")
 
 	require.Equal(suite.T(), uint32(0), view.deactivatedRings, "Should start at 0.")
-	view.self.note.mask = setBit(view.self.note.mask, ringNum)
+	selfNote.mask = setBit(selfNote.mask, ringNum)
 
-	mask := view.self.note.mask
+	mask := selfNote.mask
 	for i = 1; i <= view.rings.numRings; i++ {
 		mask, err = view.deactivateRing(i)
 		require.NoError(suite.T(), err, "Valid disables should not fail.")
@@ -800,12 +809,12 @@ func (suite *ViewTestSuite) TestDeactivateRing() {
 			require.Equal(suite.T(), i, view.deactivatedRings, "Deactivated rings not incremented.")
 			require.False(suite.T(), hasBit(mask, i-1), "Bit not deactivated.")
 		}
-		view.self.note.mask = mask
+		selfNote.mask = mask
 	}
 
 	// Reset before maxByz zero test
 	for i = 0; i < view.rings.numRings; i++ {
-		view.self.note.mask = setBit(view.self.note.mask, i)
+		selfNote.mask = setBit(selfNote.mask, i)
 	}
 	view.deactivatedRings = 0
 
@@ -818,7 +827,7 @@ func (suite *ViewTestSuite) TestDeactivateRing() {
 func (suite *ViewTestSuite) TestValidMaskInternal() {
 	var i uint32
 
-	mask := suite.v.self.note.mask
+	mask := suite.v.SelfNote().mask
 	numRings := suite.v.rings.numRings
 	maxByz := suite.v.maxByz
 
@@ -852,7 +861,7 @@ func (suite *ViewTestSuite) TestSetBit() {
 func (suite *ViewTestSuite) TestClearBit() {
 	var i uint32
 
-	mask := suite.v.self.note.mask
+	mask := suite.v.SelfNote().mask
 
 	for i = 0; i < 32; i++ {
 		mask = clearBit(mask, i)
@@ -1056,9 +1065,9 @@ func (suite *ViewTestSuite) TestViewAccusationActiveAndRebuttal() {
 	peer := &Peer{
 		Id:   peerId,
 		Addr: "127.0.0.1:1001",
-		note: &Note{id: peerId, epoch: 2},
 	}
 	suite.v.AddTestPeer(peer)
+	suite.v.PromoteNote(&Note{id: peerId, epoch: 2})
 
 	// Peer currently has note epoch 2
 	assert.False(suite.T(), suite.v.IsAccused(peer))
@@ -1073,7 +1082,7 @@ func (suite *ViewTestSuite) TestViewAccusationActiveAndRebuttal() {
 	assert.Equal(suite.T(), uint64(2), suite.v.RingAccusation(peerId, 1).Epoch())
 
 	// Peer rebuts by issuing note epoch 3
-	peer.note = &Note{id: peerId, epoch: 3}
+	suite.v.PromoteNote(&Note{id: peerId, epoch: 3})
 
 	// Under grow-only model, accusation at epoch 2 is NEVER deleted,
 	// but IsAccused becomes false because acc.epoch (2) < peer.note.epoch (3)
@@ -1097,9 +1106,9 @@ func (suite *ViewTestSuite) TestViewActiveAccusationsMultiRingAndRebuttalPruning
 	peer := &Peer{
 		Id:   peerId,
 		Addr: "127.0.0.1:2001",
-		note: &Note{id: peerId, epoch: 1},
 	}
 	suite.v.AddTestPeer(peer)
+	suite.v.PromoteNote(&Note{id: peerId, epoch: 1})
 
 	// Initially not accused
 	assert.False(suite.T(), suite.v.IsAccused(peer))
