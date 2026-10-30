@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	log "github.com/inconshreveable/log15"
+	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -111,4 +112,52 @@ func (suite *NoteTestSuite) TestCryptographicIdentity() {
 	assert.Equal(suite.T(), []byte("node-1:5:2"), n2.CryptographicIdentity())
 	assert.NotEqual(suite.T(), n1.CryptographicIdentity(), n2.CryptographicIdentity())
 	assert.Equal(suite.T(), "node-1", n1.Id())
+}
+
+func (suite *NoteTestSuite) TestNoteFromPb() {
+	assert.Nil(suite.T(), NoteFromPb(nil))
+
+	// Note without signature
+	pbUnsigned := &pb.Note{
+		Id:    []byte("node-unsigned"),
+		Epoch: 10,
+		Mask:  7,
+	}
+	n1 := NoteFromPb(pbUnsigned)
+	require.NotNil(suite.T(), n1)
+	assert.Equal(suite.T(), "node-unsigned", n1.Id())
+	assert.Equal(suite.T(), uint64(10), n1.Epoch())
+	assert.Equal(suite.T(), uint32(7), n1.Mask())
+	assert.Nil(suite.T(), n1.signature)
+
+	// Round-trip ToPbMsg without panic on nil signature
+	pbRoundTrip := n1.ToPbMsg()
+	assert.Equal(suite.T(), pbUnsigned.GetId(), pbRoundTrip.GetId())
+	assert.Equal(suite.T(), pbUnsigned.GetEpoch(), pbRoundTrip.GetEpoch())
+	assert.Equal(suite.T(), pbUnsigned.GetMask(), pbRoundTrip.GetMask())
+	assert.Nil(suite.T(), pbRoundTrip.GetSignature())
+
+	// Note with signature
+	pbSigned := &pb.Note{
+		Id:    []byte("node-signed"),
+		Epoch: 15,
+		Mask:  3,
+		Signature: &pb.Signature{
+			R: []byte("sig-r-bytes"),
+			S: []byte("sig-s-bytes"),
+		},
+	}
+	n2 := NoteFromPb(pbSigned)
+	require.NotNil(suite.T(), n2)
+	assert.Equal(suite.T(), "node-signed", n2.Id())
+	assert.Equal(suite.T(), uint64(15), n2.Epoch())
+	assert.Equal(suite.T(), uint32(3), n2.Mask())
+	require.NotNil(suite.T(), n2.signature)
+	assert.Equal(suite.T(), []byte("sig-r-bytes"), n2.signature.r)
+	assert.Equal(suite.T(), []byte("sig-s-bytes"), n2.signature.s)
+
+	pbSignedRoundTrip := n2.ToPbMsg()
+	require.NotNil(suite.T(), pbSignedRoundTrip.GetSignature())
+	assert.Equal(suite.T(), []byte("sig-r-bytes"), pbSignedRoundTrip.GetSignature().GetR())
+	assert.Equal(suite.T(), []byte("sig-s-bytes"), pbSignedRoundTrip.GetSignature().GetS())
 }

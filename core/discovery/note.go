@@ -54,15 +54,38 @@ func (n *Note) Id() string {
 }
 
 func (n *Note) ToPbMsg() *pb.Note {
-	return &pb.Note{
+	msg := &pb.Note{
 		Epoch: n.epoch,
 		Id:    []byte(n.id),
 		Mask:  n.mask,
-		Signature: &pb.Signature{
+	}
+	if n.signature != nil {
+		msg.Signature = &pb.Signature{
 			R: n.r,
 			S: n.s,
-		},
+		}
 	}
+	return msg
+}
+
+// NoteFromPb unconditionally constructs an internal Note from a protobuf Note message,
+// safely handling nil signatures or empty fields.
+func NoteFromPb(pbNote *pb.Note) *Note {
+	if pbNote == nil {
+		return nil
+	}
+	n := &Note{
+		epoch: pbNote.GetEpoch(),
+		mask:  pbNote.GetMask(),
+		id:    string(pbNote.GetId()),
+	}
+	if sign := pbNote.GetSignature(); sign != nil {
+		n.signature = &signature{
+			r: sign.GetR(),
+			s: sign.GetS(),
+		}
+	}
+	return n
 }
 
 /*

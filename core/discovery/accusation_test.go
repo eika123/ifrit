@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	log "github.com/inconshreveable/log15"
+	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -117,4 +118,76 @@ func (suite *AccTestSuite) TestSign() {
 	assert.NotNil(suite.T(), acc.signature.r, "Signature r component is still nil after signing accusation")
 
 	assert.NotNil(suite.T(), acc.signature.s, "Signature s component is still nil after signing accusation")
+}
+
+func (suite *AccTestSuite) TestCryptographicIdentity() {
+	a1 := &Accusation{
+		accused: "node-1",
+		accuser: "node-2",
+		ringNum: 1,
+		epoch:   5,
+	}
+	a2 := &Accusation{
+		accused: "node-1",
+		accuser: "node-2",
+		ringNum: 2,
+		epoch:   5,
+	}
+
+	assert.Equal(suite.T(), []byte("node-1:node-2:1:5"), a1.CryptographicIdentity())
+	assert.Equal(suite.T(), []byte("node-1:node-2:2:5"), a2.CryptographicIdentity())
+	assert.NotEqual(suite.T(), a1.CryptographicIdentity(), a2.CryptographicIdentity())
+}
+
+func (suite *AccTestSuite) TestAccusationFromPb() {
+	assert.Nil(suite.T(), AccusationFromPb(nil))
+
+	// Accusation without signature
+	pbUnsigned := &pb.Accusation{
+		Accused: []byte("node-accused"),
+		Accuser: []byte("node-accuser"),
+		RingNum: 3,
+		Epoch:   7,
+	}
+	a1 := AccusationFromPb(pbUnsigned)
+	require.NotNil(suite.T(), a1)
+	assert.Equal(suite.T(), "node-accused", a1.Accused())
+	assert.Equal(suite.T(), "node-accuser", a1.Accuser())
+	assert.Equal(suite.T(), uint32(3), a1.RingNum())
+	assert.Equal(suite.T(), uint64(7), a1.Epoch())
+	assert.Nil(suite.T(), a1.signature)
+
+	// Round-trip ToPbMsg without panic on nil signature
+	pbRoundTrip := a1.ToPbMsg()
+	assert.Equal(suite.T(), pbUnsigned.GetAccused(), pbRoundTrip.GetAccused())
+	assert.Equal(suite.T(), pbUnsigned.GetAccuser(), pbRoundTrip.GetAccuser())
+	assert.Equal(suite.T(), pbUnsigned.GetRingNum(), pbRoundTrip.GetRingNum())
+	assert.Equal(suite.T(), pbUnsigned.GetEpoch(), pbRoundTrip.GetEpoch())
+	assert.Nil(suite.T(), pbRoundTrip.GetSignature())
+
+	// Accusation with signature
+	pbSigned := &pb.Accusation{
+		Accused: []byte("node-accused"),
+		Accuser: []byte("node-accuser"),
+		RingNum: 2,
+		Epoch:   8,
+		Signature: &pb.Signature{
+			R: []byte("acc-r-bytes"),
+			S: []byte("acc-s-bytes"),
+		},
+	}
+	a2 := AccusationFromPb(pbSigned)
+	require.NotNil(suite.T(), a2)
+	assert.Equal(suite.T(), "node-accused", a2.Accused())
+	assert.Equal(suite.T(), "node-accuser", a2.Accuser())
+	assert.Equal(suite.T(), uint32(2), a2.RingNum())
+	assert.Equal(suite.T(), uint64(8), a2.Epoch())
+	require.NotNil(suite.T(), a2.signature)
+	assert.Equal(suite.T(), []byte("acc-r-bytes"), a2.signature.r)
+	assert.Equal(suite.T(), []byte("acc-s-bytes"), a2.signature.s)
+
+	pbSignedRoundTrip := a2.ToPbMsg()
+	require.NotNil(suite.T(), pbSignedRoundTrip.GetSignature())
+	assert.Equal(suite.T(), []byte("acc-r-bytes"), pbSignedRoundTrip.GetSignature().GetR())
+	assert.Equal(suite.T(), []byte("acc-s-bytes"), pbSignedRoundTrip.GetSignature().GetS())
 }

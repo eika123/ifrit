@@ -22,10 +22,10 @@ type Accusation struct {
 	*signature
 }
 
-// ID returns the canonical string identifier for this accusation,
-// binding (accused, accuser, ringNum, epoch).
-func (a Accusation) ID() string {
-	return fmt.Sprintf("%s:%s:%d:%d", a.accused, a.accuser, a.ringNum, a.epoch)
+// CryptographicIdentity returns the deterministic byte slice uniquely identifying
+// this accusation across all rings and epochs.
+func (a Accusation) CryptographicIdentity() []byte {
+	return fmt.Appendf(nil, "%s:%s:%d:%d", a.accused, a.accuser, a.ringNum, a.epoch)
 }
 
 // Checks that for this accusation a:
@@ -71,16 +71,40 @@ func (a Accusation) Signature() (r, s []byte) {
 
 // Converts the internal Accusation struct to a protobuf Accusation message.
 func (a Accusation) ToPbMsg() *pb.Accusation {
-	return &pb.Accusation{
+	msg := &pb.Accusation{
 		Epoch:   a.epoch,
 		Accuser: []byte(a.accuser),
 		Accused: []byte(a.accused),
 		RingNum: a.ringNum,
-		Signature: &pb.Signature{
+	}
+	if a.signature != nil {
+		msg.Signature = &pb.Signature{
 			R: a.r,
 			S: a.s,
-		},
+		}
 	}
+	return msg
+}
+
+// AccusationFromPb unconditionally constructs an internal Accusation from a protobuf Accusation message,
+// safely handling nil signatures or empty fields.
+func AccusationFromPb(pbAcc *pb.Accusation) *Accusation {
+	if pbAcc == nil {
+		return nil
+	}
+	a := &Accusation{
+		epoch:   pbAcc.GetEpoch(),
+		ringNum: pbAcc.GetRingNum(),
+		accuser: string(pbAcc.GetAccuser()),
+		accused: string(pbAcc.GetAccused()),
+	}
+	if sign := pbAcc.GetSignature(); sign != nil {
+		a.signature = &signature{
+			r: sign.GetR(),
+			s: sign.GetS(),
+		}
+	}
+	return a
 }
 
 /*

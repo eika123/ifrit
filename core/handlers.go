@@ -56,6 +56,15 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		FingerprintView:        n.ViewFingerprintBytes(),
 	}
 
+	// TIER 1: Unconditional ingestion into grow-only raw NoteStore.
+	// Every incoming note — valid, invalid, corrupt, or carrying an adversarial payload — is
+	// persisted so set reconciliation fingerprints converge deterministically across all peers.
+	if ownNote := args.GetOwnNote(); ownNote != nil {
+		if rawNote := discovery.NoteFromPb(ownNote); rawNote != nil && n.view.NoteStore() != nil {
+			n.view.NoteStore().Insert(rawNote)
+		}
+	}
+
 	remoteId := string(cert.SubjectKeyId[:])
 	peer := n.view.Peer(remoteId)
 	if peer != nil {
@@ -405,6 +414,16 @@ func (n *Node) mergeNotes(notes []*pb.Note) {
 		return
 	}
 
+	// TIER 1: Unconditional ingestion into grow-only raw NoteStore.
+	// Every incoming note — valid, invalid, corrupt, or carrying a bomb — is persisted
+	// so set reconciliation fingerprints converge deterministically across all peers.
+	for _, newNote := range notes {
+		if rawNote := discovery.NoteFromPb(newNote); rawNote != nil && n.view.NoteStore() != nil {
+			n.view.NoteStore().Insert(rawNote)
+		}
+	}
+
+	// TIER 2: Semantic evaluation for active view and redirection layer.
 	for _, newNote := range notes {
 		if n.self.Id == string(newNote.GetId()) {
 			continue
@@ -422,6 +441,16 @@ func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 		return
 	}
 
+	// TIER 1: Unconditional ingestion into grow-only raw AccusationStore.
+	// Every incoming accusation — valid, invalid, corrupt, or carrying a bomb — is persisted
+	// so set reconciliation fingerprints converge deterministically across all peers.
+	for _, acc := range accusations {
+		if rawAcc := discovery.AccusationFromPb(acc); rawAcc != nil && n.view.AccusationStore() != nil {
+			n.view.AccusationStore().Insert(rawAcc)
+		}
+	}
+
+	// TIER 2: Semantic evaluation for active view and redirection layer.
 	for _, acc := range accusations {
 		accId := string(acc.GetAccused())
 		accuserId := string(acc.GetAccuser())
