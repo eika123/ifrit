@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-type versionVector[T any, S Symbol[S]] struct {
+type versionVectorImmutable[T any, S Symbol[S]] struct {
 	mu          sync.RWMutex
 	hasher      ItemHasher[T, S]
 	items       map[S]VersionedItem[T]
@@ -13,15 +13,15 @@ type versionVector[T any, S Symbol[S]] struct {
 }
 
 // NewVersionVector creates a thread-safe VersionVector initialized with an item hasher function.
-func NewVersionVector[T any, S Symbol[S]](hasher ItemHasher[T, S]) VersionVector[T, S] {
-	return &versionVector[T, S]{
+func NewVersionVector[T any, S Symbol[S]](hasher ItemHasher[T, S]) VersionVectorImmutable[T, S] {
+	return &versionVectorImmutable[T, S]{
 		hasher: hasher,
 		items:  make(map[S]VersionedItem[T]),
 	}
 }
 
 // GetByDigest retrieves an item by its digest in O(1) time.
-func (vv *versionVector[T, S]) GetByDigest(digest S) (VersionedItem[T], bool) {
+func (vv *versionVectorImmutable[T, S]) GetByDigest(digest S) (VersionedItem[T], bool) {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 	entry, exists := vv.items[digest]
@@ -34,7 +34,7 @@ func (vv *versionVector[T, S]) GetByDigest(digest S) (VersionedItem[T], bool) {
 }
 
 // GetByDigests retrieves multiple items by their digests in a single operation under one read lock.
-func (vv *versionVector[T, S]) GetByDigests(digests []S) ([]VersionedItem[T], bool) {
+func (vv *versionVectorImmutable[T, S]) GetByDigests(digests []S) ([]VersionedItem[T], bool) {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 
@@ -51,7 +51,7 @@ func (vv *versionVector[T, S]) GetByDigests(digests []S) ([]VersionedItem[T], bo
 	return elements, foundAll
 }
 
-func (vv *versionVector[T, S]) AddItem(item VersionedItem[T]) VersionVector[T, S] {
+func (vv *versionVectorImmutable[T, S]) AddItem(item VersionedItem[T]) VersionVectorImmutable[T, S] {
 	vv.mu.Lock()
 	defer vv.mu.Unlock()
 
@@ -64,14 +64,14 @@ func (vv *versionVector[T, S]) AddItem(item VersionedItem[T]) VersionVector[T, S
 	maps.Copy(newItems, vv.items)
 	newItems[digest] = item
 
-	return &versionVector[T, S]{
+	return &versionVectorImmutable[T, S]{
 		hasher:      vv.hasher,
 		items:       newItems,
 		fingerprint: vv.fingerprint.XOR(digest),
 	}
 }
 
-func (vv *versionVector[T, S]) ContainsDigest(digest S) bool {
+func (vv *versionVectorImmutable[T, S]) ContainsDigest(digest S) bool {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 
@@ -79,7 +79,7 @@ func (vv *versionVector[T, S]) ContainsDigest(digest S) bool {
 	return found
 }
 
-func (vv *versionVector[T, S]) Remove(digest S) (VersionVector[T, S], bool) {
+func (vv *versionVectorImmutable[T, S]) Remove(digest S) (VersionVectorImmutable[T, S], bool) {
 	vv.mu.Lock()
 	defer vv.mu.Unlock()
 
@@ -92,32 +92,32 @@ func (vv *versionVector[T, S]) Remove(digest S) (VersionVector[T, S], bool) {
 	maps.Copy(newItems, vv.items)
 	delete(newItems, digest)
 
-	return &versionVector[T, S]{
+	return &versionVectorImmutable[T, S]{
 		hasher:      vv.hasher,
 		items:       newItems,
 		fingerprint: vv.fingerprint.XOR(digest),
 	}, true
 }
 
-func (vv *versionVector[T, S]) Fingerprint() S {
+func (vv *versionVectorImmutable[T, S]) Fingerprint() S {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 	return vv.fingerprint
 }
 
-func (vv *versionVector[T, S]) Size() int {
+func (vv *versionVectorImmutable[T, S]) Size() int {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 	return len(vv.items)
 }
 
-func (vv *versionVector[T, S]) Empty() bool {
+func (vv *versionVectorImmutable[T, S]) Empty() bool {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 	return len(vv.items) == 0
 }
 
-func (vv *versionVector[T, S]) Elements() []VersionedItem[T] {
+func (vv *versionVectorImmutable[T, S]) Elements() []VersionedItem[T] {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 
@@ -128,7 +128,7 @@ func (vv *versionVector[T, S]) Elements() []VersionedItem[T] {
 	return elems
 }
 
-func (vv *versionVector[T, S]) DigestsCopy() []S {
+func (vv *versionVectorImmutable[T, S]) DigestsCopy() []S {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 
