@@ -14,7 +14,7 @@ func testMutableKeyFunc(item testEntity) DigestSymbol {
 }
 
 func TestVersionVectorMutable_BasicOperations(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	assert.True(t, vv.Empty())
 	assert.Equal(t, 0, vv.Size())
 	assert.Equal(t, DigestSymbol(0), vv.Fingerprint())
@@ -57,7 +57,7 @@ func TestVersionVectorMutable_BasicOperations(t *testing.T) {
 }
 
 func TestVersionVectorMutable_MonotonicAdvancement(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	e1 := testEntity{ID: "node-1", Payload: "v1"}
 	key1 := testMutableKeyFunc(e1)
 
@@ -88,7 +88,7 @@ func TestVersionVectorMutable_MonotonicAdvancement(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RejectsStaleAndEqualVersions(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	e1 := testEntity{ID: "node-1", Payload: "v5"}
 	key1 := testMutableKeyFunc(e1)
 
@@ -122,7 +122,7 @@ func TestVersionVectorMutable_RejectsStaleAndEqualVersions(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RemovalAndClear(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	vItem1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	vItem2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "v1"}, Version: 1}
 
@@ -152,7 +152,7 @@ func TestVersionVectorMutable_RemovalAndClear(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RemoveVersion(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	vItem := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v5"}, Version: 5}
 	key := testMutableKeyFunc(vItem.Item)
 
@@ -175,8 +175,8 @@ func TestVersionVectorMutable_RemoveVersion(t *testing.T) {
 }
 
 func TestVersionVectorMutable_Commutativity(t *testing.T) {
-	vv1 := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
-	vv2 := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv1 := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv2 := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 
 	items := []VersionedItem[testEntity]{
 		{Item: testEntity{ID: "node-A", Payload: "data-A"}, Version: 1},
@@ -200,7 +200,7 @@ func TestVersionVectorMutable_Commutativity(t *testing.T) {
 }
 
 func TestVersionVectorMutable_ElementsAndVersions(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	v1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "p1"}, Version: 10}
 	v2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "p2"}, Version: 20}
 
@@ -218,7 +218,7 @@ func TestVersionVectorMutable_ElementsAndVersions(t *testing.T) {
 }
 
 func TestVersionVectorMutable_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	vv := NewVersionVectorMutable[testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
 	var wg sync.WaitGroup
 
 	numGoroutines := 20
@@ -260,4 +260,58 @@ func TestVersionVectorMutable_ConcurrentAccessAndRaceDetector(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, 5, vv.Size(), "Should have exactly 5 unique nodes")
 	assert.NotEqual(t, DigestSymbol(0), vv.Fingerprint())
+}
+
+func TestVersionVectorMutable_StringKeyed(t *testing.T) {
+	stringKeyFunc := func(item testEntity) string {
+		return item.ID
+	}
+
+	vv := NewVersionVectorMutable[string, testEntity, DigestSymbol](stringKeyFunc, testHasher)
+	assert.True(t, vv.Empty())
+
+	item1 := VersionedItem[testEntity]{Item: testEntity{ID: "peer-alpha", Payload: "hello"}, Version: 1}
+	item2 := VersionedItem[testEntity]{Item: testEntity{ID: "peer-beta", Payload: "world"}, Version: 3}
+
+	added, ok := vv.AddItem(item1)
+	require.True(t, ok)
+	require.NotNil(t, added)
+
+	added2, ok := vv.AddItem(item2)
+	require.True(t, ok)
+	require.NotNil(t, added2)
+
+	assert.True(t, vv.ContainsKey("peer-alpha"))
+	assert.True(t, vv.ContainsKeyVersion("peer-alpha", 1))
+	assert.False(t, vv.ContainsKeyVersion("peer-alpha", 2))
+	assert.False(t, vv.ContainsKey("peer-gamma"))
+
+	retrieved, found := vv.GetOne("peer-alpha")
+	require.True(t, found)
+	assert.Equal(t, "hello", retrieved.Item.Payload)
+	assert.Equal(t, uint64(1), retrieved.Version)
+
+	batch := vv.GetMany([]string{"peer-alpha", "peer-beta", "missing"})
+	require.Len(t, batch, 2)
+
+	versions := vv.Versions()
+	assert.Equal(t, uint64(1), versions["peer-alpha"])
+	assert.Equal(t, uint64(3), versions["peer-beta"])
+
+	// Monotonic rejection with string keys
+	staleItem := VersionedItem[testEntity]{Item: testEntity{ID: "peer-alpha", Payload: "stale"}, Version: 1}
+	_, ok = vv.AddItem(staleItem)
+	assert.False(t, ok)
+
+	// Upgrade with string keys
+	upgradeItem := VersionedItem[testEntity]{Item: testEntity{ID: "peer-alpha", Payload: "upgraded"}, Version: 2}
+	_, ok = vv.AddItem(upgradeItem)
+	assert.True(t, ok)
+	assert.Equal(t, uint64(2), vv.Versions()["peer-alpha"])
+
+	// Remove with string keys
+	removed, ok := vv.Remove("peer-alpha")
+	assert.True(t, ok)
+	assert.Equal(t, uint64(2), removed.Version)
+	assert.False(t, vv.ContainsKey("peer-alpha"))
 }

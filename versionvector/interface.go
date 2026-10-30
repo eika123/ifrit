@@ -55,33 +55,34 @@ type VersionVectorImmutable[T any, S Symbol[S]] interface {
 }
 
 // KeyExtractor extracts the identity key from an item (excluding the version number).
-type KeyExtractor[T any, S comparable] func(item T) S
+type KeyExtractor[T any, K comparable] func(item T) K
 
-// VersionVector defines the generic interface for an identity-keyed version vector
+// VersionVectorMutable defines the generic interface for an identity-keyed version vector
 // with monotonically increasing versions and incremental 64-bit commutative XOR fingerprinting.
+// Key type K is decoupled from Symbol type S, allowing arbitrary comparable identity keys (e.g. string, struct).
 // Importantly, when running e.g GetOne, GetMany, Elements or Remove, one must check
-// the version of the item returned as the hash does not include the version
-type VersionVectorMutable[T any, S Symbol[S]] interface {
+// the version of the item returned as the hash does not include the version.
+type VersionVectorMutable[K comparable, T any, S Symbol[S]] interface {
 	// AddItem applies an item with a given version number.
 	// Returns true if the item was added or upgraded (new version > current version).
 	// Returns false if an existing entry has an equal or newer version.
 	AddItem(item VersionedItem[T]) (*VersionedItem[T], bool)
 
-	GetOne(key S) (item VersionedItem[T], found bool)
+	GetOne(key K) (item VersionedItem[T], found bool)
 
-	GetMany(keys []S) (items []VersionedItem[T])
-
-	// ContainsKey reports whether an entry for key exists.
-	ContainsKey(key S) bool
+	GetMany(keys []K) (items []VersionedItem[T])
 
 	// ContainsKey reports whether an entry for key exists.
-	ContainsKeyVersion(key S, version uint64) bool
+	ContainsKey(key K) bool
+
+	// ContainsKeyVersion reports whether an entry for key exists with the specified version.
+	ContainsKeyVersion(key K, version uint64) bool
 
 	// Remove evicts an item by key, subtracting its digest from the fingerprint.
 	// Returns true if an item was present and removed.
-	Remove(key S) (VersionedItem[T], bool)
+	Remove(key K) (VersionedItem[T], bool)
 
-	RemoveVersion(key S, version uint64) bool
+	RemoveVersion(key K, version uint64) bool
 
 	// Fingerprint returns the current cumulative XOR fingerprint in O(1).
 	Fingerprint() S
@@ -96,7 +97,7 @@ type VersionVectorMutable[T any, S Symbol[S]] interface {
 	Elements() []VersionedItem[T]
 
 	// Versions returns a map of all keys and their latest version numbers.
-	Versions() map[S]uint64
+	Versions() map[K]uint64
 
 	// DigestsCopy returns a slice of all digests currently contributing to the fingerprint.
 	DigestsCopy() []S
