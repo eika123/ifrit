@@ -1,6 +1,8 @@
 package reverseindexstore
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,16 @@ func DefaultHasher[T any]() Hasher[T, DigestSymbol] {
 		// Custom Digest() DigestSymbol interface
 		if d, ok := any(item).(interface{ Digest() DigestSymbol }); ok {
 			return d.Digest()
+		}
+		// Custom CryptographicIdentity() []byte interface (SHA-256 truncated to 64-bit uint64)
+		if c, ok := any(item).(interface{ CryptographicIdentity() []byte }); ok {
+			sum := sha256.Sum256(c.CryptographicIdentity())
+			return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
+		}
+		// Custom CryptographicIdentity() string interface (SHA-256 truncated to 64-bit uint64)
+		if c, ok := any(item).(interface{ CryptographicIdentity() string }); ok {
+			sum := sha256.Sum256([]byte(c.CryptographicIdentity()))
+			return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
 		}
 		// Custom ID() string interface
 		if id, ok := any(item).(interface{ ID() string }); ok {

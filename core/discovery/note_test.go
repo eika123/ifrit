@@ -94,3 +94,21 @@ func (suite *NoteTestSuite) TestSign() {
 
 	assert.NotNil(suite.T(), n.signature.s, "Signature s component is still nil after signing accusation")
 }
+
+func (suite *NoteTestSuite) TestCryptographicIdentity() {
+	n1 := &Note{
+		id:    "node-1",
+		epoch: 5,
+		mask:  1,
+	}
+	n2 := &Note{
+		id:    "node-1",
+		epoch: 5,
+		mask:  2,
+	}
+
+	assert.Equal(suite.T(), []byte("node-1:5:1"), n1.CryptographicIdentity())
+	assert.Equal(suite.T(), []byte("node-1:5:2"), n2.CryptographicIdentity())
+	assert.NotEqual(suite.T(), n1.CryptographicIdentity(), n2.CryptographicIdentity())
+	assert.Equal(suite.T(), "node-1", n1.Id())
+}

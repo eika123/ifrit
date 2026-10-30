@@ -1207,8 +1207,8 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	assert.NotEqual(suite.T(), fpAfterNote1, fpAfterNote2, "Rebuttal epoch must alter view fingerprint")
 
 	// Verify retrieval from NoteStore
-	d1 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 1})
-	d2 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 2})
+	d1 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 1, mask: 1})
+	d2 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 2, mask: 1})
 
 	noteStore, err := v.Notes()
 	require.NoError(suite.T(), err)

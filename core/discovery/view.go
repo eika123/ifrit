@@ -47,7 +47,7 @@ type View struct {
 	activeAccMutex    sync.RWMutex
 
 	noteStore  revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol]
-	noteEpochs map[string][]uint64
+	noteEpochs map[string]map[uint64]revIdxStore.DigestSymbol
 	noteMutex  sync.RWMutex
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
@@ -163,7 +163,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		accusationStore:   accusationStore,
 		activeAccusations: make(map[string]map[uint32]activeAccusationEntry),
 		noteStore:         noteStore,
-		noteEpochs:        make(map[string][]uint64),
+		noteEpochs:        make(map[string]map[uint64]revIdxStore.DigestSymbol),
 		timeoutMap:        make(map[string]*timeout),
 		maxByz:            maxByz,
 		currGossipRing:    1,
@@ -351,15 +351,17 @@ func (v *View) NotesByDigests(digests []revIdxStore.DigestSymbol) ([]*Note, bool
 
 // HasNote checks if a note with the given ID and epoch has already been recorded in noteStore.
 func (v *View) HasNote(id string, epoch uint64) bool {
-	if v.noteStore == nil {
+	v.noteMutex.RLock()
+	defer v.noteMutex.RUnlock()
+	if v.noteEpochs == nil {
 		return false
 	}
-	dummy := &Note{
-		id:    id,
-		epoch: epoch,
+	epochs, ok := v.noteEpochs[id]
+	if !ok {
+		return false
 	}
-	stored, ok := v.noteStore.Contains(dummy)
-	return ok && stored.id == id && stored.epoch == epoch
+	_, found := epochs[epoch]
+	return found
 }
 
 // Note returns the stored note matching (id, epoch), or nil if absent.
@@ -367,12 +369,23 @@ func (v *View) Note(id string, epoch uint64) *Note {
 	if v.noteStore == nil {
 		return nil
 	}
-	dummy := &Note{
-		id:    id,
-		epoch: epoch,
+	v.noteMutex.RLock()
+	if v.noteEpochs == nil {
+		v.noteMutex.RUnlock()
+		return nil
 	}
-	stored, ok := v.noteStore.Contains(dummy)
-	if ok && stored.id == id && stored.epoch == epoch {
+	epochs, ok := v.noteEpochs[id]
+	if !ok {
+		v.noteMutex.RUnlock()
+		return nil
+	}
+	d, found := epochs[epoch]
+	v.noteMutex.RUnlock()
+	if !found {
+		return nil
+	}
+	stored, ok := v.noteStore.GetByDigest(d)
+	if ok {
 		return stored
 	}
 	return nil
@@ -388,16 +401,15 @@ func (v *View) recordNote(n *Note) (revIdxStore.DigestSymbol, bool) {
 	defer v.noteMutex.Unlock()
 
 	if v.noteEpochs == nil {
-		v.noteEpochs = make(map[string][]uint64)
+		v.noteEpochs = make(map[string]map[uint64]revIdxStore.DigestSymbol)
 	}
 
-	epochs := v.noteEpochs[n.id]
-	for _, ep := range epochs {
-		if ep == n.epoch {
-			return d, inserted
-		}
+	epochs, ok := v.noteEpochs[n.id]
+	if !ok {
+		epochs = make(map[uint64]revIdxStore.DigestSymbol)
+		v.noteEpochs[n.id] = epochs
 	}
-	v.noteEpochs[n.id] = append(epochs, n.epoch)
+	epochs[n.epoch] = d
 	return d, inserted
 }
 
@@ -413,8 +425,10 @@ func (v *View) NoteEpochs(id string) []uint64 {
 	if !ok {
 		return nil
 	}
-	cp := make([]uint64, len(epochs))
-	copy(cp, epochs)
+	cp := make([]uint64, 0, len(epochs))
+	for ep := range epochs {
+		cp = append(cp, ep)
+	}
 	return cp
 }
 
@@ -427,9 +441,11 @@ func (v *View) RecordedEpochs() map[string][]uint64 {
 		return nil
 	}
 	result := make(map[string][]uint64, len(v.noteEpochs))
-	for k, vSlice := range v.noteEpochs {
-		cp := make([]uint64, len(vSlice))
-		copy(cp, vSlice)
+	for k, epMap := range v.noteEpochs {
+		cp := make([]uint64, 0, len(epMap))
+		for ep := range epMap {
+			cp = append(cp, ep)
+		}
 		result[k] = cp
 	}
 	return result
@@ -1275,9 +1291,8 @@ func (v *View) RemoveTestFull(id string) error {
 		v.viewStore.Remove(p)
 		v.noteMutex.Lock()
 		if epochs, ok := v.noteEpochs[id]; ok {
-			for _, ep := range epochs {
-				dummy := &Note{id: id, epoch: ep}
-				v.noteStore.Remove(dummy)
+			for _, d := range epochs {
+				v.noteStore.RemoveByDigest(d)
 			}
 			delete(v.noteEpochs, id)
 		}
@@ -1329,11 +1344,13 @@ func (v *View) ClearTestNote(p *Peer) {
 	p.ClearNote()
 	if v.noteStore != nil {
 		v.noteMutex.Lock()
-		epochs := v.noteEpochs[p.Id]
+		epochs, ok := v.noteEpochs[p.Id]
 		delete(v.noteEpochs, p.Id)
 		v.noteMutex.Unlock()
-		for _, ep := range epochs {
-			v.noteStore.Remove(&Note{id: p.Id, epoch: ep})
+		if ok {
+			for _, d := range epochs {
+				v.noteStore.RemoveByDigest(d)
+			}
 		}
 	}
 }

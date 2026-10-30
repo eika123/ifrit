@@ -18,6 +18,12 @@ type Symbol[S any] interface {
 // DigestSymbol represents a concrete 64-bit digest symbol satisfying Symbol[DigestSymbol].
 type DigestSymbol uint64
 
+// CryptographicIdentity represents elements that supply a canonical byte or string
+// representation intended for cryptographic hashing (e.g., SHA-256) rather than FNV-1a.
+type CryptographicIdentity interface {
+	CryptographicIdentity() []byte
+}
+
 // XOR implements riblt.Symbol[DigestSymbol].
 func (d DigestSymbol) XOR(other DigestSymbol) DigestSymbol {
 	return d ^ other

@@ -1,6 +1,8 @@
 package reverseindexstore_test
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -41,6 +43,22 @@ func (i itemWithSymbolDigest) Digest() reverseindexstore.DigestSymbol {
 type itemPlain struct {
 	Name string `json:"name"`
 	Age  int    `json:"age"`
+}
+
+type itemWithCryptoBytes struct {
+	payload []byte
+}
+
+func (i itemWithCryptoBytes) CryptographicIdentity() []byte {
+	return i.payload
+}
+
+type itemWithCryptoString struct {
+	id string
+}
+
+func (i itemWithCryptoString) CryptographicIdentity() string {
+	return i.id
 }
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
@@ -125,6 +143,20 @@ func TestDigestSet_DefaultHasherVariants(t *testing.T) {
 	// 5. Plain struct JSON fallback
 	hPlain := reverseindexstore.DefaultHasher[itemPlain]()
 	assert.NotZero(t, hPlain(itemPlain{Name: "Carol", Age: 30}))
+
+	// 6. CryptographicIdentity with []byte (SHA-256 truncated to 64-bit uint64)
+	hCryptoBytes := reverseindexstore.DefaultHasher[itemWithCryptoBytes]()
+	payload := []byte("crypto-payload-123")
+	sumB := sha256.Sum256(payload)
+	expectedCryptoB := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumB[:8]))
+	assert.Equal(t, expectedCryptoB, hCryptoBytes(itemWithCryptoBytes{payload: payload}))
+
+	// 7. CryptographicIdentity with string (SHA-256 truncated to 64-bit uint64)
+	hCryptoStr := reverseindexstore.DefaultHasher[itemWithCryptoString]()
+	strID := "crypto-id-456"
+	sumS := sha256.Sum256([]byte(strID))
+	expectedCryptoS := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumS[:8]))
+	assert.Equal(t, expectedCryptoS, hCryptoStr(itemWithCryptoString{id: strID}))
 }
 
 func TestDigestSet_CopyAndIsolation(t *testing.T) {
