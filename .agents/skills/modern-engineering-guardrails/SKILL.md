@@ -13,9 +13,9 @@ triggers:
 
 # Go Modern Guardrails & Refactor Repair
 
-You are assisting in restoring and expanding a previously broken Go codebase. A recent refactoring introduced syntax and type errors. The examples
- `_examples/messagesExample.go` and `streamingExample.go` have not been tested after our fixes, but `gossipContentExample.go` runs cleanly.
+You are assisting in restoring and expanding a previously broken Go codebase. A recent refactoring introduced syntax and type errors.The example `examples/messages/messagesExample.go` has not been tested after our fixes, but `examples/gossip/gossipContentExample.go` and `examples/messages/messagesExample.go` runs cleanly.
 We must keep a clean `go build` state using modern, idiomatic, and type-safe Go practices.
+
 
 ## 1. Absolute Go Behavioral Bans
 Do NOT use these legacy "quick-fixes" or anti-patterns to bypass compiler errors:

@@ -16,7 +16,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/bin/ifrit-ca ./cmd/ca
 
 # Build the gossip content example node with CGO for SQLite telemetry
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /build/bin/gossip-node ./_examples/gossipContentExample.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /build/bin/gossip-node ./examples/gossip/gossipContentExample.go
 
 # Stage 2: Minimal runtime image
 FROM docker.io/library/alpine:3.20

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -54,6 +55,10 @@ func TestStreamingExample(t *testing.T) {
 	require.True(t, caReady, "test CA failed to start")
 
 	// Point ifrit clients to the ephemeral test CA
+	testCfgPath := filepath.Join(caDir, "ifrit_config.yaml")
+	cfgContent := fmt.Sprintf("ca_addr: \"127.0.0.1:%d\"\n", caPort)
+	require.NoError(t, os.WriteFile(testCfgPath, []byte(cfgContent), 0644))
+	t.Setenv("IFRIT_CONFIG", testCfgPath)
 	viper.Set("ca_addr", fmt.Sprintf("127.0.0.1:%d", caPort))
 
 	// Also ensure client crypto directories are isolated

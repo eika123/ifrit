@@ -79,6 +79,9 @@ type Node struct {
 	accusationSessionFactory      SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]
 	accusationSessionFactoryMutex sync.RWMutex
 
+	noteSessionFactory      SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]
+	noteSessionFactoryMutex sync.RWMutex
+
 	dataReconciler      DataReconciler
 	dataReconcilerMutex sync.RWMutex
 
@@ -424,6 +427,20 @@ func (n *Node) getAccusationSessionFactory() SessionFactory[*discovery.Accusatio
 	n.accusationSessionFactoryMutex.RLock()
 	defer n.accusationSessionFactoryMutex.RUnlock()
 	return n.accusationSessionFactory
+}
+
+// SetNoteSessionFactory allows the Fireflies layer (e.g. tests or internal protocol configuration)
+// to specify a custom reconciliation session factory (e.g. RIBLTSessionFactory or NaiveSessionFactory) for notes.
+func (n *Node) SetNoteSessionFactory(f SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]) {
+	n.noteSessionFactoryMutex.Lock()
+	defer n.noteSessionFactoryMutex.Unlock()
+	n.noteSessionFactory = f
+}
+
+func (n *Node) getNoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
+	n.noteSessionFactoryMutex.RLock()
+	defer n.noteSessionFactoryMutex.RUnlock()
+	return n.noteSessionFactory
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

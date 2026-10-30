@@ -79,8 +79,9 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil
 
 		if hasFingerprints {
-			n.reconcileAccusations(args, reply)
+			// should maybe even reconcile certificates first.
 			n.reconcileNotes(args, reply)
+			n.reconcileAccusations(args, reply)
 			n.reconcileData(args, reply)
 		} else {
 			// Legacy caller
@@ -275,6 +276,34 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
 		if bytes.Equal(callerFp, n.ViewFingerprintBytes()) {
 			return
 		}
+
+		localDelta, requestedDigests, err := ReconcileStore(
+			n.getNoteSessionFactory(),
+			n.view.NoteStore(),
+			revIdxStore.AsDigestSymbols(args.GetNoteDigests()),
+		)
+		if err != nil {
+			log.Error("Failed to reconcile notes", "err", err)
+			return
+		}
+
+		seenCerts := make(map[string]struct{})
+		for _, note := range localDelta {
+			reply.Notes = append(reply.Notes, note.ToPbMsg())
+			if note.Id() == n.self.Id && n.self.Certificate() != nil {
+				if _, seen := seenCerts[n.self.Id]; !seen {
+					seenCerts[n.self.Id] = struct{}{}
+					reply.Certificates = append(reply.Certificates, &pb.Certificate{Raw: n.self.Certificate()})
+				}
+			} else if p := n.view.Peer(note.Id()); p != nil && p.Certificate() != nil {
+				if _, seen := seenCerts[note.Id()]; !seen {
+					seenCerts[note.Id()] = struct{}{}
+					reply.Certificates = append(reply.Certificates, &pb.Certificate{Raw: p.Certificate()})
+				}
+			}
+		}
+		reply.RequestedNoteDigests = revIdxStore.AsUint64Slice(requestedDigests)
+		return
 	}
 
 	hosts := args.GetExistingHosts()
@@ -589,9 +618,7 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return errNoPeer
 	}
 
-	note := peer.Note()
-
-	if note != nil && !note.IsMoreRecent(epoch) {
+	if node.view.HasNote(peer.Id, epoch) {
 		return errOldNote
 	}
 
@@ -610,10 +637,8 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return errInvalidSignature
 	}
 
-	if note == nil || note.IsMoreRecent(epoch) {
-		if _, err := node.view.AddNote(peer, mask, epoch, r, s); err != nil {
-			return err
-		}
+	if _, err := node.view.AddNote(peer, mask, epoch, r, s); err != nil {
+		return err
 	}
 
 	// If peer is not accused under its most recent note, ensure timers are stopped

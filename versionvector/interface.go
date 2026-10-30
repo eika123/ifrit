@@ -9,57 +9,47 @@ type Symbol[S any] = revIdxStore.Symbol[S]
 
 // DigestSymbol is aliased from reverseindexstore.DigestSymbol.
 type DigestSymbol = revIdxStore.DigestSymbol
+type VersionedItem[T any] struct {
+	Item    T
+	Version uint64
+}
 
-// KeyExtractor extracts the identity key from an item (excluding the version number).
-type KeyExtractor[T any, S comparable] func(item T) S
+// ItemHasher computes the combined digest symbol of the item and its version.
+type ItemHasher[T any, S Symbol[S]] func(item VersionedItem[T]) S
 
-// ItemHasher computes the combined digest symbol of the key, item, and version number.
-type ItemHasher[T any, S Symbol[S]] func(key S, item T, version uint64) S
-
-// VersionVector defines the generic interface for an identity-keyed monotonic version vector
+// VersionVector defines the generic interface for an immutable version vector
 // with incremental 64-bit commutative XOR fingerprinting.
+// Any mutation returns a completely new VersionVector instance.
 type VersionVector[T any, S Symbol[S]] interface {
-	// AddItem applies an item with a given version number.
-	// Returns true if the item was added or upgraded (new version > current version).
-	// Returns false if an existing entry has an equal or newer version.
-	AddItem(item T, versionNumber uint64) bool
+	// AddItem returns a new VersionVector containing the added or updated versioned item.
+	AddItem(item VersionedItem[T]) VersionVector[T, S]
 
-	// GetByDigest retrieves an item by its identity key in O(1) time.
-	// Note: This method serves as a compatibility adapter for ReverseIndexStore
-	// and reconciler interfaces, where the item's identity slot key serves as the lookup key.
-	GetByDigest(key S) (item T, found bool)
+	// GetByDigest retrieves an item by its digest in O(1) time.
+	GetByDigest(digest S) (item VersionedItem[T], found bool)
 
-	// GetByDigests retrieves multiple items by their identity keys in a single operation.
-	// Acts as a compatibility adapter for ReverseIndexStore and reconciler interfaces.
-	// Returns a slice of all found items and true if every requested key was found,
-	// or false if one or more keys were missing.
-	GetByDigests(keys []S) (items []T, found bool)
+	// GetByDigests retrieves multiple items by their digests in a single operation.
+	// Returns a slice of all found items and true if every requested digest was found,
+	// or false if one or more digests were missing.
+	GetByDigests(digests []S) (items []VersionedItem[T], found bool)
 
-	// ContainsKey reports whether an entry for key exists.
-	ContainsKey(key S) bool
+	// ContainsDigest reports whether an item with the given digest exists.
+	ContainsDigest(digest S) bool
 
-	// Remove evicts an item by key, subtracting its digest from the fingerprint.
-	// Returns true if an item was present and removed.
-	Remove(key S) bool
+	// Remove evicts an item by its digest, returning a new VersionVector and true if present.
+	Remove(digest S) (VersionVector[T, S], bool)
 
 	// Fingerprint returns the current cumulative XOR fingerprint in O(1).
 	Fingerprint() S
 
-	// Size returns the count of active identity slots.
+	// Size returns the count of active items.
 	Size() int
 
 	// Empty reports whether the version vector contains no items.
 	Empty() bool
 
 	// Elements returns all current items as a slice.
-	Elements() []T
-
-	// Versions returns a map of all keys and their latest version numbers.
-	Versions() map[S]uint64
+	Elements() []VersionedItem[T]
 
 	// DigestsCopy returns a slice of all digests currently contributing to the fingerprint.
 	DigestsCopy() []S
-
-	// Clear removes all entries and resets the fingerprint to zero.
-	Clear()
 }

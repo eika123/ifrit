@@ -29,7 +29,7 @@ trap cleanup EXIT INT TERM
 
 echo "[*] Building CA and Gossip Node binaries..."
 go build -o /tmp/ifrit-ca ./cmd/ca
-go build -o /tmp/ifrit-gossip-node ./_examples/gossipContentExample.go
+go build -o /tmp/ifrit-gossip-node ./examples/gossip/gossipContentExample.go
 
 echo "[*] Starting CA daemon on localhost:8321..."
 /tmp/ifrit-ca --new &

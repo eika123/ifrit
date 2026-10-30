@@ -439,11 +439,16 @@ func sendCertRequest(privKey *ecdsa.PrivateKey, caAddr string, pk pkix.Name, DNS
 
 	localIP := netutil.GetLocalIP()
 
+	var ipAddresses []net.IP
+	if parsed := net.ParseIP(localIP); parsed != nil {
+		ipAddresses = append(ipAddresses, parsed)
+	}
+
 	template := x509.CertificateRequest{
 		SignatureAlgorithm: x509.ECDSAWithSHA256,
 		Subject:            pk,
 		DNSNames:           DNSNames,
-		IPAddresses:        []net.IP{net.ParseIP(localIP)},
+		IPAddresses:        ipAddresses,
 	}
 
 	certReqBytes, err := x509.CreateCertificateRequest(rand.Reader, &template, privKey)

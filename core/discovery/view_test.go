@@ -1206,24 +1206,46 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	require.NoError(suite.T(), err)
 	assert.NotEqual(suite.T(), fpAfterNote1, fpAfterNote2, "Rebuttal epoch must alter view fingerprint")
 
-	// Verify retrieval from VersionVector
-	key := v.hashId("test-peer-1")
-	notesVV, err := v.Notes()
+	// Verify retrieval from NoteStore
+	d1 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 1})
+	d2 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 2})
+
+	noteStore, err := v.Notes()
 	require.NoError(suite.T(), err)
-	note, found := notesVV.GetByDigest(key)
+	note, found := noteStore.GetByDigest(d2)
 	assert.True(suite.T(), found)
 	assert.Equal(suite.T(), uint64(2), note.Epoch())
 
+	// Both epoch 1 and epoch 2 notes exist in the grow-only noteStore
+	note1, found1 := noteStore.GetByDigest(d1)
+	assert.True(suite.T(), found1)
+	assert.Equal(suite.T(), uint64(1), note1.Epoch())
+
 	// Test NoteByDigest and NotesByDigests
-	singleNote, foundSingle, err := v.NoteByDigest(key)
+	singleNote, foundSingle, err := v.NoteByDigest(d2)
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), foundSingle)
 	assert.NotNil(suite.T(), singleNote)
 
-	batchNotes, allFound, err := v.NotesByDigests([]revIdxStore.DigestSymbol{key})
+	batchNotes, allFound, err := v.NotesByDigests([]revIdxStore.DigestSymbol{d1, d2})
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), allFound)
-	assert.Len(suite.T(), batchNotes, 1)
+	assert.Len(suite.T(), batchNotes, 2)
+
+	// Verify NoteEpochs indirection map
+	epochs := v.NoteEpochs("test-peer-1")
+	assert.ElementsMatch(suite.T(), []uint64{1, 2}, epochs)
+
+	// Verify HasNote and Note
+	assert.True(suite.T(), v.HasNote("test-peer-1", 1))
+	assert.True(suite.T(), v.HasNote("test-peer-1", 2))
+	assert.False(suite.T(), v.HasNote("test-peer-1", 3))
+	assert.False(suite.T(), v.HasNote("unknown-peer", 1))
+
+	retrievedNote := v.Note("test-peer-1", 2)
+	assert.NotNil(suite.T(), retrievedNote)
+	assert.Equal(suite.T(), uint64(2), retrievedNote.Epoch())
+	assert.Nil(suite.T(), v.Note("test-peer-1", 3))
 
 	// Test uninitialized view errors
 	uninitV := &View{}

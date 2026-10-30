@@ -196,7 +196,7 @@ def main():
 
     print("[*] Compiling latest Ifrit binaries...")
     subprocess.run(["go", "build", "-o", ca_bin, "./cmd/ca"], cwd=repo_root, env=env, check=True)
-    subprocess.run(["go", "build", "-o", node_bin, "./_examples/gossipContentExample.go"], cwd=repo_root, env=env, check=True)
+    subprocess.run(["go", "build", "-o", node_bin, "./examples/gossip/gossipContentExample.go"], cwd=repo_root, env=env, check=True)
 
     panes = [
         ProcessPane(

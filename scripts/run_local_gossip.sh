@@ -41,7 +41,7 @@ if [ "$MODE" = "tmux" ]; then
     else
         echo "[*] Building binaries..."
         go build -o /tmp/ifrit-ca ./cmd/ca
-        go build -o /tmp/ifrit-gossip-node ./_examples/gossipContentExample.go
+        go build -o /tmp/ifrit-gossip-node ./examples/gossip/gossipContentExample.go
 
         SESSION="ifrit-cluster"
         tmux kill-session -t "$SESSION" 2>/dev/null || true
@@ -56,9 +56,9 @@ fi
 # Mode 2: 3-Pane TUI Dashboard (Standard Library Curses via UV / Python)
 if [ "$MODE" = "tui" ]; then
     if command -v uv >/dev/null 2>&1 && [ -d "${REPO_ROOT}/experiments" ]; then
-        exec uv run --directory "${REPO_ROOT}/experiments" python "${REPO_ROOT}/_examples/scripts/local_cluster_tui.py"
+        exec uv run --directory "${REPO_ROOT}/experiments" python "${REPO_ROOT}/examples/scripts/local_cluster_tui.py"
     else
-        exec python3 "${REPO_ROOT}/_examples/scripts/local_cluster_tui.py"
+        exec python3 "${REPO_ROOT}/examples/scripts/local_cluster_tui.py"
     fi
 fi
 
@@ -83,7 +83,7 @@ trap cleanup EXIT INT TERM
 
 echo "[*] Building CA and Gossip Node binaries..."
 go build -o /tmp/ifrit-ca ./cmd/ca
-go build -o /tmp/ifrit-gossip-node ./_examples/gossipContentExample.go
+go build -o /tmp/ifrit-gossip-node ./examples/gossip/gossipContentExample.go
 
 echo "[*] Starting CA daemon on localhost:8321..."
 /tmp/ifrit-ca --new &

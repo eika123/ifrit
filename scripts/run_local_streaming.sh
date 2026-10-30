@@ -33,7 +33,7 @@ trap cleanup EXIT INT TERM
 # Build CA and streaming binaries
 echo "[*] Building CA and Streaming Example binaries..."
 go build -o /tmp/ifrit-ca ./cmd/ca
-go build -o /tmp/ifrit-streaming ./_examples/streamingExample.go
+go build -o /tmp/ifrit-streaming ./examples/streaming/streamingExample.go
 
 CA_DIR=$(mktemp -d /tmp/ifrit-ca-stream-XXXXXX)
 CLEANUP_DIRS+=("$CA_DIR")

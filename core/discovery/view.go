@@ -1,9 +1,9 @@
 package discovery
 
 import (
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"hash/fnv"
@@ -16,7 +16,6 @@ import (
 	pb "github.com/joonnna/ifrit/protobuf"
 	proto "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
-	"github.com/joonnna/ifrit/versionvector"
 	"github.com/spf13/viper"
 )
 
@@ -29,7 +28,7 @@ var (
 	errAccusedIsNil        = errors.New("Accused was nil.")
 	errObsIsNil            = errors.New("Observer was nil")
 	errWrongNote           = errors.New("Note does not belong to accused.")
-	ErrNotesNotInitialized = errors.New("Notes version vector is not initialized")
+	ErrNotesNotInitialized = errors.New("Note store is not initialized")
 )
 
 type activeAccusationEntry struct {
@@ -47,7 +46,9 @@ type View struct {
 	activeAccusations map[string]map[uint32]activeAccusationEntry
 	activeAccMutex    sync.RWMutex
 
-	notes versionvector.VersionVector[*Note, revIdxStore.DigestSymbol]
+	noteStore  revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol]
+	noteEpochs map[string][]uint64
+	noteMutex  sync.RWMutex
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -150,23 +151,10 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	noteKeyFunc := func(n *Note) revIdxStore.DigestSymbol {
-		h := fnv.New64a()
-		h.Write([]byte(n.id))
-		return revIdxStore.DigestSymbol(h.Sum64())
+	noteStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Note]())
+	if err != nil {
+		return nil, err
 	}
-
-	noteHasher := func(key revIdxStore.DigestSymbol, n *Note, version uint64) revIdxStore.DigestSymbol {
-		h := fnv.New64a()
-		var buf [20]byte
-		binary.BigEndian.PutUint64(buf[0:8], uint64(key))
-		binary.BigEndian.PutUint32(buf[8:12], n.mask)
-		binary.BigEndian.PutUint64(buf[12:20], version)
-		h.Write(buf[:])
-		return revIdxStore.DigestSymbol(h.Sum64())
-	}
-
-	notesVV := versionvector.NewVersionVector(noteKeyFunc, noteHasher)
 
 	v := &View{
 		rings:             rings,
@@ -174,7 +162,8 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		liveStore:         liveStore,
 		accusationStore:   accusationStore,
 		activeAccusations: make(map[string]map[uint32]activeAccusationEntry),
-		notes:             notesVV,
+		noteStore:         noteStore,
+		noteEpochs:        make(map[string][]uint64),
 		timeoutMap:        make(map[string]*timeout),
 		maxByz:            maxByz,
 		currGossipRing:    1,
@@ -309,68 +298,165 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	return nil
 }
 
-// Fingerprint returns the commutative XOR fingerprint of all active peer notes in the view (including self).
-// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+// Fingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) Fingerprint() (revIdxStore.DigestSymbol, error) {
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return 0, ErrNotesNotInitialized
 	}
-	return v.notes.Fingerprint(), nil
+	return v.noteStore.Fingerprint(), nil
 }
 
-// Notes returns the underlying VersionVector backing peer notes, or ErrNotesNotInitialized if uninitialized.
-func (v *View) Notes() (versionvector.VersionVector[*Note, revIdxStore.DigestSymbol], error) {
-	if v.notes == nil {
+// NoteStore returns the underlying ReverseIndexStore backing peer notes.
+func (v *View) NoteStore() revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol] {
+	return v.noteStore
+}
+
+// Notes returns the underlying ReverseIndexStore backing peer notes, or ErrNotesNotInitialized if uninitialized.
+func (v *View) Notes() (revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol], error) {
+	if v.noteStore == nil {
 		return nil, ErrNotesNotInitialized
 	}
-	return v.notes, nil
+	return v.noteStore, nil
 }
 
-// NoteDigests returns the digests of all active notes currently contributing to the view fingerprint.
-// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+// NoteDigests returns the digests of all notes currently contributing to the view fingerprint.
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) NoteDigests() ([]revIdxStore.DigestSymbol, error) {
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return nil, ErrNotesNotInitialized
 	}
-	return v.notes.DigestsCopy(), nil
+	return v.noteStore.DigestsCopy(), nil
 }
 
-// NoteByDigest retrieves a Note by its digest symbol from the version vector.
-// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+// NoteByDigest retrieves a Note by its digest symbol from the note store.
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) NoteByDigest(d revIdxStore.DigestSymbol) (*Note, bool, error) {
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return nil, false, ErrNotesNotInitialized
 	}
-	note, found := v.notes.GetByDigest(d)
+	note, found := v.noteStore.GetByDigest(d)
 	return note, found, nil
 }
 
-// NotesByDigests retrieves multiple Notes by their digests from the version vector in a single operation.
-// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+// NotesByDigests retrieves multiple Notes by their digests from the note store in a single operation.
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) NotesByDigests(digests []revIdxStore.DigestSymbol) ([]*Note, bool, error) {
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return nil, false, ErrNotesNotInitialized
 	}
-	notes, found := v.notes.GetByDigests(digests)
+	notes, found := v.noteStore.GetByDigests(digests)
 	return notes, found, nil
 }
 
-// AddNote updates or applies a verified note to both the peer and the view's monotonic Note version vector.
-// Returns ErrNotesNotInitialized if the underlying VersionVector has not been initialized.
+// HasNote checks if a note with the given ID and epoch has already been recorded in noteStore.
+func (v *View) HasNote(id string, epoch uint64) bool {
+	if v.noteStore == nil {
+		return false
+	}
+	dummy := &Note{
+		id:    id,
+		epoch: epoch,
+	}
+	stored, ok := v.noteStore.Contains(dummy)
+	return ok && stored.id == id && stored.epoch == epoch
+}
+
+// Note returns the stored note matching (id, epoch), or nil if absent.
+func (v *View) Note(id string, epoch uint64) *Note {
+	if v.noteStore == nil {
+		return nil
+	}
+	dummy := &Note{
+		id:    id,
+		epoch: epoch,
+	}
+	stored, ok := v.noteStore.Contains(dummy)
+	if ok && stored.id == id && stored.epoch == epoch {
+		return stored
+	}
+	return nil
+}
+
+func (v *View) recordNote(n *Note) (revIdxStore.DigestSymbol, bool) {
+	if n == nil {
+		return 0, false
+	}
+	d, inserted := v.noteStore.Insert(n)
+
+	v.noteMutex.Lock()
+	defer v.noteMutex.Unlock()
+
+	if v.noteEpochs == nil {
+		v.noteEpochs = make(map[string][]uint64)
+	}
+
+	epochs := v.noteEpochs[n.id]
+	for _, ep := range epochs {
+		if ep == n.epoch {
+			return d, inserted
+		}
+	}
+	v.noteEpochs[n.id] = append(epochs, n.epoch)
+	return d, inserted
+}
+
+// NoteEpochs returns a copy of all recorded epochs for the given peer ID.
+func (v *View) NoteEpochs(id string) []uint64 {
+	v.noteMutex.RLock()
+	defer v.noteMutex.RUnlock()
+
+	if v.noteEpochs == nil {
+		return nil
+	}
+	epochs, ok := v.noteEpochs[id]
+	if !ok {
+		return nil
+	}
+	cp := make([]uint64, len(epochs))
+	copy(cp, epochs)
+	return cp
+}
+
+// RecordedEpochs returns a deep copy of the map of all peer IDs to their recorded note epochs.
+func (v *View) RecordedEpochs() map[string][]uint64 {
+	v.noteMutex.RLock()
+	defer v.noteMutex.RUnlock()
+
+	if v.noteEpochs == nil {
+		return nil
+	}
+	result := make(map[string][]uint64, len(v.noteEpochs))
+	for k, vSlice := range v.noteEpochs {
+		cp := make([]uint64, len(vSlice))
+		copy(cp, vSlice)
+		result[k] = cp
+	}
+	return result
+}
+
+// AddNote records a verified note into both the peer and the view's grow-only Note store.
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, error) {
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return false, ErrNotesNotInitialized
 	}
 	if p == nil {
 		return false, errors.New("peer is nil")
 	}
 	p.AddNote(mask, epoch, r, s)
-	n := p.Note()
-	if n == nil {
-		return false, errNoNote
+	n := &Note{
+		id:    p.Id,
+		mask:  mask,
+		epoch: epoch,
+		signature: &signature{
+			r: r,
+			s: s,
+		},
 	}
 	v.pruneActiveAccusations(p.Id, epoch)
-	return v.notes.AddItem(n, epoch), nil
+	_, inserted := v.recordNote(n)
+	return inserted, nil
 }
 
 // ViewStore returns the underlying ReverseIndexStore backing the full view.
@@ -851,10 +937,10 @@ func (v *View) signLocalNote(n *Note) error {
 	}
 
 	v.self.note = n
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return ErrNotesNotInitialized
 	}
-	v.notes.AddItem(n, n.epoch)
+	v.recordNote(n)
 
 	return nil
 }
@@ -1182,12 +1268,20 @@ func (v *View) RemoveTestFull(id string) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
-	if v.notes == nil {
+	if v.noteStore == nil {
 		return ErrNotesNotInitialized
 	}
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		v.viewStore.Remove(p)
-		v.notes.Remove(v.hashId(id))
+		v.noteMutex.Lock()
+		if epochs, ok := v.noteEpochs[id]; ok {
+			for _, ep := range epochs {
+				dummy := &Note{id: id, epoch: ep}
+				v.noteStore.Remove(dummy)
+			}
+			delete(v.noteEpochs, id)
+		}
+		v.noteMutex.Unlock()
 	}
 	return nil
 }
@@ -1216,6 +1310,32 @@ func (v *View) AddTestAccusation(a *pb.Accusation) {
 	}
 	d, _ := v.accusationStore.Insert(acc)
 	v.recordActiveAccusation(acc, d)
+}
+
+// ONLY for testing
+func (v *View) AddTestNote(p *Peer, priv *ecdsa.PrivateKey, epoch uint64) {
+	p.NewNote(priv, epoch)
+	note := p.Note()
+	if note != nil && note.signature != nil {
+		v.AddNote(p, note.mask, note.epoch, note.r, note.s)
+	}
+}
+
+// ONLY for testing
+func (v *View) ClearTestNote(p *Peer) {
+	if p == nil {
+		return
+	}
+	p.ClearNote()
+	if v.noteStore != nil {
+		v.noteMutex.Lock()
+		epochs := v.noteEpochs[p.Id]
+		delete(v.noteEpochs, p.Id)
+		v.noteMutex.Unlock()
+		for _, ep := range epochs {
+			v.noteStore.Remove(&Note{id: p.Id, epoch: ep})
+		}
+	}
 }
 
 // ONLY for testing

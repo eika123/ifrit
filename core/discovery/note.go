@@ -3,6 +3,7 @@ package discovery
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
+	"fmt"
 
 	"github.com/golang/protobuf/proto"
 	pb "github.com/joonnna/ifrit/protobuf"
@@ -13,6 +14,12 @@ type Note struct {
 	mask  uint32
 	id    string
 	*signature
+}
+
+// ID returns the canonical string identifier for this note,
+// binding (id, epoch).
+func (n Note) ID() string {
+	return fmt.Sprintf("%s:%d", n.id, n.epoch)
 }
 
 func (n Note) IsRingDisabled(ringNum, numRings uint32) bool {

@@ -573,7 +573,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 	peer2 := live[1]
 	peer3 := live[2]
 
-	peer2.ClearNote()
+	node.view.ClearTestNote(peer2)
 
 	acc := discovery.NewAccusation(2, peer3.Id, peer2.Id, 1, suite.privMap[peer2.Id])
 	node.view.AddTestAccusation(acc)
@@ -916,6 +916,72 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticAccusationReconciliati
 	require.True(suite.T(), spy.invoked, "Accusation reconciliation must use pluggable session factory")
 }
 
+func (suite *HandlerTestSuite) TestSpread_DivergentNoteDigestsReturnsOnlyMissingDelta() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	allDigests, err := node.view.NoteDigests()
+	require.NoError(suite.T(), err)
+	require.NotEmpty(suite.T(), allDigests)
+
+	// Caller has all digests except the first one
+	callerDigests := make([]uint64, 0, len(allDigests)-1)
+	for _, d := range allDigests[1:] {
+		callerDigests = append(callerDigests, uint64(d))
+	}
+
+	args := &proto.State{
+		FingerprintView:        []byte("divergent-fp"),
+		NoteDigests:            callerDigests,
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Len(suite.T(), reply.GetNotes(), 1, "Divergent note set must return only missing delta")
+
+	missingNote, found, err := node.view.NoteByDigest(allDigests[0])
+	require.NoError(suite.T(), err)
+	require.True(suite.T(), found)
+	require.Equal(suite.T(), missingNote.Id(), string(reply.GetNotes()[0].GetId()))
+	require.Equal(suite.T(), missingNote.Epoch(), reply.GetNotes()[0].GetEpoch())
+	require.Equal(suite.T(), node.ViewFingerprintBytes(), reply.GetFingerprintView())
+}
+
+type spyNoteSessionFactory struct {
+	invoked bool
+	inner   SessionFactory[*discovery.Note, DigestSymbol]
+}
+
+func (s *spyNoteSessionFactory) NewSession(store ReverseIndexStore[*discovery.Note, DigestSymbol]) (ReconcilerSession[*discovery.Note, DigestSymbol], error) {
+	s.invoked = true
+	return s.inner.NewSession(store)
+}
+
+func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticNoteReconciliation() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	spy := &spyNoteSessionFactory{
+		inner: NewNaiveSessionFactory[*discovery.Note, DigestSymbol](),
+	}
+	node.SetNoteSessionFactory(spy)
+	defer node.SetNoteSessionFactory(nil)
+
+	args := &proto.State{
+		FingerprintView:        []byte("divergent-fp"),
+		NoteDigests:            []uint64{},
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply)
+	require.True(suite.T(), spy.invoked, "Note reconciliation must use pluggable session factory")
+}
+
 func (suite *HandlerTestSuite) TestSpread_InSyncNotesReturnsZeroNotes() {
 	node := suite.n
 	succ, _ := node.view.MyRingNeighbours(1)
@@ -1142,7 +1208,7 @@ func addPeer(node *Node) (*discovery.Peer, *ecdsa.PrivateKey, error) {
 
 	node.view.AddLive(p)
 
-	p.NewNote(privKey, 1)
+	node.view.AddTestNote(p, privKey, 1)
 
 	return p, privKey, nil
 }

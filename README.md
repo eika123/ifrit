@@ -134,7 +134,7 @@ func  streamHandler(input, reply chan []byte) {
 ```
 To avoid untimely closing of channels, the application should implement a means of acknowledgement before closing any streams. 
 
-**NOTE**: The ``reply`` stream at the sending side must not block so that the resources can be released. See the fully-working example of streaming [here](https://github.com/joonnna/ifrit/blob/master/_examples/stream/streamingExample.go).
+**NOTE**: The ``reply`` stream at the sending side must not block so that the resources can be released. See the fully-working example of streaming [here](https://github.com/joonnna/ifrit/blob/master/examples/streaming/streamingExample.go).
 
 ### Config details
 Ifrit clients relies on a config file which should either be placed in your current working directory or  ``/var/tmp/ifrit_config``.
