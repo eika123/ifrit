@@ -970,6 +970,7 @@ func (suite *ViewTestSuite) TestLiveSubsetOfView() {
 
 func validCert(id string, pub crypto.PublicKey) *x509.Certificate {
 	return &x509.Certificate{
+		Raw:          []byte("raw-cert-" + id),
 		SubjectKeyId: []byte(id),
 		Subject: pkix.Name{
 			Locality: []string{"rpcAddr", "pingAddr", "httpAddr"},
@@ -1219,8 +1220,8 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	d1 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 1, mask: 1})
 	d2 := v.NoteStore().Digest(&Note{id: "test-peer-1", epoch: 2, mask: 1})
 
-	noteStore, err := v.Notes()
-	require.NoError(suite.T(), err)
+	noteStore := v.NoteStore()
+	require.NotNil(suite.T(), noteStore)
 	note, found := noteStore.GetByDigest(d2)
 	assert.True(suite.T(), found)
 	assert.Equal(suite.T(), uint64(2), note.Epoch())
@@ -1261,9 +1262,6 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	_, err = uninitV.Fingerprint()
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
-	_, err = uninitV.Notes()
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
 	_, err = uninitV.NoteDigests()
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
@@ -1278,4 +1276,81 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 
 	err = uninitV.RemoveTestFull("test")
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
+}
+
+func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
+	v := suite.v
+
+	// CertStore is seeded with self certificate
+	require.NotNil(suite.T(), v.CertStore())
+	assert.Equal(suite.T(), 1, v.CertStore().Size())
+
+	certFP, err := v.CertFingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), certFP)
+
+	noteFP, err := v.NoteFingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), noteFP)
+
+	// Combined view fingerprint equals NoteFP ^ CertFP
+	combinedFP, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), noteFP^certFP, combinedFP)
+
+	// Add a new peer with certificate via AddFull
+	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
+	require.NoError(suite.T(), err)
+	peerCert := validCert("peer-cert-1", privKey.Public())
+
+	err = v.AddFull("peer-cert-1", peerCert)
+	require.NoError(suite.T(), err)
+
+	assert.Equal(suite.T(), 2, v.CertStore().Size())
+
+	newCertFP, err := v.CertFingerprint()
+	require.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), certFP, newCertFP, "Adding certificate must alter cert fingerprint")
+
+	newCombinedFP, err := v.Fingerprint()
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), noteFP^newCertFP, newCombinedFP)
+
+	// Verify retrieval by digest
+	digests, err := v.CertDigests()
+	require.NoError(suite.T(), err)
+	require.Len(suite.T(), digests, 2)
+
+	certObj, found, err := v.CertByDigest(digests[0])
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), found)
+	assert.NotNil(suite.T(), certObj)
+
+	batchCerts, allFound, err := v.CertsByDigests(digests)
+	require.NoError(suite.T(), err)
+	assert.True(suite.T(), allFound)
+	assert.Len(suite.T(), batchCerts, 2)
+
+	// Remove peer
+	err = v.RemoveTestFull("peer-cert-1")
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), 1, v.CertStore().Size())
+
+	restoredCertFP, err := v.CertFingerprint()
+	require.NoError(suite.T(), err)
+	assert.Equal(suite.T(), certFP, restoredCertFP, "Removing peer must restore initial cert fingerprint")
+
+	// Uninitialized view errors
+	uninitV := &View{}
+	_, err = uninitV.CertFingerprint()
+	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
+
+	_, err = uninitV.CertDigests()
+	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
+
+	_, _, err = uninitV.CertByDigest(123)
+	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
+
+	_, _, err = uninitV.CertsByDigests([]revIdxStore.DigestSymbol{123})
+	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
 }

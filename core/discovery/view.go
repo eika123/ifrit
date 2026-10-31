@@ -32,6 +32,7 @@ var (
 	errObsIsNil            = errors.New("Observer was nil")
 	errWrongNote           = errors.New("Note does not belong to accused.")
 	ErrNotesNotInitialized = errors.New("Note store is not initialized")
+	ErrCertsNotInitialized = errors.New("Certificate store is not initialized")
 )
 
 func accusationRingKey(accused string, ringNum uint32) string {
@@ -49,6 +50,8 @@ type View struct {
 
 	noteStore   revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol]
 	activeNotes versionvector.VersionVectorMutable[string, *Note, revIdxStore.DigestSymbol]
+
+	certStore revIdxStore.ReverseIndexStore[*Certificate, revIdxStore.DigestSymbol]
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -156,6 +159,15 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
+	certStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Certificate]())
+	if err != nil {
+		return nil, err
+	}
+
+	if cert != nil && len(cert.Raw) > 0 {
+		certStore.Insert(&Certificate{raw: cert.Raw})
+	}
+
 	activeNotes := versionvector.NewVersionVectorMutable[string, *Note, revIdxStore.DigestSymbol](
 		func(n *Note) string { return n.id },
 		func(item versionvector.VersionedItem[*Note]) revIdxStore.DigestSymbol {
@@ -178,6 +190,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		activeAccusations: activeAccusations,
 		noteStore:         noteStore,
 		activeNotes:       activeNotes,
+		certStore:         certStore,
 		timeoutMap:        make(map[string]*timeout),
 		maxByz:            maxByz,
 		currGossipRing:    1,
@@ -308,30 +321,81 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 	}
 
 	v.viewStore.AddElement(p)
+	if v.certStore != nil && cert != nil && len(cert.Raw) > 0 {
+		v.certStore.Insert(&Certificate{raw: cert.Raw})
+	}
 
 	return nil
 }
 
-// Fingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
+// Fingerprint returns the commutative XOR fingerprint of the view,
+// combining the note store fingerprint and certificate store fingerprint (XOR).
+// Returns ErrNotesNotInitialized if noteStore is uninitialized, or ErrCertsNotInitialized if certStore is uninitialized.
 func (v *View) Fingerprint() (revIdxStore.DigestSymbol, error) {
+	if v.noteStore == nil {
+		return 0, ErrNotesNotInitialized
+	}
+	if v.certStore == nil {
+		return 0, ErrCertsNotInitialized
+	}
+	return v.noteStore.Fingerprint().XOR(v.certStore.Fingerprint()), nil
+}
+
+// NoteFingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
+// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
+func (v *View) NoteFingerprint() (revIdxStore.DigestSymbol, error) {
 	if v.noteStore == nil {
 		return 0, ErrNotesNotInitialized
 	}
 	return v.noteStore.Fingerprint(), nil
 }
 
+// CertStore returns the underlying ReverseIndexStore backing peer certificates.
+func (v *View) CertStore() revIdxStore.ReverseIndexStore[*Certificate, revIdxStore.DigestSymbol] {
+	return v.certStore
+}
+
+// CertFingerprint returns the commutative XOR fingerprint of all peer certificates in the view (including self).
+// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
+func (v *View) CertFingerprint() (revIdxStore.DigestSymbol, error) {
+	if v.certStore == nil {
+		return 0, ErrCertsNotInitialized
+	}
+	return v.certStore.Fingerprint(), nil
+}
+
+// CertDigests returns the digests of all certificates currently in the cert store.
+// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
+func (v *View) CertDigests() ([]revIdxStore.DigestSymbol, error) {
+	if v.certStore == nil {
+		return nil, ErrCertsNotInitialized
+	}
+	return v.certStore.DigestsCopy(), nil
+}
+
+// CertByDigest retrieves a Certificate by its digest symbol from the cert store.
+// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
+func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*Certificate, bool, error) {
+	if v.certStore == nil {
+		return nil, false, ErrCertsNotInitialized
+	}
+	cert, found := v.certStore.GetByDigest(d)
+	return cert, found, nil
+}
+
+// CertsByDigests retrieves multiple Certificates by their digests from the cert store in a single operation.
+// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
+func (v *View) CertsByDigests(digests []revIdxStore.DigestSymbol) ([]*Certificate, bool, error) {
+	if v.certStore == nil {
+		return nil, false, ErrCertsNotInitialized
+	}
+	certs, found := v.certStore.GetByDigests(digests)
+	return certs, found, nil
+}
+
 // NoteStore returns the underlying ReverseIndexStore backing peer notes.
 func (v *View) NoteStore() revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol] {
 	return v.noteStore
-}
-
-// Notes returns the underlying ReverseIndexStore backing peer notes, or ErrNotesNotInitialized if uninitialized.
-func (v *View) Notes() (revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol], error) {
-	if v.noteStore == nil {
-		return nil, ErrNotesNotInitialized
-	}
-	return v.noteStore, nil
 }
 
 // NoteDigests returns the digests of all notes currently contributing to the view fingerprint.
@@ -1261,8 +1325,14 @@ func (v *View) RemoveTestFull(id string) error {
 	if v.noteStore == nil {
 		return ErrNotesNotInitialized
 	}
+	if v.certStore == nil {
+		return ErrCertsNotInitialized
+	}
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		v.viewStore.Remove(p)
+		if p.cert != nil && len(p.cert.Raw) > 0 {
+			v.certStore.Remove(&Certificate{raw: p.cert.Raw})
+		}
 		if v.activeNotes != nil {
 			v.activeNotes.Remove(id)
 		}
@@ -1278,6 +1348,9 @@ func (v *View) RemoveTestFull(id string) error {
 // ONLY for testing
 func (v *View) AddTestPeer(p *Peer) {
 	v.viewStore.AddElement(p)
+	if v.certStore != nil && p.cert != nil && len(p.cert.Raw) > 0 {
+		v.certStore.Insert(&Certificate{raw: p.cert.Raw})
+	}
 }
 
 // ONLY for testing

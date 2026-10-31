@@ -82,6 +82,9 @@ type Node struct {
 	noteSessionFactory      SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]
 	noteSessionFactoryMutex sync.RWMutex
 
+	certSessionFactory      SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]
+	certSessionFactoryMutex sync.RWMutex
+
 	dataReconciler      DataReconciler
 	dataReconcilerMutex sync.RWMutex
 
@@ -376,6 +379,48 @@ func (n *Node) NoteDigestsUint64() []uint64 {
 	return revIdxStore.AsUint64Slice(n.NoteDigests())
 }
 
+// CertStore returns the underlying ReverseIndexStore backing peer certificates.
+func (n *Node) CertStore() revIdxStore.ReverseIndexStore[*discovery.Certificate, revIdxStore.DigestSymbol] {
+	return n.view.CertStore()
+}
+
+// CertFingerprint returns the commutative XOR fingerprint of all certificates in the view.
+func (n *Node) CertFingerprint() revIdxStore.DigestSymbol {
+	fp, err := n.view.CertFingerprint()
+	if err != nil {
+		log.Error("Failed to get cert fingerprint", "err", err)
+		return 0
+	}
+	return fp
+}
+
+// CertFingerprintBytes returns the 8-byte big-endian representation of the certificate fingerprint.
+func (n *Node) CertFingerprintBytes() []byte {
+	fp, err := n.view.CertFingerprint()
+	if err != nil {
+		log.Error("Failed to get cert fingerprint", "err", err)
+		return nil
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(fp))
+	return buf[:]
+}
+
+// CertDigests returns the digest symbols of all local certificates.
+func (n *Node) CertDigests() []revIdxStore.DigestSymbol {
+	digests, err := n.view.CertDigests()
+	if err != nil {
+		log.Error("Failed to get cert digests", "err", err)
+		return nil
+	}
+	return digests
+}
+
+// CertDigestsUint64 returns the 64-bit uint64 digests of all local certificates for wire serialization.
+func (n *Node) CertDigestsUint64() []uint64 {
+	return revIdxStore.AsUint64Slice(n.CertDigests())
+}
+
 // DataDigests returns the local digest symbols, or nil if no reconciler is registered.
 func (n *Node) DataDigests() []revIdxStore.DigestSymbol {
 	n.dataReconcilerMutex.RLock()
@@ -440,6 +485,19 @@ func (n *Node) getNoteSessionFactory() SessionFactory[*discovery.Note, revIdxSto
 	n.noteSessionFactoryMutex.RLock()
 	defer n.noteSessionFactoryMutex.RUnlock()
 	return n.noteSessionFactory
+}
+
+// SetCertSessionFactory allows specifying a custom reconciliation session factory for certificates.
+func (n *Node) SetCertSessionFactory(f SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]) {
+	n.certSessionFactoryMutex.Lock()
+	defer n.certSessionFactoryMutex.Unlock()
+	n.certSessionFactory = f
+}
+
+func (n *Node) getCertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
+	n.certSessionFactoryMutex.RLock()
+	defer n.certSessionFactoryMutex.RUnlock()
+	return n.certSessionFactory
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

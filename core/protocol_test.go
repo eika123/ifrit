@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
@@ -287,4 +288,34 @@ func TestProtocol_GossipSkipsNonDivergentPeers(t *testing.T) {
 	// Only p2 (divergent) should have been gossiped with; p1 was skipped
 	assert.NotContains(t, comm.gossipedAddrs, "peer-1-addr")
 	assert.Contains(t, comm.gossipedAddrs, "peer-2-addr")
+}
+
+func TestNode_CertificateStoreAndFingerprinting(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	cert := genCert(priv, 1)
+
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(t, err)
+	defer n.Stop()
+
+	// Initial certificate store contains self certificate
+	require.NotNil(t, n.CertStore())
+	assert.Equal(t, 1, n.CertStore().Size())
+	assert.NotEqual(t, revIdxStore.DigestSymbol(0), n.CertFingerprint())
+	assert.Len(t, n.CertFingerprintBytes(), 8)
+
+	digests := n.CertDigests()
+	assert.Len(t, digests, 1)
+	assert.Len(t, n.CertDigestsUint64(), 1)
+
+	// View fingerprint combines note store and cert store
+	expectedViewFp := n.view.NoteStore().Fingerprint().XOR(n.CertFingerprint())
+	assert.Equal(t, expectedViewFp, n.ViewFingerprint())
+
+	// Pluggable session factory
+	assert.Nil(t, n.getCertSessionFactory())
+	customFactory := NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
+	n.SetCertSessionFactory(customFactory)
+	assert.Equal(t, customFactory, n.getCertSessionFactory())
 }
