@@ -198,40 +198,50 @@ func (n *Node) handleExternalGossip(args *pb.State, reply *pb.StateResponse) {
 	}
 }
 
-func (n *Node) reconcileCertificates(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
-	callerFp := args.GetFingerprintCertificates()
-	if callerFp == nil {
-		return
+// reconcileStore runs a generic reconciliation round against store using the provided constructor closure.
+func reconcileStore[T any, M any](
+	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
+	callerFp []byte,
+	localFp []byte,
+	incomingDigests []uint64,
+	constructor SessionConstructor[T, revIdxStore.DigestSymbol],
+	toPb func(T) M,
+) (localElements []T, localDigests, requestedDigests []uint64, ok bool) {
+	if callerFp == nil || bytes.Equal(callerFp, localFp) || store == nil || constructor == nil {
+		return nil, nil, nil, false
 	}
 
-	if bytes.Equal(callerFp, n.CertFingerprintBytes()) {
-		return
-	}
-
-	certStore := n.view.CertStore()
-	if certStore == nil {
-		return
-	}
-
-	factory := n.getCertSessionFactory()
-	session, err := factory.NewSession(certStore)
+	session, err := constructor(store)
 	if err != nil {
-		log.Error("Failed to create certificate reconciliation session", "err", err)
-		return
+		log.Error("Failed to create reconciliation session", "err", err)
+		return nil, nil, nil, false
 	}
 
-	incomingDigests := revIdxStore.AsDigestSymbols(args.GetCertificateDigests())
-	localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
+	incomingSymbols := revIdxStore.AsDigestSymbols(incomingDigests)
+	delta, locDigs, reqDigs := ReconcileStoreWithSession(session, incomingSymbols)
 
-	if sess != nil {
-		sess.SetCertSession(session)
+	return delta, revIdxStore.AsUint64Slice(locDigs), revIdxStore.AsUint64Slice(reqDigs), true
+}
+
+func (n *Node) reconcileCertificates(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
+	protoDef := n.ReconciliationProtocol()
+	localDelta, localDigests, requestedDigests, executed := reconcileStore(
+		n.view.CertStore(),
+		args.GetFingerprintCertificates(),
+		n.CertFingerprintBytes(),
+		args.GetCertificateDigests(),
+		protoDef.NewCertSession,
+		(*discovery.Certificate).ToPbMsg,
+	)
+	if !executed {
+		return
 	}
 
 	for _, cert := range localDelta {
 		reply.Certificates = append(reply.Certificates, cert.ToPbMsg())
 	}
-	reply.RequestedCertificateDigests = revIdxStore.AsUint64Slice(requestedDigests)
-	reply.AvailableCertificateDigests = revIdxStore.AsUint64Slice(localDigests)
+	reply.RequestedCertificateDigests = requestedDigests
+	reply.AvailableCertificateDigests = localDigests
 }
 
 func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, error) {
@@ -334,35 +344,24 @@ func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 func (n *Node) reconcileAccusations(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
 	callerFp := args.GetFingerprintAccusations()
 	if callerFp != nil {
-		if bytes.Equal(callerFp, n.AccusationFingerprintBytes()) {
+		protoDef := n.ReconciliationProtocol()
+		localDelta, localDigests, requestedDigests, executed := reconcileStore(
+			n.view.AccusationStore(),
+			callerFp,
+			n.AccusationFingerprintBytes(),
+			args.GetAccusationDigests(),
+			protoDef.NewAccSession,
+			(*discovery.Accusation).ToPbMsg,
+		)
+		if !executed {
 			return
 		}
 
-		accStore := n.view.AccusationStore()
-		if accStore == nil {
-			return
-		}
-
-		factory := n.getAccusationSessionFactory()
-		session, err := factory.NewSession(accStore)
-		if err != nil {
-			log.Error("Failed to create accusation reconciliation session", "err", err)
-			return
-		}
-
-		incomingDigests := revIdxStore.AsDigestSymbols(args.GetAccusationDigests())
-		localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
-
-		if sess != nil {
-			sess.SetAccSession(session)
-		}
-
-		// actually local accusations held on this node
 		for _, acc := range localDelta {
 			reply.Accusations = append(reply.Accusations, acc.ToPbMsg())
 		}
-		reply.RequestedAccusationDigests = revIdxStore.AsUint64Slice(requestedDigests)
-		reply.AvailableAccusationDigests = revIdxStore.AsUint64Slice(localDigests)
+		reply.RequestedAccusationDigests = requestedDigests
+		reply.AvailableAccusationDigests = localDigests
 		return
 	}
 
@@ -375,27 +374,17 @@ func (n *Node) reconcileAccusations(sess *PeerReconcileSession, args *pb.State, 
 func (n *Node) reconcileNotes(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
 	callerFp := args.GetFingerprintView()
 	if callerFp != nil {
-		if bytes.Equal(callerFp, n.ViewFingerprintBytes()) {
+		protoDef := n.ReconciliationProtocol()
+		localDelta, localDigests, requestedDigests, executed := reconcileStore(
+			n.view.NoteStore(),
+			callerFp,
+			n.ViewFingerprintBytes(),
+			args.GetNoteDigests(),
+			protoDef.NewNoteSession,
+			(*discovery.Note).ToPbMsg,
+		)
+		if !executed {
 			return
-		}
-
-		noteStore := n.view.NoteStore()
-		if noteStore == nil {
-			return
-		}
-
-		factory := n.getNoteSessionFactory()
-		session, err := factory.NewSession(noteStore)
-		if err != nil {
-			log.Error("Failed to create note reconciliation session", "err", err)
-			return
-		}
-
-		incomingDigests := revIdxStore.AsDigestSymbols(args.GetNoteDigests())
-		localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
-
-		if sess != nil {
-			sess.SetNoteSession(session)
 		}
 
 		seenCerts := make(map[string]struct{})
@@ -413,8 +402,8 @@ func (n *Node) reconcileNotes(sess *PeerReconcileSession, args *pb.State, reply 
 				}
 			}
 		}
-		reply.RequestedNoteDigests = revIdxStore.AsUint64Slice(requestedDigests)
-		reply.AvailableNoteDigests = revIdxStore.AsUint64Slice(localDigests)
+		reply.RequestedNoteDigests = requestedDigests
+		reply.AvailableNoteDigests = localDigests
 		return
 	}
 

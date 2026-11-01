@@ -1,11 +1,33 @@
 package core
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/joonnna/ifrit/core/discovery"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+)
 
 type NaiveSessionFactory[T any, S Symbol[S]] struct{}
 
 func NewNaiveSessionFactory[T any, S Symbol[S]]() *NaiveSessionFactory[T, S] {
 	return &NaiveSessionFactory[T, S]{}
+}
+
+// NaiveSessionConstructor returns a higher-order SessionConstructor closure for NaiveSession.
+func NaiveSessionConstructor[T any, S Symbol[S]]() SessionConstructor[T, S] {
+	return func(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error) {
+		return NewNaiveSession(store)
+	}
+}
+
+func init() {
+	RegisterProtocol(ProtocolDefinition{
+		Name:           "naive",
+		Description:    "Naive full set digest exchange",
+		NewCertSession: NaiveSessionConstructor[*discovery.Certificate, revIdxStore.DigestSymbol](),
+		NewNoteSession: NaiveSessionConstructor[*discovery.Note, revIdxStore.DigestSymbol](),
+		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol](),
+	})
 }
 
 // NewSession implements SessionFactory[T, S]

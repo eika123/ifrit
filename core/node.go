@@ -76,14 +76,8 @@ type Node struct {
 	streamHandler      streamMsg
 	streamHandlerMutex sync.RWMutex
 
-	accusationSessionFactory      SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]
-	accusationSessionFactoryMutex sync.RWMutex
-
-	noteSessionFactory      SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]
-	noteSessionFactoryMutex sync.RWMutex
-
-	certSessionFactory      SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]
-	certSessionFactoryMutex sync.RWMutex
+	reconProtocol      ProtocolDefinition
+	reconProtocolMutex sync.RWMutex
 
 	dataReconciler      DataReconciler
 	dataReconcilerMutex sync.RWMutex
@@ -185,16 +179,13 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 	}
 	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
-	strategy := viper.GetString("reconciliation_strategy")
-	provider := SessionFactoryProviderForStrategy(strategy)
-	if provider == nil {
-		provider = DefaultSessionFactoryProvider()
-	}
-
 	staleTimeout := time.Second * time.Duration(viper.GetInt32("session_timeout"))
 	if staleTimeout <= 0 {
 		staleTimeout = 30 * time.Second
 	}
+
+	strategy := viper.GetString("reconciliation_strategy")
+	protoDef := ResolveProtocol(strategy)
 
 	n := &Node{
 		exitChan:       make(chan bool, 1),
@@ -215,10 +206,8 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		self: v.Self(),
 		view: v,
 
-		sessionManager:           NewPeerSessionManager(staleTimeout),
-		certSessionFactory:       provider.CertSessionFactory(),
-		noteSessionFactory:       provider.NoteSessionFactory(),
-		accusationSessionFactory: provider.AccusationSessionFactory(),
+		sessionManager: NewPeerSessionManager(staleTimeout),
+		reconProtocol:  protoDef,
 
 		// Visualizer specific
 		useViz: viper.GetBool("use_viz"),
@@ -482,54 +471,18 @@ func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, revIdxStore.Di
 	n.SetDataReconciler(NewTypedDataReconciler(store, nil))
 }
 
-// SetAccusationSessionFactory allows the Fireflies layer (e.g. tests or internal protocol configuration)
-// to specify a custom reconciliation session factory (e.g. RIBLTSessionFactory or NaiveSessionFactory).
-func (n *Node) SetAccusationSessionFactory(f SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]) {
-	n.accusationSessionFactoryMutex.Lock()
-	defer n.accusationSessionFactoryMutex.Unlock()
-	n.accusationSessionFactory = f
+// SetReconciliationProtocol configures the node's set reconciliation protocol.
+func (n *Node) SetReconciliationProtocol(def ProtocolDefinition) {
+	n.reconProtocolMutex.Lock()
+	defer n.reconProtocolMutex.Unlock()
+	n.reconProtocol = def
 }
 
-func (n *Node) getAccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
-	n.accusationSessionFactoryMutex.RLock()
-	defer n.accusationSessionFactoryMutex.RUnlock()
-	if n.accusationSessionFactory != nil {
-		return n.accusationSessionFactory
-	}
-	return DefaultSessionFactoryProvider().AccusationSessionFactory()
-}
-
-// SetNoteSessionFactory allows the Fireflies layer (e.g. tests or internal protocol configuration)
-// to specify a custom reconciliation session factory (e.g. RIBLTSessionFactory or NaiveSessionFactory) for notes.
-func (n *Node) SetNoteSessionFactory(f SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]) {
-	n.noteSessionFactoryMutex.Lock()
-	defer n.noteSessionFactoryMutex.Unlock()
-	n.noteSessionFactory = f
-}
-
-func (n *Node) getNoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
-	n.noteSessionFactoryMutex.RLock()
-	defer n.noteSessionFactoryMutex.RUnlock()
-	if n.noteSessionFactory != nil {
-		return n.noteSessionFactory
-	}
-	return DefaultSessionFactoryProvider().NoteSessionFactory()
-}
-
-// SetCertSessionFactory allows specifying a custom reconciliation session factory for certificates.
-func (n *Node) SetCertSessionFactory(f SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]) {
-	n.certSessionFactoryMutex.Lock()
-	defer n.certSessionFactoryMutex.Unlock()
-	n.certSessionFactory = f
-}
-
-func (n *Node) getCertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
-	n.certSessionFactoryMutex.RLock()
-	defer n.certSessionFactoryMutex.RUnlock()
-	if n.certSessionFactory != nil {
-		return n.certSessionFactory
-	}
-	return DefaultSessionFactoryProvider().CertSessionFactory()
+// ReconciliationProtocol returns the node's active set reconciliation protocol.
+func (n *Node) ReconciliationProtocol() ProtocolDefinition {
+	n.reconProtocolMutex.RLock()
+	defer n.reconProtocolMutex.RUnlock()
+	return n.reconProtocol
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

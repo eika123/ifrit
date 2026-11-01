@@ -12,8 +12,8 @@ type DataReconciler interface {
 }
 
 type typedDataReconciler[T any] struct {
-	store   ReverseIndexStore[T, revIdxStore.DigestSymbol]
-	factory SessionFactory[T, revIdxStore.DigestSymbol]
+	store       ReverseIndexStore[T, revIdxStore.DigestSymbol]
+	constructor SessionConstructor[T, revIdxStore.DigestSymbol]
 }
 
 func (r *typedDataReconciler[T]) Digests() []revIdxStore.DigestSymbol {
@@ -34,11 +34,7 @@ func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestS
 	if r.store == nil {
 		return nil, nil, ErrNilStore
 	}
-	factory := r.factory
-	if factory == nil {
-		factory = DefaultSessionFactory[T, revIdxStore.DigestSymbol]()
-	}
-	session, err := factory.NewSession(r.store)
+	session, err := r.constructor(r.store)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -46,16 +42,20 @@ func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestS
 	return session.LocalDigests(), session.RemoteDigests(), nil
 }
 
-// NewTypedDataReconciler wraps an application's typed store and session factory into a DataReconciler.
+// NewTypedDataReconciler wraps an application's typed store into a DataReconciler.
+// If constructor is omitted or nil, it defaults to the configured default session constructor.
 func NewTypedDataReconciler[T any](
 	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
-	factory SessionFactory[T, revIdxStore.DigestSymbol],
+	constructor ...SessionConstructor[T, revIdxStore.DigestSymbol],
 ) DataReconciler {
-	if factory == nil {
-		factory = DefaultSessionFactory[T, revIdxStore.DigestSymbol]()
+	var c SessionConstructor[T, revIdxStore.DigestSymbol]
+	if len(constructor) > 0 && constructor[0] != nil {
+		c = constructor[0]
+	} else {
+		c = DefaultSessionConstructor[T]()
 	}
 	return &typedDataReconciler[T]{
-		store:   store,
-		factory: factory,
+		store:       store,
+		constructor: c,
 	}
 }

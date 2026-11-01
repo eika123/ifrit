@@ -1073,26 +1073,20 @@ func (suite *HandlerTestSuite) TestSpread_DivergentAccusationDigestsReturnsOnlyM
 	require.Equal(suite.T(), node.AccusationFingerprintBytes(), reply.GetFingerprintAccusations())
 }
 
-type spyAccusationSessionFactory struct {
-	invoked bool
-	inner   SessionFactory[*discovery.Accusation, DigestSymbol]
-}
-
-func (s *spyAccusationSessionFactory) NewSession(store ReverseIndexStore[*discovery.Accusation, DigestSymbol]) (ReconcilerSession[*discovery.Accusation, DigestSymbol], error) {
-	s.invoked = true
-	return s.inner.NewSession(store)
-}
-
 func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticAccusationReconciliation() {
 	node := suite.n
 	succ, _ := node.view.MyRingNeighbours(1)
 	ctx := peerContext(succ)
 
-	spy := &spyAccusationSessionFactory{
-		inner: NewNaiveSessionFactory[*discovery.Accusation, DigestSymbol](),
+	invoked := false
+	origProto := node.ReconciliationProtocol()
+	customProto := origProto
+	customProto.NewAccSession = func(store ReverseIndexStore[*discovery.Accusation, DigestSymbol]) (ReconcilerSession[*discovery.Accusation, DigestSymbol], error) {
+		invoked = true
+		return NewNaiveSession(store)
 	}
-	node.SetAccusationSessionFactory(spy)
-	defer node.SetAccusationSessionFactory(nil)
+	node.SetReconciliationProtocol(customProto)
+	defer node.SetReconciliationProtocol(origProto)
 
 	args := &proto.State{
 		FingerprintAccusations: []byte("divergent-fp"),
@@ -1103,7 +1097,7 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticAccusationReconciliati
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
 	require.NotNil(suite.T(), reply)
-	require.True(suite.T(), spy.invoked, "Accusation reconciliation must use pluggable session factory")
+	require.True(suite.T(), invoked, "Accusation reconciliation must use pluggable session constructor")
 }
 
 func (suite *HandlerTestSuite) TestSpread_DivergentNoteDigestsReturnsOnlyMissingDelta() {
@@ -1139,26 +1133,20 @@ func (suite *HandlerTestSuite) TestSpread_DivergentNoteDigestsReturnsOnlyMissing
 	require.Equal(suite.T(), node.ViewFingerprintBytes(), reply.GetFingerprintView())
 }
 
-type spyNoteSessionFactory struct {
-	invoked bool
-	inner   SessionFactory[*discovery.Note, DigestSymbol]
-}
-
-func (s *spyNoteSessionFactory) NewSession(store ReverseIndexStore[*discovery.Note, DigestSymbol]) (ReconcilerSession[*discovery.Note, DigestSymbol], error) {
-	s.invoked = true
-	return s.inner.NewSession(store)
-}
-
 func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticNoteReconciliation() {
 	node := suite.n
 	succ, _ := node.view.MyRingNeighbours(1)
 	ctx := peerContext(succ)
 
-	spy := &spyNoteSessionFactory{
-		inner: NewNaiveSessionFactory[*discovery.Note, DigestSymbol](),
+	invoked := false
+	origProto := node.ReconciliationProtocol()
+	customProto := origProto
+	customProto.NewNoteSession = func(store ReverseIndexStore[*discovery.Note, DigestSymbol]) (ReconcilerSession[*discovery.Note, DigestSymbol], error) {
+		invoked = true
+		return NewNaiveSession(store)
 	}
-	node.SetNoteSessionFactory(spy)
-	defer node.SetNoteSessionFactory(nil)
+	node.SetReconciliationProtocol(customProto)
+	defer node.SetReconciliationProtocol(origProto)
 
 	args := &proto.State{
 		FingerprintView:        []byte("divergent-fp"),
@@ -1169,7 +1157,7 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticNoteReconciliation() {
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
 	require.NotNil(suite.T(), reply)
-	require.True(suite.T(), spy.invoked, "Note reconciliation must use pluggable session factory")
+	require.True(suite.T(), invoked, "Note reconciliation must use pluggable session constructor")
 }
 
 func (suite *HandlerTestSuite) TestSpread_InSyncNotesReturnsZeroNotes() {
@@ -1338,26 +1326,20 @@ func (suite *HandlerTestSuite) TestSpread_DivergentCertificateDigestsReturnsOnly
 	require.Equal(suite.T(), []uint64{uint64(allDigests[0])}, reply.GetAvailableCertificateDigests(), "Node must offer available delta digest")
 }
 
-type spyCertSessionFactory struct {
-	invoked bool
-	inner   SessionFactory[*discovery.Certificate, DigestSymbol]
-}
-
-func (s *spyCertSessionFactory) NewSession(store ReverseIndexStore[*discovery.Certificate, DigestSymbol]) (ReconcilerSession[*discovery.Certificate, DigestSymbol], error) {
-	s.invoked = true
-	return s.inner.NewSession(store)
-}
-
 func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticCertReconciliation() {
 	node := suite.n
 	succ, _ := node.view.MyRingNeighbours(1)
 	ctx := peerContext(succ)
 
-	spy := &spyCertSessionFactory{
-		inner: NewNaiveSessionFactory[*discovery.Certificate, DigestSymbol](),
+	invoked := false
+	origProto := node.ReconciliationProtocol()
+	customProto := origProto
+	customProto.NewCertSession = func(store ReverseIndexStore[*discovery.Certificate, DigestSymbol]) (ReconcilerSession[*discovery.Certificate, DigestSymbol], error) {
+		invoked = true
+		return NewNaiveSession(store)
 	}
-	node.SetCertSessionFactory(spy)
-	defer node.SetCertSessionFactory(nil)
+	node.SetReconciliationProtocol(customProto)
+	defer node.SetReconciliationProtocol(origProto)
 
 	args := &proto.State{
 		FingerprintCertificates: []byte("divergent-cert-fp"),
@@ -1369,7 +1351,7 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticCertReconciliation() {
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
 	require.NotNil(suite.T(), reply)
-	require.True(suite.T(), spy.invoked, "Certificate reconciliation must use pluggable session factory")
+	require.True(suite.T(), invoked, "Certificate reconciliation must use pluggable session constructor")
 }
 
 func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {

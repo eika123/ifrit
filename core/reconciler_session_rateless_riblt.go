@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/joonnna/ifrit/core/discovery"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/yangl1996/riblt"
 )
@@ -99,6 +100,23 @@ func NewRIBLTSessionFactory[T any]() *RIBLTSessionFactory[T, revIdxStore.DigestS
 			return revIdxStore.DigestSymbol(binary.LittleEndian.Uint64(b))
 		},
 	)
+}
+
+// RIBLTSessionConstructor returns a higher-order SessionConstructor closure for RIBLTSession with 64-bit digest symbols.
+func RIBLTSessionConstructor[T any]() SessionConstructor[T, revIdxStore.DigestSymbol] {
+	return func(store ReverseIndexStore[T, revIdxStore.DigestSymbol]) (ReconcilerSession[T, revIdxStore.DigestSymbol], error) {
+		return NewRIBLTSessionFactory[T]().NewSession(store)
+	}
+}
+
+func init() {
+	RegisterProtocol(ProtocolDefinition{
+		Name:           "riblt",
+		Description:    "Rateless Invertible Bloom Lookup Table set reconciliation",
+		NewCertSession: RIBLTSessionConstructor[*discovery.Certificate](),
+		NewNoteSession: RIBLTSessionConstructor[*discovery.Note](),
+		NewAccSession:  RIBLTSessionConstructor[*discovery.Accusation](),
+	})
 }
 
 // NewSession implements SessionFactory[T, S]

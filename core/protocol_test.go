@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
@@ -313,9 +312,8 @@ func TestNode_CertificateStoreAndFingerprinting(t *testing.T) {
 	expectedViewFp := n.view.NoteStore().Fingerprint().XOR(n.CertFingerprint())
 	assert.Equal(t, expectedViewFp, n.ViewFingerprint())
 
-	// Pluggable session factory
-	assert.NotNil(t, n.getCertSessionFactory())
-	customFactory := NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
-	n.SetCertSessionFactory(customFactory)
-	assert.Equal(t, customFactory, n.getCertSessionFactory())
+	// Pluggable reconciliation protocol
+	protoDef := n.ReconciliationProtocol()
+	assert.Equal(t, "naive", protoDef.Name)
+	assert.NotNil(t, protoDef.NewCertSession)
 }

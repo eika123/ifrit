@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/spf13/viper"
 )
 
 // ErrNilStore indicates that a nil store was provided where an active store is required.
@@ -34,89 +34,111 @@ type ReconcilerSession[T, S any] interface {
 	DiffDigests() []S   // Union of RemoteDigests() and LocalDigests() (the symmetric difference)
 }
 
+// SessionConstructor creates an active reconciliation session backed by a store snapshot/view.
+type SessionConstructor[T any, S Symbol[S]] func(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
+
 // SessionFactory creates a new reconciliation session backed by a store snapshot/view.
 type SessionFactory[T any, S Symbol[S]] interface {
 	NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
 }
 
-// SessionFactoryProvider provides SessionFactory instances for core control stores
-// (Certificates, Notes, Accusations).
-type SessionFactoryProvider interface {
-	CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]
-	NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]
-	AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]
-}
-
-// NaiveSessionFactoryProvider constructs naive exchange session factories for all control stores.
-type NaiveSessionFactoryProvider struct{}
-
-func (NaiveSessionFactoryProvider) CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
-	return NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
-}
-
-func (NaiveSessionFactoryProvider) NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
-	return NewNaiveSessionFactory[*discovery.Note, revIdxStore.DigestSymbol]()
-}
-
-func (NaiveSessionFactoryProvider) AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
-	return NewNaiveSessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]()
-}
-
-// RIBLTSessionFactoryProvider constructs rateless IBLT session factories for all control stores.
-type RIBLTSessionFactoryProvider struct{}
-
-func (RIBLTSessionFactoryProvider) CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
-	return NewRIBLTSessionFactory[*discovery.Certificate]()
-}
-
-func (RIBLTSessionFactoryProvider) NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
-	return NewRIBLTSessionFactory[*discovery.Note]()
-}
-
-func (RIBLTSessionFactoryProvider) AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
-	return NewRIBLTSessionFactory[*discovery.Accusation]()
+// ProtocolDefinition defines a pluggable set reconciliation protocol and provides
+// typed session constructors for each control store type.
+type ProtocolDefinition struct {
+	Name           string
+	Description    string
+	NewCertSession SessionConstructor[*discovery.Certificate, revIdxStore.DigestSymbol]
+	NewNoteSession SessionConstructor[*discovery.Note, revIdxStore.DigestSymbol]
+	NewAccSession  SessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol]
 }
 
 var (
-	defaultSessionFactoryProviderMu sync.RWMutex
-	defaultSessionFactoryProvider   SessionFactoryProvider = NaiveSessionFactoryProvider{}
+	protocolRegistryMu sync.RWMutex
+	protocolRegistry   = make(map[string]ProtocolDefinition)
+	defaultProtocolMu  sync.RWMutex
+	defaultProtocol    = "naive"
 )
 
-// DefaultSessionFactoryProvider returns the current package-level / compile-time default session factory provider.
-func DefaultSessionFactoryProvider() SessionFactoryProvider {
-	defaultSessionFactoryProviderMu.RLock()
-	defer defaultSessionFactoryProviderMu.RUnlock()
-	return defaultSessionFactoryProvider
+// RegisterProtocol registers a reconciliation protocol in the global registry.
+func RegisterProtocol(def ProtocolDefinition) {
+	protocolRegistryMu.Lock()
+	defer protocolRegistryMu.Unlock()
+	protocolRegistry[strings.ToLower(strings.TrimSpace(def.Name))] = def
 }
 
-// SetDefaultSessionFactoryProvider updates the package-level default session factory provider.
-func SetDefaultSessionFactoryProvider(p SessionFactoryProvider) {
-	if p == nil {
-		return
+// GetProtocol retrieves a protocol definition by name.
+func GetProtocol(name string) (ProtocolDefinition, bool) {
+	protocolRegistryMu.RLock()
+	defer protocolRegistryMu.RUnlock()
+	p, ok := protocolRegistry[strings.ToLower(strings.TrimSpace(name))]
+	return p, ok
+}
+
+// AvailableProtocols returns a slice of all registered protocol names.
+func AvailableProtocols() []string {
+	protocolRegistryMu.RLock()
+	defer protocolRegistryMu.RUnlock()
+	res := make([]string, 0, len(protocolRegistry))
+	for k := range protocolRegistry {
+		res = append(res, k)
 	}
-	defaultSessionFactoryProviderMu.Lock()
-	defer defaultSessionFactoryProviderMu.Unlock()
-	defaultSessionFactoryProvider = p
+	return res
 }
 
-// DefaultSessionFactory returns a default session factory for generic type T and symbol S.
-// By default, it returns a NaiveSessionFactory.
+// DefaultProtocolName returns the default protocol name configured via viper ("reconciliation_strategy")
+// or falling back to the package-level default.
+func DefaultProtocolName() string {
+	if v := viper.GetString("reconciliation_strategy"); strings.TrimSpace(v) != "" {
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+	defaultProtocolMu.RLock()
+	defer defaultProtocolMu.RUnlock()
+	return defaultProtocol
+}
+
+// SetDefaultProtocolName sets the default protocol name.
+func SetDefaultProtocolName(name string) {
+	defaultProtocolMu.Lock()
+	defer defaultProtocolMu.Unlock()
+	defaultProtocol = strings.ToLower(strings.TrimSpace(name))
+}
+
+// ResolveProtocol resolves a ProtocolDefinition for the given name or falls back to the default protocol.
+func ResolveProtocol(name string) ProtocolDefinition {
+	if def, ok := GetProtocol(name); ok {
+		return def
+	}
+	defName := DefaultProtocolName()
+	if def, ok := GetProtocol(defName); ok {
+		return def
+	}
+	// Fallback in case init() hasn't executed or registry was empty
+	return ProtocolDefinition{
+		Name:           "naive",
+		Description:    "Naive full set exchange",
+		NewCertSession: NaiveSessionConstructor[*discovery.Certificate, revIdxStore.DigestSymbol](),
+		NewNoteSession: NaiveSessionConstructor[*discovery.Note, revIdxStore.DigestSymbol](),
+		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol](),
+	}
+}
+
+// DefaultSessionConstructor returns the default session constructor for arbitrary store of T and DigestSymbol.
+// It resolves the constructor from the configured default protocol (e.g. from viper or package default).
+func DefaultSessionConstructor[T any]() SessionConstructor[T, revIdxStore.DigestSymbol] {
+	protoName := DefaultProtocolName()
+	switch protoName {
+	case "riblt", "rateless_iblt":
+		return RIBLTSessionConstructor[T]()
+	case "naive", "":
+		fallthrough
+	default:
+		return NaiveSessionConstructor[T, revIdxStore.DigestSymbol]()
+	}
+}
+
+// DefaultSessionFactory returns a SessionFactory creating sessions using the default protocol.
 func DefaultSessionFactory[T any, S Symbol[S]]() SessionFactory[T, S] {
 	return NewNaiveSessionFactory[T, S]()
-}
-
-// SessionFactoryProviderForStrategy resolves a SessionFactoryProvider from a strategy name string
-// (e.g. "naive", "riblt", "rateless_iblt"). If unknown or empty, falls back to DefaultSessionFactoryProvider().
-func SessionFactoryProviderForStrategy(strategy string) SessionFactoryProvider {
-	switch strings.ToLower(strings.TrimSpace(strategy)) {
-	case "riblt", "rateless_iblt":
-		return RIBLTSessionFactoryProvider{}
-	case "naive", "":
-		return NaiveSessionFactoryProvider{}
-	default:
-		log.Warn("Unknown reconciliation strategy, falling back to default provider", "strategy", strategy)
-		return DefaultSessionFactoryProvider()
-	}
 }
 
 // DiffDigests returns the union of local and remote digests (the symmetric difference).
@@ -149,7 +171,7 @@ func ReconcileStoreWithSession[T any, S Symbol[S]](
 }
 
 // ReconcileStore executes a protocol-agnostic reconciliation round against the given store using
-// a session produced by factory. If factory is nil, it defaults to NaiveSessionFactory.
+// a session produced by factory. If factory is nil, it defaults to DefaultSessionFactory.
 func ReconcileStore[T any, S Symbol[S]](
 	factory SessionFactory[T, S],
 	store ReverseIndexStore[T, S],
@@ -210,6 +232,7 @@ type PeerReconcileSession struct {
 	peerID       string
 	state        SessionState
 	lastActivity time.Time
+	hasDeltas    bool
 
 	certSession ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol]
 	noteSession ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol]
@@ -248,15 +271,26 @@ func (s *PeerReconcileSession) TryStartReconciling() bool {
 		return false
 	}
 	s.state = SessionReconciling
+	s.hasDeltas = false
 	s.lastActivity = time.Now()
 	return true
 }
 
-// HasDeltas returns true if any initialized set session holds non-empty local or remote deltas.
+// SetHasDeltas manually marks whether the session has pending deltas.
+func (s *PeerReconcileSession) SetHasDeltas(hasDeltas bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hasDeltas = hasDeltas
+}
+
+// HasDeltas returns true if any initialized set session holds non-empty local or remote deltas, or if SetHasDeltas(true) was set.
 func (s *PeerReconcileSession) HasDeltas() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.hasDeltas {
+		return true
+	}
 	if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
 		return true
 	}
@@ -288,15 +322,17 @@ func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionSt
 		return s.state
 	}
 
-	hasDeltas := false
-	if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
-		hasDeltas = true
-	} else if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
-		hasDeltas = true
-	} else if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
-		hasDeltas = true
-	} else if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
-		hasDeltas = true
+	hasDeltas := s.hasDeltas
+	if !hasDeltas {
+		if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
+			hasDeltas = true
+		} else if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
+			hasDeltas = true
+		} else if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
+			hasDeltas = true
+		} else if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
+			hasDeltas = true
+		}
 	}
 
 	if !hasDeltas {
