@@ -37,11 +37,6 @@ type ReconcilerSession[T, S any] interface {
 // SessionConstructor creates an active reconciliation session backed by a store snapshot/view.
 type SessionConstructor[T any, S Symbol[S]] func(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
 
-// SessionFactory creates a new reconciliation session backed by a store snapshot/view.
-type SessionFactory[T any, S Symbol[S]] interface {
-	NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
-}
-
 // ProtocolDefinition defines a pluggable set reconciliation protocol and provides
 // typed session constructors for each control store type.
 type ProtocolDefinition struct {
@@ -136,11 +131,6 @@ func DefaultSessionConstructor[T any]() SessionConstructor[T, revIdxStore.Digest
 	}
 }
 
-// DefaultSessionFactory returns a SessionFactory creating sessions using the default protocol.
-func DefaultSessionFactory[T any, S Symbol[S]]() SessionFactory[T, S] {
-	return NewNaiveSessionFactory[T, S]()
-}
-
 // DiffDigests returns the union of local and remote digests (the symmetric difference).
 func DiffDigests[S any](local, remote []S) []S {
 	diff := make([]S, 0, len(local)+len(remote))
@@ -158,7 +148,7 @@ func SessionLocalElements[T any, S Symbol[S]](store ReverseIndexStore[T, S], loc
 	return elems
 }
 
-// ReconcileStoreWithSession executes a reconciliation round using an existing session produced by factory.
+// ReconcileStoreWithSession executes a reconciliation round using an existing session.
 func ReconcileStoreWithSession[T any, S Symbol[S]](
 	session ReconcilerSession[T, S],
 	incomingDigests []S,
@@ -171,19 +161,19 @@ func ReconcileStoreWithSession[T any, S Symbol[S]](
 }
 
 // ReconcileStore executes a protocol-agnostic reconciliation round against the given store using
-// a session produced by factory. If factory is nil, it defaults to DefaultSessionFactory.
+// a session produced by constructor. If constructor is nil, it defaults to DefaultSessionConstructor.
 func ReconcileStore[T any, S Symbol[S]](
-	factory SessionFactory[T, S],
+	constructor SessionConstructor[T, S],
 	store ReverseIndexStore[T, S],
 	incomingDigests []S,
 ) (localElements []T, localDigests, remoteDigests []S, err error) {
 	if store == nil {
 		return nil, nil, nil, ErrNilStore
 	}
-	if factory == nil {
-		factory = DefaultSessionFactory[T, S]()
+	if constructor == nil {
+		constructor = NaiveSessionConstructor[T, S]()
 	}
-	session, err := factory.NewSession(store)
+	session, err := constructor(store)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -233,11 +223,6 @@ type PeerReconcileSession struct {
 	state        SessionState
 	lastActivity time.Time
 	hasDeltas    bool
-
-	certSession ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol]
-	noteSession ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol]
-	accSession  ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol]
-	dataSession ReconcilerSession[any, revIdxStore.DigestSymbol]
 }
 
 // NewPeerReconcileSession constructs a new session in SessionIdle state for peerID.
@@ -283,27 +268,11 @@ func (s *PeerReconcileSession) SetHasDeltas(hasDeltas bool) {
 	s.hasDeltas = hasDeltas
 }
 
-// HasDeltas returns true if any initialized set session holds non-empty local or remote deltas, or if SetHasDeltas(true) was set.
+// HasDeltas returns true if the session holds non-empty pending deltas.
 func (s *PeerReconcileSession) HasDeltas() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.hasDeltas {
-		return true
-	}
-	if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
-		return true
-	}
-	if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
-		return true
-	}
-	if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
-		return true
-	}
-	if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
-		return true
-	}
-	return false
+	return s.hasDeltas
 }
 
 // TransitionAfterReconcile transitions the session after diff resolution.
@@ -322,22 +291,8 @@ func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionSt
 		return s.state
 	}
 
-	hasDeltas := s.hasDeltas
-	if !hasDeltas {
-		if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
-			hasDeltas = true
-		} else if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
-			hasDeltas = true
-		} else if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
-			hasDeltas = true
-		} else if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
-			hasDeltas = true
-		}
-	}
-
-	if !hasDeltas {
+	if !s.hasDeltas {
 		s.state = SessionIdle
-		s.resetSessions()
 	} else if isCaller {
 		s.state = SessionTransferring
 	} else {
@@ -368,7 +323,7 @@ func (s *PeerReconcileSession) FinishTransfer() {
 	defer s.mu.Unlock()
 
 	s.state = SessionIdle
-	s.resetSessions()
+	s.hasDeltas = false
 	s.lastActivity = time.Now()
 }
 
@@ -378,71 +333,8 @@ func (s *PeerReconcileSession) ResetToIdle() {
 	defer s.mu.Unlock()
 
 	s.state = SessionIdle
-	s.resetSessions()
+	s.hasDeltas = false
 	s.lastActivity = time.Now()
-}
-
-// SetCertSession sets the certificate reconciliation session.
-func (s *PeerReconcileSession) SetCertSession(sess ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol]) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.certSession = sess
-}
-
-// CertSession returns the active certificate reconciliation session.
-func (s *PeerReconcileSession) CertSession() ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol] {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.certSession
-}
-
-// SetNoteSession sets the note reconciliation session.
-func (s *PeerReconcileSession) SetNoteSession(sess ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol]) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.noteSession = sess
-}
-
-// NoteSession returns the active note reconciliation session.
-func (s *PeerReconcileSession) NoteSession() ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol] {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.noteSession
-}
-
-// SetAccSession sets the accusation reconciliation session.
-func (s *PeerReconcileSession) SetAccSession(sess ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol]) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.accSession = sess
-}
-
-// AccSession returns the active accusation reconciliation session.
-func (s *PeerReconcileSession) AccSession() ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol] {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.accSession
-}
-
-// SetDataSession sets the data reconciliation session.
-func (s *PeerReconcileSession) SetDataSession(sess ReconcilerSession[any, revIdxStore.DigestSymbol]) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dataSession = sess
-}
-
-// DataSession returns the active data reconciliation session.
-func (s *PeerReconcileSession) DataSession() ReconcilerSession[any, revIdxStore.DigestSymbol] {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dataSession
-}
-
-func (s *PeerReconcileSession) resetSessions() {
-	s.certSession = nil
-	s.noteSession = nil
-	s.accSession = nil
-	s.dataSession = nil
 }
 
 // SweepIfStale resets the session to SessionIdle if it has remained in a non-Idle state
@@ -453,7 +345,7 @@ func (s *PeerReconcileSession) SweepIfStale(timeout time.Duration) bool {
 
 	if s.state != SessionIdle && time.Since(s.lastActivity) > timeout {
 		s.state = SessionIdle
-		s.resetSessions()
+		s.hasDeltas = false
 		s.lastActivity = time.Now()
 		return true
 	}

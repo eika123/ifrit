@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,12 +32,7 @@ func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
 
 	// Reconcile with deltas as Caller
 	assert.True(t, s.TryStartReconciling())
-	noteStore, err := revIdxStore.NewDigestSet[*discovery.Note, revIdxStore.DigestSymbol](revIdxStore.DefaultHasher[*discovery.Note]())
-	require.NoError(t, err)
-	noteSess, err := NewNaiveSession(noteStore)
-	require.NoError(t, err)
-	noteSess.SetResolvedDiffs([]revIdxStore.DigestSymbol{100}, []revIdxStore.DigestSymbol{200})
-	s.SetNoteSession(noteSess)
+	s.SetHasDeltas(true)
 
 	assert.True(t, s.HasDeltas())
 	nextState = s.TransitionAfterReconcile(true) // caller
@@ -49,11 +42,11 @@ func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
 	// FinishTransfer returns to Idle
 	s.FinishTransfer()
 	assert.Equal(t, SessionIdle, s.State())
-	assert.Nil(t, s.NoteSession())
+	assert.False(t, s.HasDeltas())
 
 	// Reconcile with deltas as Responder
 	assert.True(t, s.TryStartReconciling())
-	s.SetNoteSession(noteSess)
+	s.SetHasDeltas(true)
 	nextState = s.TransitionAfterReconcile(false) // responder
 	assert.Equal(t, SessionAwaitingStream, nextState)
 	assert.Equal(t, SessionAwaitingStream, s.State())
