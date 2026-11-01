@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/tls"
@@ -180,6 +181,10 @@ func (cs *commStub) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) 
 
 func (cs *commStub) Send(addr string, m *pb.Msg) (*pb.MsgResponse, error) {
 	return &pb.MsgResponse{}, nil
+}
+
+func (cs *commStub) OpenSyncStream(ctx context.Context, addr string) (pb.Gossip_SyncClient, error) {
+	return nil, nil
 }
 
 type pingStub struct {

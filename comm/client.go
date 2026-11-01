@@ -45,6 +45,7 @@ func newClient(config *tls.Config, telemetryLogger TelemetryLogger) (*gRPCClient
 	// --------------------------------- Telemetry logging ------------------------------------
 	if telemetryLogger != nil {
 		dialOptions = append(dialOptions, grpc.WithUnaryInterceptor(gossipClientInterceptorFactory(telemetryLogger)))
+		dialOptions = append(dialOptions, grpc.WithStreamInterceptor(gossipStreamClientInterceptorFactory(telemetryLogger)))
 	}
 	// -----------------------------------------------------------------------------------------
 
@@ -90,6 +91,15 @@ func (c *gRPCClient) Send(addr string, args *pb.Msg) (*pb.MsgResponse, error) {
 	}
 
 	return conn.Messenger(context.Background(), args)
+}
+
+func (c *gRPCClient) OpenSyncStream(ctx context.Context, addr string) (pb.Gossip_SyncClient, error) {
+	conn, err := c.connection(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	return conn.Sync(ctx)
 }
 
 func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) error {

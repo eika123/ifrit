@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/binary"
@@ -108,6 +109,7 @@ type commService interface {
 	Gossip(string, *pb.State) (*pb.StateResponse, error)
 	Send(string, *pb.Msg) (*pb.MsgResponse, error)
 	StreamMessenger(string, chan []byte, chan []byte) error
+	OpenSyncStream(context.Context, string) (pb.Gossip_SyncClient, error)
 }
 
 type certManager interface {

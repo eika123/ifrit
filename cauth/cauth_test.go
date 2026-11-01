@@ -141,6 +141,10 @@ func (s *stub) Stream(stream gossip.Gossip_StreamServer) error {
 	return nil
 }
 
+func (s *stub) Sync(stream gossip.Gossip_SyncServer) error {
+	return nil
+}
+
 func (s *stub) startPinging(c, caCert *x509.Certificate, priv *rsa.PrivateKey, addr string) {
 	// Create a certificate pool from the certificate authority
 	certPool := x509.NewCertPool()

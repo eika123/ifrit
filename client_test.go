@@ -35,4 +35,3 @@ func TestClient_RegisterDataStoreNilClient(t *testing.T) {
 		RegisterDataStoreWithCodec(nil, store, DefaultItemCodec[string]())
 	})
 }
-

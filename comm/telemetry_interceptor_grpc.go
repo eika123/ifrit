@@ -264,6 +264,185 @@ func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryS
 	}
 }
 
+// logSyncFrame dispatches events from a SyncFrame to the TelemetryLogger.
+func logSyncFrame(telemetryLogger TelemetryLogger, frame *pb.SyncFrame, localHost, remoteHost, remotePort, dir string) {
+	if telemetryLogger == nil || frame == nil {
+		return
+	}
+	now := time.Now()
+
+	switch p := frame.Payload.(type) {
+	case *pb.SyncFrame_Accusations:
+		if p.Accusations != nil {
+			for _, acc := range p.Accusations.GetItems() {
+				telemetryLogger.OnAccusation(AccusationEvent{
+					Timestamp:  now,
+					Direction:  dir,
+					Host:       localHost,
+					RemoteHost: remoteHost,
+					Accuser:    hex.EncodeToString(acc.GetAccuser()),
+					Accused:    hex.EncodeToString(acc.GetAccused()),
+					RingNum:    acc.GetRingNum(),
+					Epoch:      acc.GetEpoch(),
+				})
+			}
+		}
+	case *pb.SyncFrame_Notes:
+		if p.Notes != nil {
+			for _, note := range p.Notes.GetItems() {
+				telemetryLogger.OnNote(NoteEvent{
+					Timestamp:  now,
+					Direction:  dir,
+					Host:       localHost,
+					RemoteHost: remoteHost,
+					NodeID:     hex.EncodeToString(note.GetId()),
+					Epoch:      note.GetEpoch(),
+					Mask:       note.GetMask(),
+				})
+			}
+		}
+	case *pb.SyncFrame_DataChunk:
+		if p.DataChunk != nil && len(p.DataChunk.GetData()) > 0 {
+			telemetryLogger.OnGossipExchange(GossipEvent{
+				Timestamp:       now,
+				Direction:       dir,
+				Host:            localHost,
+				HostPort:        "",
+				RemoteHost:      remoteHost,
+				RemotePort:      remotePort,
+				PayloadDataSize: len(p.DataChunk.GetData()),
+			})
+		}
+	}
+}
+
+type telemetryClientStream struct {
+	grpc.ClientStream
+	logger     TelemetryLogger
+	localHost  string
+	remoteHost string
+	remotePort string
+}
+
+func (s *telemetryClientStream) getRemote() (string, string) {
+	if s.remoteHost != "" && s.remoteHost != "unknown" {
+		return s.remoteHost, s.remotePort
+	}
+	if p, ok := peer.FromContext(s.ClientStream.Context()); ok && p.Addr != nil {
+		s.remoteHost, s.remotePort = splitHostAndPort(p.Addr.String())
+	}
+	return s.remoteHost, s.remotePort
+}
+
+func (s *telemetryClientStream) SendMsg(m any) error {
+	err := s.ClientStream.SendMsg(m)
+	if err == nil {
+		if frame, ok := m.(*pb.SyncFrame); ok {
+			remoteH, remoteP := s.getRemote()
+			logSyncFrame(s.logger, frame, s.localHost, remoteH, remoteP, "OUTGOING")
+		}
+	}
+	return err
+}
+
+func (s *telemetryClientStream) RecvMsg(m any) error {
+	err := s.ClientStream.RecvMsg(m)
+	if err == nil {
+		if frame, ok := m.(*pb.SyncFrame); ok {
+			remoteH, remoteP := s.getRemote()
+			logSyncFrame(s.logger, frame, s.localHost, remoteH, remoteP, "INCOMING")
+		}
+	}
+	return err
+}
+
+func gossipStreamClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.StreamClientInterceptor {
+	return func(
+		ctx context.Context,
+		desc *grpc.StreamDesc,
+		cc *grpc.ClientConn,
+		method string,
+		streamer grpc.Streamer,
+		opts ...grpc.CallOption,
+	) (grpc.ClientStream, error) {
+		var pr peer.Peer
+		callOpts := append(opts, grpc.Peer(&pr))
+		clientStream, err := streamer(ctx, desc, cc, method, callOpts...)
+		if err != nil {
+			return nil, err
+		}
+
+		if method == "/proto.gossip/Sync" {
+			remoteAddr := ""
+			if cc != nil {
+				remoteAddr = cc.Target()
+			}
+			if pr.Addr != nil {
+				remoteAddr = pr.Addr.String()
+			}
+			remoteHost, remotePort := splitHostAndPort(remoteAddr)
+			return &telemetryClientStream{
+				ClientStream: clientStream,
+				logger:       telemetryLogger,
+				localHost:    getLocalHostIdentifier(),
+				remoteHost:   remoteHost,
+				remotePort:   remotePort,
+			}, nil
+		}
+
+		return clientStream, nil
+	}
+}
+
+type telemetryServerStream struct {
+	grpc.ServerStream
+	logger     TelemetryLogger
+	localHost  string
+	remoteHost string
+	remotePort string
+}
+
+func (s *telemetryServerStream) SendMsg(m any) error {
+	err := s.ServerStream.SendMsg(m)
+	if err == nil {
+		if frame, ok := m.(*pb.SyncFrame); ok {
+			logSyncFrame(s.logger, frame, s.localHost, s.remoteHost, s.remotePort, "OUTGOING")
+		}
+	}
+	return err
+}
+
+func (s *telemetryServerStream) RecvMsg(m any) error {
+	err := s.ServerStream.RecvMsg(m)
+	if err == nil {
+		if frame, ok := m.(*pb.SyncFrame); ok {
+			logSyncFrame(s.logger, frame, s.localHost, s.remoteHost, s.remotePort, "INCOMING")
+		}
+	}
+	return err
+}
+
+func gossipStreamServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if info.FullMethod == "/proto.gossip/Sync" {
+			remoteAddr := "unknown"
+			if p, ok := peer.FromContext(ss.Context()); ok && p.Addr != nil {
+				remoteAddr = p.Addr.String()
+			}
+			remoteHost, remotePort := splitHostAndPort(remoteAddr)
+			wrapped := &telemetryServerStream{
+				ServerStream: ss,
+				logger:       telemetryLogger,
+				localHost:    getLocalHostIdentifier(),
+				remoteHost:   remoteHost,
+				remotePort:   remotePort,
+			}
+			return handler(srv, wrapped)
+		}
+		return handler(srv, ss)
+	}
+}
+
 func getTelemetryDBPath() string {
 	customPath := os.Getenv("IFRIT_TELEMETRY_DB")
 	// If explicitly set to empty or "disabled", disable logging

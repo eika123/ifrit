@@ -1667,3 +1667,57 @@ func genSerialNumber() (*big.Int, error) {
 
 	return s, nil
 }
+
+type rebuttalTrackingComm struct {
+	commStub
+	gossipedStates []*proto.State
+}
+
+func (r *rebuttalTrackingComm) Gossip(addr string, m *proto.State) (*proto.StateResponse, error) {
+	r.gossipedStates = append(r.gossipedStates, m)
+	return &proto.StateResponse{}, nil
+}
+
+func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
+	node := suite.n
+	var ringNum uint32 = 1
+
+	_, prev := node.view.MyRingNeighbours(ringNum)
+	require.NotNil(suite.T(), prev, "predecessor must exist on ring")
+
+	originalComm := node.comm
+	defer func() {
+		node.comm = originalComm
+	}()
+
+	trackingComm := &rebuttalTrackingComm{}
+	node.comm = trackingComm
+
+	currentNote := node.view.SelfNote()
+	require.NotNil(suite.T(), currentNote)
+	currentEpoch := currentNote.Epoch()
+
+	// Create valid accusation against self from legitimate predecessor
+	acc := discovery.NewAccusation(currentEpoch, node.self.Id, prev.Id, ringNum, suite.privMap[prev.Id])
+
+	// Process accusation against self
+	err := node.evalAccusation(acc, prev, node.self)
+	require.NoError(suite.T(), err)
+
+	// Verify that rebuttal was dispatched
+	require.NotEmpty(suite.T(), trackingComm.gossipedStates, "Rebuttal should have sent at least one gossip message")
+	rebuttalMsg := trackingComm.gossipedStates[0]
+
+	// Verify message matches the telemetry rebuttal rule:
+	// isRebuttal := !hasFingerprints && stateReq.GetOwnNote() != nil
+	hasFingerprints := rebuttalMsg.GetFingerprintView() != nil ||
+		rebuttalMsg.GetFingerprintAccusations() != nil ||
+		rebuttalMsg.GetFingerprintData() != nil ||
+		rebuttalMsg.GetFingerprintCertificates() != nil
+	isRebuttal := !hasFingerprints && rebuttalMsg.GetOwnNote() != nil
+	require.True(suite.T(), isRebuttal, "Outbound message must be classified as a Rebuttal by telemetry interceptor")
+
+	// Verify epoch was advanced in the rebuttal message
+	require.Greater(suite.T(), rebuttalMsg.GetOwnNote().GetEpoch(), currentEpoch)
+	require.Equal(suite.T(), node.view.SelfNote().Epoch(), rebuttalMsg.GetOwnNote().GetEpoch())
+}

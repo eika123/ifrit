@@ -2,11 +2,14 @@ package comm
 
 import (
 	"database/sql"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/golang/protobuf/proto"
 	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -330,4 +333,344 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	assert.Equal(t, len("request payload (100)"), serverRec.gossipEvents[0].PayloadDataSize)
 	assert.Equal(t, "OUTGOING", serverRec.gossipEvents[1].Direction)
 	assert.Equal(t, len("response payload (200)"), serverRec.gossipEvents[1].PayloadDataSize)
+}
+
+type mockClientStream struct {
+	grpc.ClientStream
+	sentMsgs []any
+	recvMsgs []any
+	recvIdx  int
+	ctx      context.Context
+}
+
+func (m *mockClientStream) Context() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+
+func (m *mockClientStream) SendMsg(msg any) error {
+	m.sentMsgs = append(m.sentMsgs, msg)
+	return nil
+}
+
+func (m *mockClientStream) RecvMsg(target any) error {
+	if m.recvIdx >= len(m.recvMsgs) {
+		return io.EOF
+	}
+	src := m.recvMsgs[m.recvIdx]
+	m.recvIdx++
+	if frameSrc, ok := src.(*pb.SyncFrame); ok {
+		if frameDst, ok := target.(*pb.SyncFrame); ok {
+			proto.Merge(frameDst, frameSrc)
+			return nil
+		}
+	}
+	return nil
+}
+
+type mockServerStream struct {
+	grpc.ServerStream
+	sentMsgs []any
+	recvMsgs []any
+	recvIdx  int
+	ctx      context.Context
+}
+
+func (m *mockServerStream) Context() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+
+func (m *mockServerStream) SendMsg(msg any) error {
+	m.sentMsgs = append(m.sentMsgs, msg)
+	return nil
+}
+
+func (m *mockServerStream) RecvMsg(target any) error {
+	if m.recvIdx >= len(m.recvMsgs) {
+		return io.EOF
+	}
+	src := m.recvMsgs[m.recvIdx]
+	m.recvIdx++
+	if frameSrc, ok := src.(*pb.SyncFrame); ok {
+		if frameDst, ok := target.(*pb.SyncFrame); ok {
+			proto.Merge(frameDst, frameSrc)
+			return nil
+		}
+	}
+	return nil
+}
+
+func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
+	// Campaign T1: Verify that client and server stream interceptors
+	// intercept SyncFrame payloads and record events into TelemetryLogger.
+	clientRec := &recordingLogger{}
+	clientInterceptor := gossipStreamClientInterceptorFactory(clientRec)
+
+	accuserBytes := []byte("accuser-node")
+	accusedBytes := []byte("accused-node")
+	noteIDBytes := []byte("note-node")
+
+	mockCS := &mockClientStream{
+		recvMsgs: []any{
+			&pb.SyncFrame{
+				Payload: &pb.SyncFrame_Notes{
+					Notes: &pb.NoteBatch{
+						Items: []*pb.Note{
+							{Id: noteIDBytes, Epoch: 10, Mask: 3},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		return mockCS, nil
+	}
+
+	wrappedClientStream, err := clientInterceptor(context.Background(), &grpc.StreamDesc{}, nil, "/proto.gossip/Sync", streamer)
+	require.NoError(t, err)
+
+	// 1. Client sends AccusationBatch
+	accFrame := &pb.SyncFrame{
+		Payload: &pb.SyncFrame_Accusations{
+			Accusations: &pb.AccusationBatch{
+				Items: []*pb.Accusation{
+					{
+						Accuser: accuserBytes,
+						Accused: accusedBytes,
+						Epoch:   5,
+						RingNum: 1,
+					},
+				},
+			},
+		},
+	}
+	err = wrappedClientStream.SendMsg(accFrame)
+	require.NoError(t, err)
+
+	require.Len(t, clientRec.accusationEvents, 1)
+	assert.Equal(t, "OUTGOING", clientRec.accusationEvents[0].Direction)
+	assert.Equal(t, hex.EncodeToString(accuserBytes), clientRec.accusationEvents[0].Accuser)
+	assert.Equal(t, hex.EncodeToString(accusedBytes), clientRec.accusationEvents[0].Accused)
+	assert.Equal(t, uint64(5), clientRec.accusationEvents[0].Epoch)
+	assert.Equal(t, uint32(1), clientRec.accusationEvents[0].RingNum)
+
+	// 2. Client sends DataChunk
+	chunkData := make([]byte, 65536)
+	chunkFrame := &pb.SyncFrame{
+		Payload: &pb.SyncFrame_DataChunk{
+			DataChunk: &pb.DataItemChunk{
+				Data: chunkData,
+			},
+		},
+	}
+	err = wrappedClientStream.SendMsg(chunkFrame)
+	require.NoError(t, err)
+
+	require.Len(t, clientRec.gossipEvents, 1)
+	assert.Equal(t, "OUTGOING", clientRec.gossipEvents[0].Direction)
+	assert.Equal(t, 65536, clientRec.gossipEvents[0].PayloadDataSize)
+
+	// 3. Client receives NoteBatch
+	var recvFrame pb.SyncFrame
+	err = wrappedClientStream.RecvMsg(&recvFrame)
+	require.NoError(t, err)
+
+	require.Len(t, clientRec.noteEvents, 1)
+	assert.Equal(t, "INCOMING", clientRec.noteEvents[0].Direction)
+	assert.Equal(t, hex.EncodeToString(noteIDBytes), clientRec.noteEvents[0].NodeID)
+	assert.Equal(t, uint64(10), clientRec.noteEvents[0].Epoch)
+	assert.Equal(t, uint32(3), clientRec.noteEvents[0].Mask)
+
+	// 4. Server stream interceptor
+	serverRec := &recordingLogger{}
+	serverInterceptor := gossipStreamServerInterceptorFactory(serverRec)
+
+	mockSS := &mockServerStream{
+		recvMsgs: []any{accFrame},
+	}
+
+	handler := func(srv any, ss grpc.ServerStream) error {
+		var in pb.SyncFrame
+		recvErr := ss.RecvMsg(&in)
+		if recvErr != nil {
+			return recvErr
+		}
+		// Echo back noteFrame
+		noteFrame := &pb.SyncFrame{
+			Payload: &pb.SyncFrame_Notes{
+				Notes: &pb.NoteBatch{
+					Items: []*pb.Note{
+						{Id: noteIDBytes, Epoch: 11, Mask: 7},
+					},
+				},
+			},
+		}
+		return ss.SendMsg(noteFrame)
+	}
+
+	info := &grpc.StreamServerInfo{
+		FullMethod: "/proto.gossip/Sync",
+	}
+
+	err = serverInterceptor(nil, mockSS, info, handler)
+	require.NoError(t, err)
+
+	require.Len(t, serverRec.accusationEvents, 1)
+	assert.Equal(t, "INCOMING", serverRec.accusationEvents[0].Direction)
+	assert.Equal(t, hex.EncodeToString(accuserBytes), serverRec.accusationEvents[0].Accuser)
+
+	require.Len(t, serverRec.noteEvents, 1)
+	assert.Equal(t, "OUTGOING", serverRec.noteEvents[0].Direction)
+	assert.Equal(t, hex.EncodeToString(noteIDBytes), serverRec.noteEvents[0].NodeID)
+	assert.Equal(t, uint64(11), serverRec.noteEvents[0].Epoch)
+}
+
+func TestSyncStreamTelemetry_SQLiteAndDashboardQueries(t *testing.T) {
+	// Campaign T3: Confirm that SQLite schema and data generated by stream
+	// interceptors match the exact queries expected by serve_telemetry_ui.py.
+	tmpDir, err := os.MkdirTemp("", "telemetry-dashboard-*")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "telemetry_test.db")
+	logger, err := NewRPCInterfaceLogger(dbPath)
+	require.NoError(t, err)
+
+	now := time.Now()
+
+	// 1. Insert notes
+	logger.OnNote(NoteEvent{
+		Timestamp:  now,
+		Direction:  "OUTGOING",
+		Host:       "127.0.0.1",
+		RemoteHost: "127.0.0.2",
+		NodeID:     "11223344",
+		Epoch:      1,
+		Mask:       7,
+	})
+	logger.OnNote(NoteEvent{
+		Timestamp:  now,
+		Direction:  "INCOMING",
+		Host:       "127.0.0.1",
+		RemoteHost: "127.0.0.2",
+		NodeID:     "55667788",
+		Epoch:      2,
+		Mask:       15,
+	})
+
+	// 2. Insert accusations
+	logger.OnAccusation(AccusationEvent{
+		Timestamp:  now,
+		Direction:  "OUTGOING",
+		Host:       "127.0.0.1",
+		RemoteHost: "127.0.0.2",
+		Accuser:    "11223344",
+		Accused:    "deadbeef",
+		RingNum:    0,
+		Epoch:      1,
+	})
+	logger.OnAccusation(AccusationEvent{
+		Timestamp:  now,
+		Direction:  "INCOMING",
+		Host:       "127.0.0.1",
+		RemoteHost: "127.0.0.2",
+		Accuser:    "55667788",
+		Accused:    "11223344",
+		RingNum:    1,
+		Epoch:      2,
+	})
+
+	// 3. Insert rebuttal
+	logger.OnRebuttal(RebuttalEvent{
+		Timestamp:  now,
+		Direction:  "OUTGOING",
+		Host:       "127.0.0.1",
+		HostPort:   "9000",
+		RemoteHost: "127.0.0.2",
+		RemotePort: "9000",
+		NodeID:     "11223344",
+		Epoch:      3,
+		Mask:       7,
+	})
+
+	// 4. Insert gossip data transfer
+	logger.OnGossipExchange(GossipEvent{
+		Timestamp:       now,
+		Direction:       "OUTGOING",
+		Host:            "127.0.0.1",
+		HostPort:        "9000",
+		RemoteHost:      "127.0.0.2",
+		RemotePort:      "9000",
+		PayloadDataSize: 131072,
+	})
+
+	// Flush and close WAL
+	err = logger.Close()
+	require.NoError(t, err)
+
+	// Reopen SQLite database directly and run serve_telemetry_ui.py queries
+	db, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Query 1: Total rebuttals (serve_telemetry_ui.py line 191)
+	var totalRebuttals int
+	err = db.QueryRow("SELECT COUNT(*) FROM rebuttal_events").Scan(&totalRebuttals)
+	require.NoError(t, err)
+	assert.Equal(t, 1, totalRebuttals)
+
+	// Query 2: Total accusations (serve_telemetry_ui.py line 201)
+	var totalAccusations int
+	err = db.QueryRow("SELECT COUNT(*) FROM accusation_events").Scan(&totalAccusations)
+	require.NoError(t, err)
+	assert.Equal(t, 2, totalAccusations)
+
+	// Query 3: /api/rebuttals endpoint query (serve_telemetry_ui.py line 706)
+	rows, err := db.Query("SELECT timestamp, direction, host, remote_host, node_id, epoch, mask FROM rebuttal_events ORDER BY timestamp DESC LIMIT 100")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var countRebRows int
+	for rows.Next() {
+		countRebRows++
+		var ts, dir, host, remoteHost, nodeID string
+		var epoch, mask uint64
+		err = rows.Scan(&ts, &dir, &host, &remoteHost, &nodeID, &epoch, &mask)
+		require.NoError(t, err)
+		assert.Equal(t, "OUTGOING", dir)
+		assert.Equal(t, "11223344", nodeID)
+		assert.Equal(t, uint64(3), epoch)
+	}
+	assert.Equal(t, 1, countRebRows)
+
+	// Query 4: /api/accusations endpoint query (serve_telemetry_ui.py line 737)
+	accRows, err := db.Query("SELECT timestamp, direction, host, remote_host, accuser, accused, ring_num, epoch FROM accusation_events ORDER BY timestamp DESC LIMIT 100")
+	require.NoError(t, err)
+	defer accRows.Close()
+
+	var countAccRows int
+	for accRows.Next() {
+		countAccRows++
+		var ts, dir, host, remoteHost, accuser, accused string
+		var ringNum uint32
+		var epoch uint64
+		err = accRows.Scan(&ts, &dir, &host, &remoteHost, &accuser, &accused, &ringNum, &epoch)
+		require.NoError(t, err)
+		assert.NotEmpty(t, accuser)
+		assert.NotEmpty(t, accused)
+	}
+	assert.Equal(t, 2, countAccRows)
+
+	// Query 5: Gossip payload data size
+	var totalPayload int
+	err = db.QueryRow("SELECT SUM(payload_data_size) FROM gossip_exchange").Scan(&totalPayload)
+	require.NoError(t, err)
+	assert.Equal(t, 131072, totalPayload)
 }

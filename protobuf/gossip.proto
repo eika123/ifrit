@@ -1,16 +1,19 @@
 syntax = "proto3";
 
 package proto;
+option go_package = "github.com/joonnna/ifrit/protobuf;proto";
 
 service gossip {
     rpc Spread (State) returns (StateResponse) {}
+    rpc Sync (stream SyncFrame) returns (stream SyncFrame) {}
     rpc Messenger (Msg) returns (MsgResponse) {}
     rpc Stream (stream Msg) returns (stream MsgResponse) {}
 }
 
 message State {
-    //repeated NodeInfo existingNodes
-    map<string, uint64> existingHosts = 1;
+    reserved 1, 12, 13, 14;
+    reserved "existingHosts", "pushed_certificates", "pushed_notes", "pushed_accusations";
+
     Note ownNote = 2;
     bytes externalGossip = 3;
     bytes fingerprint_data = 4;
@@ -21,29 +24,18 @@ message State {
     repeated uint64 data_digests = 9;
     bytes fingerprint_certificates = 10;
     repeated uint64 certificate_digests = 11;
-    repeated Certificate pushed_certificates = 12;
-    repeated Note pushed_notes = 13;
-    repeated Accusation pushed_accusations = 14;
 }
-/*
-message HostState {
-    uint64 epoch = 1;
-    bool accused = 2;
-}
-*/
 
-//Application message
+// Application message
 message Msg {
     bytes content = 1;
 } 
 
-
-//Application response
+// Application response
 message MsgResponse {
     bytes content = 1;
     string error = 2;
 }
-
 
 message StateResponse {
     repeated Certificate certificates = 1;
@@ -64,12 +56,12 @@ message StateResponse {
     repeated uint64 available_accusation_digests = 16;
 }
 
-//Raw certificate
+// Raw certificate
 message Certificate {
     bytes raw = 1;
 }
 
-//accuser and accused are the respective node ids
+// accuser and accused are the respective node ids
 message Accusation {
     uint64 epoch = 1;
     bytes accuser = 2;
@@ -85,15 +77,10 @@ message Note {
     Signature signature = 4;
 }
 
-//Raw elliptic signature
+// Raw elliptic signature
 message Signature {
     bytes r = 1;
     bytes s = 2;
-}
-
-message Data {
-    bytes content = 1;
-    bytes id = 2;
 }
 
 message Ping {
@@ -108,6 +95,47 @@ message Pong {
     bytes fingerprint_view = 5;
 }
 
-message Test {
-    repeated int32 nums = 1;
+// Unified transfer stream framing
+message SyncFrame {
+    oneof payload {
+        CertificateBatch certificates = 1;
+        NoteBatch notes               = 2;
+        AccusationBatch accusations   = 3;
+        DataItemHeader data_header    = 4;
+        DataItemChunk data_chunk      = 5;
+        DataItemEnd data_end          = 6;
+        SyncComplete complete         = 7;
+    }
+}
+
+message CertificateBatch {
+    repeated Certificate items = 1;
+}
+
+message NoteBatch {
+    repeated Note items = 1;
+}
+
+message AccusationBatch {
+    repeated Accusation items = 1;
+}
+
+message DataItemHeader {
+    uint64 digest     = 1;
+    int64  total_size = 2; // -1 if unknown stream length, >= 0 when known
+}
+
+message DataItemChunk {
+    bytes data = 1;        // Sized by sync_chunk_bytes (default 128 KB)
+}
+
+message DataItemEnd {
+    uint64 digest = 1;     // Confirms clean end-of-item before store Commit/Ingest
+}
+
+message SyncComplete {
+    bytes fingerprint_view         = 1;
+    bytes fingerprint_accusations  = 2;
+    bytes fingerprint_data         = 3;
+    bytes fingerprint_certificates = 4;
 }

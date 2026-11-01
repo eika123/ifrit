@@ -48,6 +48,7 @@ func newServer(config *tls.Config, listener net.Listener, telemetryLogger Teleme
 	serverOpts = append(serverOpts, grpc.KeepaliveParams(keepAlive))
 	if telemetryLogger != nil {
 		serverOpts = append(serverOpts, grpc.UnaryInterceptor(gossipServerInterceptorFactory(telemetryLogger)))
+		serverOpts = append(serverOpts, grpc.StreamInterceptor(gossipStreamServerInterceptorFactory(telemetryLogger)))
 	}
 
 	listenAddr := listener.Addr().String()

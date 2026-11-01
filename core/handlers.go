@@ -333,6 +333,13 @@ done:
 	return nil
 }
 
+// Sync handles inbound bulk data and anti-entropy synchronization streams from peers.
+// In Step B.2, this serves as the server transport entry point.
+// In Step B.3, this will invoke the bidirectional Sync engine (executeBidirectionalSync).
+func (n *Node) Sync(srv pb.Gossip_SyncServer) error {
+	return nil
+}
+
 func (n *Node) replyStream(reply chan []byte, srv pb.Gossip_StreamServer) {
 	for resp := range reply {
 		responseMsg := &pb.MsgResponse{
