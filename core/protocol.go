@@ -9,14 +9,6 @@ import (
 type correct struct {
 }
 
-type spamAccusations struct {
-}
-
-type experiment struct {
-	addr    string
-	maxConc int
-}
-
 func (c correct) Rebuttal(n *Node) {
 	neighbours := n.view.GossipPartners()
 

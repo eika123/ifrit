@@ -60,7 +60,11 @@ func (suite *NodeTestSuite) TestGossip() {
 			if n == n2 {
 				continue
 			}
-			reply, err := n2.Spread(peerContext(n.self), n.collectGossipContent())
+			msg := &pb.State{}
+			if selfNote := n.view.SelfNote(); selfNote != nil {
+				msg.OwnNote = selfNote.ToPbMsg()
+			}
+			reply, err := n2.Spread(peerContext(n.self), msg)
 			if err != nil {
 				continue
 			}

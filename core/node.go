@@ -659,11 +659,14 @@ func (n *Node) Start() {
 	// Signal to Stop() that all background workers have completed n.wg registration.
 	close(n.startedChan)
 
-	msg := n.collectGossipContent()
-
 	// With no ca we need to contact existing hosts.
 	// TODO retry if we fail to contact them?
 	if n.cm.CaCertificate() == nil {
+		msg := &pb.State{}
+		if selfNote := n.view.SelfNote(); selfNote != nil {
+			msg.OwnNote = selfNote.ToPbMsg()
+		}
+
 		for _, addr := range n.entryAddrs {
 			// Fast exit check so we don't attempt network dials if Stop() was requested.
 			select {

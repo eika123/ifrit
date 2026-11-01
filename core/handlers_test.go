@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"math"
 	"math/big"
@@ -18,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	proto "github.com/joonnna/ifrit/protobuf"
@@ -284,120 +282,6 @@ func (suite *HandlerTestSuite) TestSpread() {
 
 func (suite *HandlerTestSuite) TestMessenger() {
 
-}
-
-func (suite *HandlerTestSuite) TestMergeViews() {
-	node := suite.n
-
-	full := node.view.Full()
-
-	p1 := full[0]
-	p2 := full[1]
-	p3 := full[2]
-
-	node.view.ClearTestNote(p1)
-
-	state := make(map[string]uint64)
-
-	for _, p := range full {
-		if p.Id == p1.Id || p.Id == p2.Id {
-			continue
-		}
-
-		state[p.Id] = 1
-	}
-
-	state[p3.Id] = 2
-	state[node.self.Id] = 1
-
-	acc1 := discovery.NewAccusation(2, p3.Id, p2.Id, 1, suite.privMap[p2.Id])
-	node.view.AddTestAccusation(acc1)
-
-	acc2 := discovery.NewAccusation(2, p3.Id, p2.Id, 2, suite.privMap[p2.Id])
-	node.view.AddTestAccusation(acc2)
-
-	acc3 := discovery.NewAccusation(2, p3.Id, p2.Id, 3, suite.privMap[p2.Id])
-	node.view.AddTestAccusation(acc3)
-
-	require.True(suite.T(), node.view.Exists(p1.Id), "Peer 1 should exist in full view.")
-	require.True(suite.T(), node.view.Exists(p2.Id), "Peer 2 should exist in full view.")
-	require.True(suite.T(), node.view.Exists(p3.Id), "Peer 3 should exist in full view.")
-	require.Equal(suite.T(), len(node.view.AccusationsForPeer(p3.Id)), 3,
-		"Should have 3 accusations on peer 3.")
-
-	tests := []struct {
-		in    map[string]uint64
-		certs []string
-		notes []string
-		accs  []string
-	}{
-		{
-			in:    state,
-			certs: []string{p1.Id, p2.Id},
-			notes: []string{p2.Id, p3.Id},
-			accs:  []string{p3.Id, p3.Id, p3.Id},
-		},
-	}
-
-	for i, t := range tests {
-		reply := &proto.StateResponse{}
-		node.mergeViews(t.in, reply)
-
-		var certs []string
-		for _, c := range reply.GetCertificates() {
-			cert, err := x509.ParseCertificate(c.GetRaw())
-			require.NoError(suite.T(), err, "Failed to parse certificate.")
-
-			certs = append(certs, string(cert.SubjectKeyId))
-		}
-
-		var notes []string
-		for _, n := range reply.GetNotes() {
-			notes = append(notes, string(n.GetId()))
-		}
-
-		var accs []string
-		for _, a := range reply.GetAccusations() {
-			accs = append(accs, string(a.GetAccused()))
-		}
-
-		require.ElementsMatchf(suite.T(), t.certs, certs,
-			"Invalid certificate output for test %d.", i)
-
-		require.ElementsMatchf(suite.T(), t.notes, notes,
-			"Invalid note output for test %d.", i)
-
-		require.ElementsMatchf(suite.T(), t.accs, accs,
-			"Invalid accusation output for test %d.", i)
-	}
-}
-
-func (suite *HandlerTestSuite) TestMergeViews_FullViewAntiEntropyWithBinaryIds() {
-	node := suite.n
-
-	// node.view already contains 100 peers generated with random 32-byte SubjectKeyIds
-	state := node.view.State()
-
-	// 1. Verify protobuf serialization succeeds without invalid UTF-8 error
-	stateBytes, err := gpb.Marshal(state)
-	require.NoError(suite.T(), err, "Protobuf marshal must succeed with binary peer IDs")
-
-	var unmarshaled proto.State
-	err = gpb.Unmarshal(stateBytes, &unmarshaled)
-	require.NoError(suite.T(), err)
-
-	// Also simulate that remote peer already knows local node's latest note epoch
-	unmarshaled.ExistingHosts[hex.EncodeToString([]byte(node.self.Id))] = node.view.SelfNote().ToPbMsg().GetEpoch()
-
-	// 2. Since unmarshaled state already contains all peers in node.view with matching epochs,
-	// anti-entropy must NOT re-transmit any certificates or notes!
-	reply := &proto.StateResponse{}
-	node.mergeViews(unmarshaled.GetExistingHosts(), reply)
-
-	require.Empty(suite.T(), reply.GetCertificates(),
-		"Anti-entropy failed: certificates were redundantly re-transmitted due to ID corruption!")
-	require.Empty(suite.T(), reply.GetNotes(),
-		"Anti-entropy failed: notes were redundantly re-transmitted due to ID corruption!")
 }
 
 func (suite *HandlerTestSuite) TestMergeNotes() {
@@ -1164,7 +1048,6 @@ func (suite *HandlerTestSuite) TestSpread_InSyncNotesReturnsZeroNotes() {
 	args := &proto.State{
 		FingerprintView:        node.ViewFingerprintBytes(),
 		FingerprintAccusations: node.AccusationFingerprintBytes(),
-		ExistingHosts:          node.view.ExistingHostsMap(),
 	}
 
 	reply, err := node.Spread(ctx, args)
@@ -1257,7 +1140,6 @@ func (suite *HandlerTestSuite) TestSpread_LegacyFallbackWithoutFingerprints() {
 	})
 
 	args := &proto.State{
-		ExistingHosts:  node.view.ExistingHostsMap(),
 		ExternalGossip: []byte("legacy-data"),
 	}
 
@@ -1379,6 +1261,76 @@ func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
 	peer := node.view.Peer(peerId)
 	require.NotNil(suite.T(), peer)
 	require.True(suite.T(), node.view.IsAlive(peer), "Peer must now be marked alive")
+}
+
+func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerNoteArrivesLater() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	require.NotNil(suite.T(), succ)
+
+	// Step 1: Clear succ's active note so an incoming accusation cannot be evaluated yet
+	node.view.ClearTestNote(succ)
+	_, hasNote := node.view.ActiveNote(succ.Id)
+	require.False(suite.T(), hasNote, "Succ must not have an active note")
+
+	// Step 2: Ingest accusation into AccusationStore (node.self is succ's predecessor on ring 1)
+	accEpoch := uint64(2)
+	acc := discovery.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
+	node.mergeAccusations([]*proto.Accusation{acc})
+
+	// Verify accusation is in Tier 1 store, but NOT yet active/promoted
+	rawAcc := discovery.AccusationFromPb(acc)
+	_, found := node.view.AccusationStore().Contains(rawAcc)
+	require.True(suite.T(), found, "Accusation must be persisted in Tier 1 AccusationStore")
+	require.False(suite.T(), node.view.IsAccused(succ), "Succ must not be marked accused before note arrives")
+
+	// Step 3: Now succ's active note arrives via mergeNotes
+	succNote := discovery.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
+	node.mergeNotes([]*proto.Note{succNote})
+
+	// Verify note was promoted AND orphaned accusation was automatically promoted
+	_, hasNote = node.view.ActiveNote(succ.Id)
+	require.True(suite.T(), hasNote, "Succ note must be promoted")
+	require.True(suite.T(), node.view.IsAccused(succ), "Orphaned accusation must be automatically promoted upon note arrival")
+	require.True(suite.T(), node.view.HasTimer(succ), "Suspicion timer must be active for accused peer")
+}
+
+func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerCertificateArrivesLater() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	require.NotNil(suite.T(), succ)
+
+	succNote, hasNote := node.view.ActiveNote(succ.Id)
+	require.True(suite.T(), hasNote)
+
+	succCertBytes := succ.Certificate()
+	succId := succ.Id
+
+	// Step 1: Remove accused (succ) from full view so incoming accusation cannot be verified yet
+	err := node.view.RemoveTestFull(succId)
+	require.NoError(suite.T(), err)
+	require.False(suite.T(), node.view.Exists(succId), "Succ must not exist in full view")
+
+	// Re-insert succ's note into Tier 1 noteStore so it can be promoted when certificate arrives
+	node.view.NoteStore().Insert(discovery.NoteFromPb(succNote.ToPbMsg()))
+
+	// Step 2: Ingest accusation into AccusationStore (node.self is predecessor on ring 1)
+	acc := discovery.NewAccusation(succNote.Epoch(), succId, node.self.Id, 1, suite.priv)
+	node.mergeAccusations([]*proto.Accusation{acc})
+
+	// Verify accusation is in Tier 1 store, but NOT active/promoted
+	rawAcc := discovery.AccusationFromPb(acc)
+	_, found := node.view.AccusationStore().Contains(rawAcc)
+	require.True(suite.T(), found, "Accusation must be persisted in Tier 1 AccusationStore")
+	require.False(suite.T(), node.view.IsAccused(succ), "Succ must not be marked accused before succ cert arrives")
+
+	// Step 3: Now accused peer's certificate arrives via mergeCertificates
+	node.mergeCertificates([]*proto.Certificate{{Raw: succCertBytes}})
+
+	// Verify succ peer is back in full view AND orphaned accusation was promoted
+	require.True(suite.T(), node.view.Exists(succId), "Succ must now be in full view")
+	require.True(suite.T(), node.view.IsAccused(succ), "Orphaned accusation must be automatically promoted upon cert arrival")
+	require.True(suite.T(), node.view.HasTimer(succ), "Suspicion timer must be active for accused peer")
 }
 
 func (suite *HandlerTestSuite) TestSpread_PeerReconcileSessionStateTransitions() {

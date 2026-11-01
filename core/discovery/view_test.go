@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"testing"
@@ -690,57 +689,6 @@ func (suite *ViewTestSuite) TestSelfNote() {
 	assert.Equal(suite.T(), localNote.mask, note.GetMask(), "Not equal masks.")
 	assert.Equal(suite.T(), localNote.signature.r, note.GetSignature().GetR(), "Not equal signature component r.")
 	assert.Equal(suite.T(), localNote.signature.s, note.GetSignature().GetS(), "Not equal signature component s.")
-}
-
-func (suite *ViewTestSuite) TestState() {
-	view := suite.v
-
-	emptyState := view.State()
-	require.NotNil(suite.T(), emptyState, "Should never be nil.")
-
-	hosts := emptyState.GetExistingHosts()
-	note := emptyState.GetOwnNote()
-
-	require.NotNil(suite.T(), hosts, "Should never be nil.")
-	require.NotNil(suite.T(), note, "Should never be nil.")
-
-	require.Zero(suite.T(), len(hosts), "Should be no hosts when alone.")
-
-	for i := 0; i < 20; i++ {
-		p := &Peer{
-			Id: fmt.Sprintf("testId%d", i),
-		}
-
-		hasNote := false
-
-		if i%2 == 0 {
-			hasNote = true
-			view.PromoteNote(&Note{
-				id:    p.Id,
-				epoch: 1,
-			})
-		}
-
-		view.AddTestPeer(p)
-
-		s := view.State()
-
-		hosts := s.GetExistingHosts()
-		note := s.GetOwnNote()
-		require.NotNil(suite.T(), hosts, "Should never be nil.")
-		require.NotNil(suite.T(), note, "Should never be nil.")
-
-		require.Equal(suite.T(), i+1, len(hosts), "Peers not added to state message.")
-
-		epoch, ok := hosts[hex.EncodeToString([]byte(p.Id))]
-		require.True(suite.T(), ok, "Peer not added to state message.")
-
-		if hasNote {
-			require.Equal(suite.T(), uint64(1), epoch, "Wrong epoch added.")
-		} else {
-			require.Zero(suite.T(), epoch, "Epoch not set to zero with no note.")
-		}
-	}
 }
 
 func (suite *ViewTestSuite) TestValidMask() {

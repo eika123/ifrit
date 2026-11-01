@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -950,39 +949,6 @@ func (v *View) selfNote() *proto.Note {
 	return nil
 }
 
-// State returns a protobuf State message containing the local node's latest note
-// and the note epoch numbers of all known peers in the full view.
-func (v *View) State() *proto.State {
-	return &proto.State{
-		ExistingHosts: v.ExistingHostsMap(),
-		OwnNote:       v.selfNote(),
-	}
-}
-
-// ExistingHostsMap returns a map of hex-encoded peer IDs to their latest known note epoch.
-func (v *View) ExistingHostsMap() map[string]uint64 {
-	v.viewMutex.RLock()
-	defer v.viewMutex.RUnlock()
-
-	var versions map[string]uint64
-	if v.activeNotes != nil {
-		versions = v.activeNotes.Versions()
-	}
-
-	hosts := make(map[string]uint64, v.viewStore.Size())
-	for _, p := range v.viewStore.Elements() {
-		hexId := hex.EncodeToString([]byte(p.Id))
-		if ep, ok := versions[p.Id]; ok {
-			hosts[hexId] = ep
-		} else if note, ok := v.ActiveNote(p.Id); ok {
-			hosts[hexId] = note.epoch
-		} else {
-			hosts[hexId] = 0
-		}
-	}
-	return hosts
-}
-
 // ValidMask checks whether a ring bitmask does not deactivate more rings than allowed by Byzantine fault tolerance limits.
 //
 // Prerequisites / Expected Services:
@@ -1124,6 +1090,16 @@ func (v *View) HasAccusation(accused, accuser string, ringNum uint32, epoch uint
 	}
 	stored, ok := v.accusationStore.Contains(dummy)
 	return ok && stored.Equal(accused, accuser, ringNum, epoch)
+}
+
+// HasActiveAccusation checks if an active accusation exists for accused on ringNum with version >= epoch.
+func (v *View) HasActiveAccusation(accused string, ringNum uint32, epoch uint64) bool {
+	if v.activeAccusations == nil {
+		return false
+	}
+	key := accusationRingKey(accused, ringNum)
+	entry, found := v.activeAccusations.GetOne(key)
+	return found && entry.Version >= epoch
 }
 
 // Accusation returns the stored accusation matching (accused, accuser, ringNum, epoch), or nil if absent.

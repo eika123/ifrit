@@ -43,20 +43,6 @@ func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
 	return msg
 }
 
-func (n *Node) collectGossipContent() *proto.State {
-	msg := n.view.State()
-
-	msg.ExternalGossip = n.getExternalGossip()
-	msg.FingerprintData = n.FingerprintData()
-	msg.FingerprintAccusations = n.AccusationFingerprintBytes()
-	msg.FingerprintView = n.ViewFingerprintBytes()
-	msg.AccusationDigests = n.AccusationDigestsUint64()
-	msg.NoteDigests = n.NoteDigestsUint64()
-	msg.DataDigests = n.DataDigestsUint64()
-
-	return msg
-}
-
 func (n *Node) setProtocol(pr protocol) {
 	n.protocolMutex.Lock()
 	defer n.protocolMutex.Unlock()

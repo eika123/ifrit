@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"io"
 
@@ -100,7 +99,7 @@ func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.
 		wasAccused = n.view.IsAccused(peer)
 	}
 
-	if n.view.ShouldBeNeighbour(remoteId) {
+	if n.view.ShouldBeNeighbour(remoteId) || !wasObserved {
 		if err := n.evalCertificate(cert); err != nil {
 			log.Error(err.Error())
 			return nil, wasObserved, wasAccused, err
@@ -108,12 +107,6 @@ func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.
 		if peer == nil {
 			peer = n.view.Peer(remoteId)
 		}
-	} else if !wasObserved {
-		if err := n.evalCertificate(cert); err != nil {
-			log.Error(err.Error())
-			return nil, wasObserved, wasAccused, err
-		}
-		peer = n.view.Peer(remoteId)
 	}
 
 	if ownNote != nil {
@@ -155,7 +148,6 @@ func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, w
 }
 
 func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) {
-	hosts := args.GetExistingHosts()
 	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
 
 	if hasFingerprints {
@@ -174,8 +166,6 @@ func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, repl
 			peerSess.SetDeltas(ExtractReconcileDeltas(reply))
 			peerSess.TransitionAfterReconcile(false)
 		}
-	} else if hosts != nil {
-		n.mergeViews(hosts, reply)
 	}
 }
 
@@ -360,12 +350,7 @@ func (n *Node) computeAccusationDeltas(args *pb.State, reply *pb.StateResponse) 
 		reply.AvailableAccusationDigests = localDigests
 		return true
 	}
-
-	// Legacy fallback: append all local accusations
-	for _, a := range n.view.Accusations() {
-		reply.Accusations = append(reply.Accusations, a.ToPbMsg())
-	}
-	return len(n.view.Accusations()) > 0
+	return false
 }
 
 func (n *Node) computeNoteDeltas(args *pb.State, reply *pb.StateResponse) bool {
@@ -391,46 +376,7 @@ func (n *Node) computeNoteDeltas(args *pb.State, reply *pb.StateResponse) bool {
 		reply.AvailableNoteDigests = localDigests
 		return true
 	}
-
-	hosts := args.GetExistingHosts()
-	if hosts == nil {
-		return false
-	}
-	n.mergeViewsHostNotes(hosts, reply)
 	return false
-}
-
-func (n *Node) mergeViewsHostNotes(hosts map[string]uint64, reply *pb.StateResponse) {
-	lookupEpoch := func(rawId string) (uint64, bool) {
-		if epoch, ok := hosts[hex.EncodeToString([]byte(rawId))]; ok {
-			return epoch, true
-		}
-		if epoch, ok := hosts[rawId]; ok {
-			return epoch, true
-		}
-		return 0, false
-	}
-
-	for _, p := range n.view.Full() {
-		epoch, ok := lookupEpoch(p.Id)
-		if !ok {
-			reply.Certificates = append(reply.Certificates,
-				&pb.Certificate{Raw: p.Certificate()})
-
-			if note, found := n.view.ActiveNote(p.Id); found {
-				reply.Notes = append(reply.Notes, note.ToPbMsg())
-			}
-		} else if note, found := n.view.ActiveNote(p.Id); found && note.IsMoreRecent(epoch) {
-			reply.Notes = append(reply.Notes, note.ToPbMsg())
-		}
-	}
-
-	localNote := n.view.SelfNote()
-	if localNote != nil {
-		if epoch, exists := lookupEpoch(n.self.Id); !exists || localNote.IsMoreRecent(epoch) {
-			reply.Notes = append(reply.Notes, localNote.ToPbMsg())
-		}
-	}
 }
 
 func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
@@ -455,14 +401,6 @@ func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
 		return len(localDiff) > 0 || len(remoteDiff) > 0
 	}
 	return false
-}
-
-func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {
-	n.mergeViewsHostNotes(given, reply)
-
-	for _, a := range n.view.Accusations() {
-		reply.Accusations = append(reply.Accusations, a.ToPbMsg())
-	}
 }
 
 func (n *Node) mergeNotes(notes []*pb.Note) {
@@ -692,7 +630,7 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discov
 	ringNum := a.GetRingNum()
 	epoch := a.GetEpoch()
 
-	if n.view.HasAccusation(accusedPeer.Id, accuserPeer.Id, ringNum, epoch) {
+	if n.view.HasActiveAccusation(accusedPeer.Id, ringNum, epoch) {
 		note, ok := n.view.ActiveNote(accusedPeer.Id)
 		if ok && epoch >= note.Epoch() {
 			n.ensureAccusationTimer(accusedPeer, accuserPeer)
@@ -765,6 +703,9 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 
 		log.Debug("Rebuttal received or live peer updated", "epoch", epoch, "addr", peer.Addr)
 	}
+
+	node.promotePendingAccusationsForPeer(peer.Id)
+
 	return nil
 }
 
@@ -802,6 +743,7 @@ func (n *Node) addValidCertificate(cert *x509.Certificate) {
 			return
 		}
 		n.promotePendingNotesForPeer(id)
+		n.promotePendingAccusationsForPeer(id)
 	}
 }
 
@@ -821,6 +763,48 @@ func (n *Node) promotePendingNotesForPeer(id string) {
 	if newestNote != nil {
 		if err := n.evalNote(newestNote.ToPbMsg()); err != nil && err != errOldNote {
 			log.Debug("Failed to promote pending note on certificate arrival", "err", err)
+		}
+	}
+}
+
+// promotePendingAccusationsForPeer scans AccusationStore for any unpromoted accusations
+// where id is either the accused or the accuser, and evaluates them if all prerequisite
+// peers and active notes are now available.
+func (n *Node) promotePendingAccusationsForPeer(id string) {
+	if n.view.AccusationStore() == nil {
+		return
+	}
+	for _, acc := range n.view.AccusationStore().Elements() {
+		if acc == nil {
+			continue
+		}
+		if acc.Accused() != id && acc.Accuser() != id {
+			continue
+		}
+
+		accId := acc.Accused()
+		accuserId := acc.Accuser()
+
+		accuser := n.view.Peer(accuserId)
+		if accuserId == n.self.Id {
+			accuser = n.self
+		} else if accuser == nil {
+			continue
+		}
+
+		accused := n.view.Peer(accId)
+		if accId == n.self.Id {
+			accused = n.self
+		} else if accused == nil {
+			continue
+		}
+
+		if _, ok := n.view.ActiveNote(accId); !ok {
+			continue
+		}
+
+		if err := n.evalAccusation(acc.ToPbMsg(), accuser, accused); err != nil && err != errAccAlreadyExists {
+			log.Debug("Failed to promote pending accusation", "err", err, "accused", accId, "accuser", accuserId)
 		}
 	}
 }
