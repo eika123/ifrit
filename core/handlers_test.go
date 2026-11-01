@@ -1284,6 +1284,147 @@ func (suite *HandlerTestSuite) TestSpread_LegacyFallbackWithoutFingerprints() {
 	require.NotNil(suite.T(), reply.GetFingerprintAccusations())
 }
 
+func (suite *HandlerTestSuite) TestSpread_InSyncCertificatesReturnsZeroCertificates() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	args := &proto.State{
+		FingerprintCertificates: node.CertFingerprintBytes(),
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Empty(suite.T(), reply.GetCertificates())
+	require.Empty(suite.T(), reply.GetAvailableCertificateDigests())
+	require.Empty(suite.T(), reply.GetRequestedCertificateDigests())
+}
+
+func (suite *HandlerTestSuite) TestSpread_DivergentCertificateDigestsReturnsOnlyMissingDelta() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	certStore := node.view.CertStore()
+	require.NotNil(suite.T(), certStore)
+
+	allDigests := certStore.DigestsCopy()
+	require.NotEmpty(suite.T(), allDigests)
+
+	// Caller has all digests except the first one, and also an unknown digest 0xfeedbeef
+	callerDigests := make([]uint64, 0, len(allDigests)-1)
+	for _, d := range allDigests[1:] {
+		callerDigests = append(callerDigests, uint64(d))
+	}
+	callerDigests = append(callerDigests, uint64(0xfeedbeef))
+
+	args := &proto.State{
+		FingerprintCertificates: []byte("divergent-cert-fp"),
+		CertificateDigests:      callerDigests,
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.Len(suite.T(), reply.GetCertificates(), 1, "Divergent certificate set must return only missing delta")
+
+	missingCert, found := certStore.GetByDigest(allDigests[0])
+	require.True(suite.T(), found)
+	require.Equal(suite.T(), missingCert.Raw(), reply.GetCertificates()[0].GetRaw())
+	require.Equal(suite.T(), []uint64{0xfeedbeef}, reply.GetRequestedCertificateDigests(), "Node must request unknown certificate digest")
+	require.Equal(suite.T(), []uint64{uint64(allDigests[0])}, reply.GetAvailableCertificateDigests(), "Node must offer available delta digest")
+}
+
+type spyCertSessionFactory struct {
+	invoked bool
+	inner   SessionFactory[*discovery.Certificate, DigestSymbol]
+}
+
+func (s *spyCertSessionFactory) NewSession(store ReverseIndexStore[*discovery.Certificate, DigestSymbol]) (ReconcilerSession[*discovery.Certificate, DigestSymbol], error) {
+	s.invoked = true
+	return s.inner.NewSession(store)
+}
+
+func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticCertReconciliation() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	spy := &spyCertSessionFactory{
+		inner: NewNaiveSessionFactory[*discovery.Certificate, DigestSymbol](),
+	}
+	node.SetCertSessionFactory(spy)
+	defer node.SetCertSessionFactory(nil)
+
+	args := &proto.State{
+		FingerprintCertificates: []byte("divergent-cert-fp"),
+		CertificateDigests:      []uint64{},
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, args)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply)
+	require.True(suite.T(), spy.invoked, "Certificate reconciliation must use pluggable session factory")
+}
+
+func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	// Generate key and certificate for an unknown peer
+	priv, err := genKeys()
+	require.NoError(suite.T(), err)
+	cert := genCert(priv, 10)
+	peerId := string(cert.SubjectKeyId[:])
+
+	require.False(suite.T(), node.view.Exists(peerId), "Peer must not initially exist in full view")
+
+	note := discovery.NewNote(peerId, 1, math.MaxUint32, priv)
+
+	// Step 1: Ingest note before certificate via PushedNotes
+	args1 := &proto.State{
+		FingerprintView:        node.ViewFingerprintBytes(),
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		PushedNotes:            []*proto.Note{note},
+	}
+
+	reply1, err := node.Spread(ctx, args1)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply1)
+
+	// Verify note was ingested in Tier 1 NoteStore, but peer is not in full view or alive
+	require.False(suite.T(), node.view.Exists(peerId), "Peer must still not exist in full view")
+	_, hasActiveNote := node.view.ActiveNote(peerId)
+	require.False(suite.T(), hasActiveNote, "Peer must not have an active note before cert is known")
+
+	// Step 2: Certificate arrives via PushedCertificates
+	args2 := &proto.State{
+		FingerprintView:        node.ViewFingerprintBytes(),
+		FingerprintAccusations: node.AccusationFingerprintBytes(),
+		PushedCertificates:     []*proto.Certificate{{Raw: cert.Raw}},
+	}
+
+	reply2, err := node.Spread(ctx, args2)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply2)
+
+	// Verify certificate admitted peer, and orphaned note was automatically promoted!
+	require.True(suite.T(), node.view.Exists(peerId), "Peer must now exist in full view")
+	promotedNote, hasActiveNote := node.view.ActiveNote(peerId)
+	require.True(suite.T(), hasActiveNote, "Orphaned note must be promoted to active note upon cert arrival")
+	require.Equal(suite.T(), note.GetEpoch(), promotedNote.Epoch())
+
+	peer := node.view.Peer(peerId)
+	require.NotNil(suite.T(), peer)
+	require.True(suite.T(), node.view.IsAlive(peer), "Peer must now be marked alive")
+}
+
 func peerContext(p *discovery.Peer) context.Context {
 	cert, err := x509.ParseCertificate(p.Certificate())
 	if err != nil {

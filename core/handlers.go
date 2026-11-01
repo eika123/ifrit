@@ -44,113 +44,199 @@ var (
 )
 
 func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, error) {
-	var observed bool
 	cert, err := n.validateCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	reply := &pb.StateResponse{
-		FingerprintData:        n.FingerprintData(),
-		FingerprintAccusations: n.AccusationFingerprintBytes(),
-		FingerprintView:        n.ViewFingerprintBytes(),
+	remoteId := string(cert.SubjectKeyId[:])
+	peer, wasObserved, wasAccused, err := n.admitCaller(cert, remoteId, args.GetOwnNote())
+	if err != nil {
+		return nil, err
 	}
 
-	// TIER 1: Unconditional ingestion into grow-only raw NoteStore.
-	// Every incoming note — valid, invalid, corrupt, or carrying an adversarial payload — is
-	// persisted so set reconciliation fingerprints converge deterministically across all peers.
-	if ownNote := args.GetOwnNote(); ownNote != nil {
+	reply := n.newStateResponse()
+
+	if !n.view.ShouldBeNeighbour(remoteId) {
+		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, reply)
+	}
+
+	n.ingestPushedControlItems(args)
+	n.reconcileControlAndData(remoteId, args, reply)
+	n.handleExternalGossip(args, reply)
+	n.populateReplyFingerprints(reply)
+
+	return reply, nil
+}
+
+func (n *Node) newStateResponse() *pb.StateResponse {
+	return &pb.StateResponse{
+		FingerprintData:         n.FingerprintData(),
+		FingerprintAccusations:  n.AccusationFingerprintBytes(),
+		FingerprintView:         n.ViewFingerprintBytes(),
+		FingerprintCertificates: n.CertFingerprintBytes(),
+	}
+}
+
+func (n *Node) populateReplyFingerprints(reply *pb.StateResponse) {
+	reply.FingerprintData = n.FingerprintData()
+	reply.FingerprintAccusations = n.AccusationFingerprintBytes()
+	reply.FingerprintView = n.ViewFingerprintBytes()
+	reply.FingerprintCertificates = n.CertFingerprintBytes()
+}
+
+func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.Note) (*discovery.Peer, bool, bool, error) {
+	var wasObserved, wasAccused bool
+
+	// TIER 1: Unconditional raw ingestion of own note
+	if ownNote != nil {
 		if rawNote := discovery.NoteFromPb(ownNote); rawNote != nil && n.view.NoteStore() != nil {
 			n.view.NoteStore().Insert(rawNote)
 		}
 	}
 
-	remoteId := string(cert.SubjectKeyId[:])
 	peer := n.view.Peer(remoteId)
 	if peer != nil {
-		observed = true
+		wasObserved = true
+		wasAccused = n.view.IsAccused(peer)
 	}
 
 	if n.view.ShouldBeNeighbour(remoteId) {
 		if err := n.evalCertificate(cert); err != nil {
 			log.Error(err.Error())
-			return nil, err
+			return nil, wasObserved, wasAccused, err
 		}
+		if peer == nil {
+			peer = n.view.Peer(remoteId)
+		}
+	} else if !wasObserved {
+		if err := n.evalCertificate(cert); err != nil {
+			log.Error(err.Error())
+			return nil, wasObserved, wasAccused, err
+		}
+		peer = n.view.Peer(remoteId)
+	}
 
-		err := n.evalNote(args.GetOwnNote())
-		if err != nil && err != errOldNote {
+	if ownNote != nil {
+		if err := n.evalNote(ownNote); err != nil && err != errOldNote {
 			log.Debug(err.Error())
 		}
+	}
 
-		extGossip := args.GetExternalGossip()
-		hosts := args.GetExistingHosts()
+	return peer, wasObserved, wasAccused, nil
+}
 
-		hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil
-
-		if hasFingerprints {
-			// should maybe even reconcile certificates first.
-			n.reconcileNotes(args, reply)
-			n.reconcileAccusations(args, reply)
-			n.reconcileData(args, reply)
-		} else {
-			// Legacy caller
-			if hosts != nil {
-				n.mergeViews(hosts, reply)
-			}
-		}
-
-		if handler := n.getGossipHandler(); handler != nil && extGossip != nil {
-			// received some gossip, handle it
-			reply.ExternalGossip, err = handler(extGossip)
-			if err != nil {
-				log.Error(err.Error())
-			}
-		}
-	} else if observed {
-		if !n.view.IsAccused(peer) {
-			err := n.evalNote(args.GetOwnNote())
-			if err != nil {
-				log.Debug(err.Error())
-			}
+func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, wasObserved bool, wasAccused bool, reply *pb.StateResponse) (*pb.StateResponse, error) {
+	if wasObserved {
+		if !wasAccused {
 			return nil, errNotMyNeighbour
 		}
-
-		err := n.evalNote(args.GetOwnNote())
-		if err != nil {
-			log.Debug(err.Error())
-		}
-
 		for _, a := range n.view.ActiveAccusationsForPeer(peer) {
 			reply.Accusations = append(reply.Accusations, a.ToPbMsg())
 		}
-	} else {
-		if err := n.evalCertificate(cert); err != nil {
-			log.Error(err.Error())
-			return nil, err
-		}
+		return reply, nil
+	}
 
-		err := n.evalNote(args.GetOwnNote())
-		if err != nil {
-			log.Debug(err.Error())
-		}
+	// Help new peer integrate into the network
+	reply.Certificates = append(reply.Certificates,
+		&pb.Certificate{Raw: n.cm.Certificate().Raw})
+	if selfNote := n.view.SelfNote(); selfNote != nil {
+		reply.Notes = append(reply.Notes, selfNote.ToPbMsg())
+	}
 
-		// Help new peer integrate into the network
+	for _, p := range n.view.FindNeighbours(remoteId) {
 		reply.Certificates = append(reply.Certificates,
-			&pb.Certificate{Raw: n.cm.Certificate().Raw})
-		if selfNote := n.view.SelfNote(); selfNote != nil {
-			reply.Notes = append(reply.Notes, selfNote.ToPbMsg())
-		}
-
-		for _, p := range n.view.FindNeighbours(remoteId) {
-			reply.Certificates = append(reply.Certificates,
-				&pb.Certificate{Raw: p.Certificate()})
-			if note, ok := n.view.ActiveNote(p.Id); ok {
-				reply.Notes = append(reply.Notes, note.ToPbMsg())
-			}
+			&pb.Certificate{Raw: p.Certificate()})
+		if note, ok := n.view.ActiveNote(p.Id); ok {
+			reply.Notes = append(reply.Notes, note.ToPbMsg())
 		}
 	}
 
 	return reply, nil
+}
+
+func (n *Node) ingestPushedControlItems(args *pb.State) {
+	if pushedCerts := args.GetPushedCertificates(); len(pushedCerts) > 0 {
+		n.mergeCertificates(pushedCerts)
+	}
+	if pushedNotes := args.GetPushedNotes(); len(pushedNotes) > 0 {
+		n.mergeNotes(pushedNotes)
+	}
+	if pushedAccs := args.GetPushedAccusations(); len(pushedAccs) > 0 {
+		n.mergeAccusations(pushedAccs)
+	}
+}
+
+func (n *Node) reconcileControlAndData(remoteId string, args *pb.State, reply *pb.StateResponse) {
+	hosts := args.GetExistingHosts()
+	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
+
+	if hasFingerprints {
+		var peerSess *PeerReconcileSession
+		if n.sessionManager != nil {
+			peerSess = n.sessionManager.GetOrCreate(remoteId)
+		}
+
+		n.reconcileCertificates(peerSess, args, reply)
+		n.reconcileNotes(peerSess, args, reply)
+		n.reconcileAccusations(peerSess, args, reply)
+		n.reconcileData(peerSess, args, reply)
+	} else if hosts != nil {
+		n.mergeViews(hosts, reply)
+	}
+}
+
+func (n *Node) handleExternalGossip(args *pb.State, reply *pb.StateResponse) {
+	extGossip := args.GetExternalGossip()
+	if handler := n.getGossipHandler(); handler != nil && extGossip != nil {
+		replyGossip, err := handler(extGossip)
+		if err != nil {
+			log.Error(err.Error())
+		} else {
+			reply.ExternalGossip = replyGossip
+		}
+	}
+}
+
+func (n *Node) reconcileCertificates(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
+	callerFp := args.GetFingerprintCertificates()
+	if callerFp == nil {
+		return
+	}
+
+	if bytes.Equal(callerFp, n.CertFingerprintBytes()) {
+		return
+	}
+
+	factory := n.getCertSessionFactory()
+	if factory == nil {
+		// fallback when no factory is provided
+		factory = NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
+	}
+
+	certStore := n.view.CertStore()
+	if certStore == nil {
+		return
+	}
+
+	session, err := factory.NewSession(certStore)
+	if err != nil {
+		log.Error("Failed to create certificate reconciliation session", "err", err)
+		return
+	}
+
+	incomingDigests := revIdxStore.AsDigestSymbols(args.GetCertificateDigests())
+	localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
+
+	if sess != nil {
+		sess.SetCertSession(session)
+	}
+
+	for _, cert := range localDelta {
+		reply.Certificates = append(reply.Certificates, cert.ToPbMsg())
+	}
+	reply.RequestedCertificateDigests = revIdxStore.AsUint64Slice(requestedDigests)
+	reply.AvailableCertificateDigests = revIdxStore.AsUint64Slice(localDigests)
 }
 
 func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, error) {
@@ -250,21 +336,34 @@ func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 	handler(input, reply)
 }
 
-func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) {
+func (n *Node) reconcileAccusations(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
 	callerFp := args.GetFingerprintAccusations()
 	if callerFp != nil {
 		if bytes.Equal(callerFp, n.AccusationFingerprintBytes()) {
 			return
 		}
 
-		localDelta, localDigests, requestedDigests, err := ReconcileStore(
-			n.getAccusationSessionFactory(),
-			n.view.AccusationStore(),
-			revIdxStore.AsDigestSymbols(args.GetAccusationDigests()),
-		)
-		if err != nil {
-			log.Error("Failed to reconcile accusations", "err", err)
+		factory := n.getAccusationSessionFactory()
+		if factory == nil {
+			factory = NewNaiveSessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]()
+		}
+
+		accStore := n.view.AccusationStore()
+		if accStore == nil {
 			return
+		}
+
+		session, err := factory.NewSession(accStore)
+		if err != nil {
+			log.Error("Failed to create accusation reconciliation session", "err", err)
+			return
+		}
+
+		incomingDigests := revIdxStore.AsDigestSymbols(args.GetAccusationDigests())
+		localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
+
+		if sess != nil {
+			sess.SetAccSession(session)
 		}
 
 		// actually local accusations held on this node
@@ -282,21 +381,34 @@ func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) {
 	}
 }
 
-func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
+func (n *Node) reconcileNotes(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
 	callerFp := args.GetFingerprintView()
 	if callerFp != nil {
 		if bytes.Equal(callerFp, n.ViewFingerprintBytes()) {
 			return
 		}
 
-		localDelta, localDigests, requestedDigests, err := ReconcileStore(
-			n.getNoteSessionFactory(),
-			n.view.NoteStore(),
-			revIdxStore.AsDigestSymbols(args.GetNoteDigests()),
-		)
-		if err != nil {
-			log.Error("Failed to reconcile notes", "err", err)
+		factory := n.getNoteSessionFactory()
+		if factory == nil {
+			factory = NewNaiveSessionFactory[*discovery.Note, revIdxStore.DigestSymbol]()
+		}
+
+		noteStore := n.view.NoteStore()
+		if noteStore == nil {
 			return
+		}
+
+		session, err := factory.NewSession(noteStore)
+		if err != nil {
+			log.Error("Failed to create note reconciliation session", "err", err)
+			return
+		}
+
+		incomingDigests := revIdxStore.AsDigestSymbols(args.GetNoteDigests())
+		localDelta, localDigests, requestedDigests := ReconcileStoreWithSession(session, incomingDigests)
+
+		if sess != nil {
+			sess.SetNoteSession(session)
 		}
 
 		seenCerts := make(map[string]struct{})
@@ -323,7 +435,10 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
 	if hosts == nil {
 		return
 	}
+	n.mergeViewsHostNotes(hosts, reply)
+}
 
+func (n *Node) mergeViewsHostNotes(hosts map[string]uint64, reply *pb.StateResponse) {
 	lookupEpoch := func(rawId string) (uint64, bool) {
 		if epoch, ok := hosts[hex.EncodeToString([]byte(rawId))]; ok {
 			return epoch, true
@@ -356,7 +471,7 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
 	}
 }
 
-func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) {
+func (n *Node) reconcileData(sess *PeerReconcileSession, args *pb.State, reply *pb.StateResponse) {
 	callerFp := args.GetFingerprintData()
 	if callerFp != nil {
 		if bytes.Equal(callerFp, n.FingerprintData()) {
@@ -379,40 +494,10 @@ func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) {
 }
 
 func (n *Node) mergeViews(given map[string]uint64, reply *pb.StateResponse) {
-	lookupEpoch := func(rawId string) (uint64, bool) {
-		if epoch, ok := given[hex.EncodeToString([]byte(rawId))]; ok {
-			return epoch, true
-		}
-		if epoch, ok := given[rawId]; ok {
-			return epoch, true
-		}
-		return 0, false
-	}
-
-	for _, p := range n.view.Full() {
-		epoch, ok := lookupEpoch(p.Id)
-		if !ok {
-			reply.Certificates = append(reply.Certificates,
-				&pb.Certificate{Raw: p.Certificate()})
-
-			if note, found := n.view.ActiveNote(p.Id); found {
-				reply.Notes = append(reply.Notes, note.ToPbMsg())
-			}
-		} else if note, found := n.view.ActiveNote(p.Id); found && note.IsMoreRecent(epoch) {
-			reply.Notes = append(reply.Notes, note.ToPbMsg())
-		}
-	}
+	n.mergeViewsHostNotes(given, reply)
 
 	for _, a := range n.view.Accusations() {
 		reply.Accusations = append(reply.Accusations, a.ToPbMsg())
-	}
-
-	localNote := n.view.SelfNote()
-
-	if localNote != nil {
-		if epoch, exists := lookupEpoch(n.self.Id); !exists || localNote.IsMoreRecent(epoch) {
-			reply.Notes = append(reply.Notes, localNote.ToPbMsg())
-		}
 	}
 }
 
@@ -491,6 +576,15 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 		return
 	}
 	for _, b := range certs {
+		if b == nil || len(b.GetRaw()) == 0 {
+			continue
+		}
+
+		// Tier 1: Raw ingestion into certStore for deterministic set reconciliation
+		if n.view.CertStore() != nil {
+			n.view.CertStore().Insert(discovery.CertificateFromPb(b))
+		}
+
 		cert, err := x509.ParseCertificate(b.GetRaw())
 		if err != nil {
 			log.Error(err.Error())
@@ -498,6 +592,11 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 		}
 
 		if n.self.Id == string(cert.SubjectKeyId) {
+			continue
+		}
+
+		// Skip expensive evalCertificate if peer already exists in full view
+		if n.view.Exists(string(cert.SubjectKeyId)) {
 			continue
 		}
 
@@ -729,10 +828,37 @@ func (n *Node) validateCertificate(cert *x509.Certificate) error {
 	return cert.CheckSignatureFrom(cert)
 }
 
-// addValidCertificate registers an authenticated certificate in the full view if not already present.
+// addValidCertificate registers an authenticated certificate in the full view if not already present,
+// and promotes any previously unpromoted notes for this newly admitted peer.
 func (n *Node) addValidCertificate(cert *x509.Certificate) {
 	id := string(cert.SubjectKeyId)
-	_ = n.view.AddFull(id, cert)
+	if !n.view.Exists(id) {
+		if err := n.view.AddFull(id, cert); err != nil {
+			log.Error("Failed to add peer certificate to full view", "err", err)
+			return
+		}
+		n.promotePendingNotesForPeer(id)
+	}
+}
+
+// promotePendingNotesForPeer scans NoteStore for any unpromoted notes belonging to id and evaluates the newest one.
+func (n *Node) promotePendingNotesForPeer(id string) {
+	if n.view.NoteStore() == nil {
+		return
+	}
+	var newestNote *discovery.Note
+	for _, note := range n.view.NoteStore().Elements() {
+		if note.Id() == id {
+			if newestNote == nil || note.Epoch() > newestNote.Epoch() {
+				newestNote = note
+			}
+		}
+	}
+	if newestNote != nil {
+		if err := n.evalNote(newestNote.ToPbMsg()); err != nil && err != errOldNote {
+			log.Debug("Failed to promote pending note on certificate arrival", "err", err)
+		}
+	}
 }
 
 // evalCertificate validates a certificate and adds it to the full view if valid.

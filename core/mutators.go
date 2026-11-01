@@ -15,9 +15,10 @@ var (
 
 func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
 	msg := &proto.State{
-		FingerprintData:        n.FingerprintData(),
-		FingerprintAccusations: n.AccusationFingerprintBytes(),
-		FingerprintView:        n.ViewFingerprintBytes(),
+		FingerprintData:         n.FingerprintData(),
+		FingerprintAccusations:  n.AccusationFingerprintBytes(),
+		FingerprintView:         n.ViewFingerprintBytes(),
+		FingerprintCertificates: n.CertFingerprintBytes(),
 	}
 
 	if selfNote := n.view.SelfNote(); selfNote != nil {
@@ -31,7 +32,7 @@ func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
 	}
 
 	if viewDiff {
-		msg.ExistingHosts = n.view.ExistingHostsMap()
+		msg.CertificateDigests = n.CertDigestsUint64()
 		msg.NoteDigests = n.NoteDigestsUint64()
 	}
 
