@@ -9,6 +9,84 @@ import (
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
 
+// ErrNilStore indicates that a nil store was provided where an active store is required.
+var ErrNilStore = errors.New("store cannot be nil")
+
+// Symbol is aliased from revIdxStore.Symbol.
+type Symbol[S any] = revIdxStore.Symbol[S]
+
+// ReverseIndexStore is aliased from revIdxStore.ReverseIndexStore.
+type ReverseIndexStore[T any, S Symbol[S]] = revIdxStore.ReverseIndexStore[T, S]
+
+// ReconcilerSession represents an active set reconciliation session between two peers.
+type ReconcilerSession[T, S any] interface {
+	ProcessIncomingMessage(msg []byte) error
+	ProcessIncomingDigests(incoming []S)
+	SetResolvedDiffs(localDiff, remoteDiff []S)
+	GenerateNextMessage() ([]byte, error)
+
+	Done() bool
+	RemoteDigests() []S // Elements the peer has that we need to fetch
+	LocalDigests() []S  // Elements we have that the peer is missing
+	LocalElements() []T // Elements we have that the peer is missing (resolved from local store)
+	DiffDigests() []S   // Union of RemoteDigests() and LocalDigests() (the symmetric difference)
+}
+
+// SessionFactory creates a new reconciliation session backed by a store snapshot/view.
+type SessionFactory[T any, S Symbol[S]] interface {
+	NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
+}
+
+// DiffDigests returns the union of local and remote digests (the symmetric difference).
+func DiffDigests[S any](local, remote []S) []S {
+	diff := make([]S, 0, len(local)+len(remote))
+	diff = append(diff, local...)
+	diff = append(diff, remote...)
+	return diff
+}
+
+// SessionLocalElements resolves elements from the store corresponding to localDiff digests.
+func SessionLocalElements[T any, S Symbol[S]](store ReverseIndexStore[T, S], localDiff []S) []T {
+	if store == nil || len(localDiff) == 0 {
+		return nil
+	}
+	elems, _ := store.GetByDigests(localDiff)
+	return elems
+}
+
+// ReconcileStoreWithSession executes a reconciliation round using an existing session produced by factory.
+func ReconcileStoreWithSession[T any, S Symbol[S]](
+	session ReconcilerSession[T, S],
+	incomingDigests []S,
+) (localElements []T, localDigests, remoteDigests []S) {
+	if session == nil {
+		return nil, nil, nil
+	}
+	session.ProcessIncomingDigests(incomingDigests)
+	return session.LocalElements(), session.LocalDigests(), session.RemoteDigests()
+}
+
+// ReconcileStore executes a protocol-agnostic reconciliation round against the given store using
+// a session produced by factory. If factory is nil, it defaults to NaiveSessionFactory.
+func ReconcileStore[T any, S Symbol[S]](
+	factory SessionFactory[T, S],
+	store ReverseIndexStore[T, S],
+	incomingDigests []S,
+) (localElements []T, localDigests, remoteDigests []S, err error) {
+	if store == nil {
+		return nil, nil, nil, ErrNilStore
+	}
+	if factory == nil {
+		factory = NewNaiveSessionFactory[T, S]()
+	}
+	session, err := factory.NewSession(store)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	localElements, localDigests, remoteDigests = ReconcileStoreWithSession(session, incomingDigests)
+	return localElements, localDigests, remoteDigests, nil
+}
+
 // SessionState models the lifecycle of a set reconciliation session with a peer.
 type SessionState int
 
