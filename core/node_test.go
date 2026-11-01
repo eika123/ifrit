@@ -240,7 +240,8 @@ func (cs *cryptoStub) Sign(data []byte) ([]byte, []byte, error) {
 }
 
 type cmStub struct {
-	cert *x509.Certificate
+	cert   *x509.Certificate
+	caCert *x509.Certificate
 }
 
 // Priv implements [certManager].
@@ -263,7 +264,7 @@ func (cm *cmStub) Certificate() *x509.Certificate {
 }
 
 func (cm *cmStub) CaCertificate() *x509.Certificate {
-	return nil
+	return cm.caCert
 }
 
 func (cm *cmStub) ContactList() []*x509.Certificate {

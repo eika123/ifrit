@@ -85,7 +85,9 @@ func (c correct) Gossip(n *Node) {
 			sess.TransitionAfterReconcile(seq, true)
 		}
 
-		if !deltas.HasDeltas() {
+		if deltas.HasDeltas() {
+			n.spawnSyncSession(p, sess, seq)
+		} else {
 			// In sync: update cached peer fingerprints from responder's reply
 			if fpData := reply.GetFingerprintData(); fpData != nil {
 				p.SetFingerprintData(fpData)

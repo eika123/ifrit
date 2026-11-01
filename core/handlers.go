@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/golang/protobuf/proto"
@@ -334,10 +335,32 @@ done:
 }
 
 // Sync handles inbound bulk data and anti-entropy synchronization streams from peers.
-// In Step B.2, this serves as the server transport entry point.
-// In Step B.3, this will invoke the bidirectional Sync engine (executeBidirectionalSync).
 func (n *Node) Sync(srv pb.Gossip_SyncServer) error {
-	return nil
+	if srv == nil {
+		return errors.New("sync: server stream is nil")
+	}
+	ctx := srv.Context()
+	cert, err := n.validateCtx(ctx)
+	if err != nil {
+		log.Error("Sync validateCtx failed", "err", err)
+		return status.Errorf(codes.Unauthenticated, "invalid caller cert: %v", err)
+	}
+	remoteID := string(cert.SubjectKeyId)
+
+	peer := n.view.Peer(remoteID)
+	if peer == nil {
+		log.Error("Sync peer not in view", "remoteID", fmt.Sprintf("%x", remoteID))
+		return status.Errorf(codes.PermissionDenied, "caller not recognized in view: %x", remoteID)
+	}
+
+	sess := n.sessionManager.GetOrCreate(remoteID)
+	seq, err := sess.StartInboundTransfer()
+	if err != nil {
+		log.Error("Sync StartInboundTransfer failed", "err", err, "state", sess.State())
+		return status.Errorf(codes.FailedPrecondition, "session not awaiting stream: %v", err)
+	}
+
+	return n.executeBidirectionalSync(ctx, srv, peer, sess, seq, false)
 }
 
 func (n *Node) replyStream(reply chan []byte, srv pb.Gossip_StreamServer) {

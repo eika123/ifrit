@@ -85,6 +85,11 @@ type Node struct {
 
 	sessionManager *PeerSessionManager
 
+	syncConfig      SyncConfig
+	syncConfigMutex sync.RWMutex
+	syncCtx         context.Context
+	syncCancel      context.CancelFunc
+
 	dispatcher *workerpool.Dispatcher
 
 	entryAddrs []string
@@ -213,10 +218,15 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 		sessionManager: NewPeerSessionManager(staleTimeout),
 		reconProtocol:  protoDef,
+		syncConfig:     DefaultSyncConfig(),
 
 		// Visualizer specific
 		useViz: viper.GetBool("use_viz"),
 	}
+
+	syncCtx, syncCancel := context.WithCancel(context.Background())
+	n.syncCtx = syncCtx
+	n.syncCancel = syncCancel
 
 	if n.useViz {
 		interval := time.Second * time.Duration(viper.GetInt32("viz_update_interval"))
@@ -570,6 +580,9 @@ func (n *Node) isStopping() bool {
 
 	n.exitFlag = true
 	close(n.exitChan)
+	if n.syncCancel != nil {
+		n.syncCancel()
+	}
 
 	return false
 }

@@ -528,6 +528,20 @@ func (s *PeerReconcileSession) StartTransfer(seq uint64) error {
 	return nil
 }
 
+// StartInboundTransfer atomically transitions from SessionAwaitingStream to SessionTransferring
+// and returns the matching generation sequence.
+func (s *PeerReconcileSession) StartInboundTransfer() (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != SessionAwaitingStream {
+		return 0, ErrInvalidTransition
+	}
+	s.state = SessionTransferring
+	s.lastActivity = time.Now()
+	return s.seq, nil
+}
+
 // CompleteTransfer resets the session back to SessionIdle upon stream completion
 // if seq matches current generation.
 func (s *PeerReconcileSession) CompleteTransfer(seq uint64) bool {

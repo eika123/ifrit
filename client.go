@@ -268,6 +268,22 @@ func DefaultItemCodec[T any]() ItemCodec[T] {
 	return core.DefaultItemCodec[T]()
 }
 
+// SyncConfig defines streaming transfer limits and chunking parameters.
+type SyncConfig = core.SyncConfig
+
+// DefaultSyncConfig returns standard streaming parameters.
+func DefaultSyncConfig() SyncConfig {
+	return core.DefaultSyncConfig()
+}
+
+// SetSyncConfig updates the streaming configuration on the client's node.
+func (c *Client) SetSyncConfig(cfg SyncConfig) {
+	if c == nil || c.node == nil {
+		return
+	}
+	c.node.SetSyncConfig(cfg)
+}
+
 var (
 	ErrNilCodec       = core.ErrNilCodec
 	ErrDigestMismatch = core.ErrDigestMismatch
