@@ -360,6 +360,7 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 	// Case 1: RPC returns divergent deltas -> session transitions to SessionTransferring
 	comm.response = &pb.StateResponse{
 		AvailableCertificateDigests: []uint64{0x12345},
+		RequestedDataDigests:        []uint64{0x99999},
 	}
 	n.p.Gossip(n)
 
@@ -367,6 +368,10 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 	require.NotNil(t, sess)
 	assert.Equal(t, SessionTransferring, sess.State())
 	assert.True(t, sess.HasDeltas())
+	assert.Equal(t, []uint64{0x12345}, sess.Deltas().AvailableCertificates)
+	assert.Equal(t, []uint64{0x99999}, sess.Deltas().RequestedData)
+	assert.Equal(t, []uint64{0x12345}, sess.Deltas().IngressCertificates(true))
+	assert.Equal(t, []uint64{0x99999}, sess.Deltas().EgressData(true))
 
 	// Case 2: Concurrency guard - while session is in SessionTransferring, next Gossip tick skips peer
 	comm.mu.Lock()

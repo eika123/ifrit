@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/joonnna/ifrit/core/discovery"
+	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 )
@@ -215,6 +216,117 @@ var (
 	ErrInvalidTransition = errors.New("invalid session state transition")
 )
 
+// ReconcileDeltas captures the digest differences computed during the Spread exchange.
+// Requested digests represent items the responder needs from the caller (A \ B).
+// Available digests represent items the responder offers to the caller (B \ A).
+type ReconcileDeltas struct {
+	// Requested digests: items caller has that responder needs (A \ B)
+	RequestedCertificates []uint64
+	RequestedNotes        []uint64
+	RequestedAccusations  []uint64
+	RequestedData         []uint64
+
+	// Available digests: items responder has that caller needs (B \ A)
+	AvailableCertificates []uint64
+	AvailableNotes        []uint64
+	AvailableAccusations  []uint64
+	AvailableData         []uint64
+}
+
+// ExtractReconcileDeltas extracts all requested and available digest slices from a StateResponse.
+func ExtractReconcileDeltas(reply *pb.StateResponse) ReconcileDeltas {
+	if reply == nil {
+		return ReconcileDeltas{}
+	}
+	return ReconcileDeltas{
+		RequestedCertificates: reply.GetRequestedCertificateDigests(),
+		RequestedNotes:        reply.GetRequestedNoteDigests(),
+		RequestedAccusations:  reply.GetRequestedAccusationDigests(),
+		RequestedData:         reply.GetRequestedDataDigests(),
+
+		AvailableCertificates: reply.GetAvailableCertificateDigests(),
+		AvailableNotes:        reply.GetAvailableNoteDigests(),
+		AvailableAccusations:  reply.GetAvailableAccusationDigests(),
+		AvailableData:         reply.GetAvailableDataDigests(),
+	}
+}
+
+// HasDeltas returns true if any requested or available deltas exist across any store.
+func (d ReconcileDeltas) HasDeltas() bool {
+	return len(d.RequestedCertificates) > 0 ||
+		len(d.AvailableCertificates) > 0 ||
+		len(d.RequestedNotes) > 0 ||
+		len(d.AvailableNotes) > 0 ||
+		len(d.RequestedAccusations) > 0 ||
+		len(d.AvailableAccusations) > 0 ||
+		len(d.RequestedData) > 0 ||
+		len(d.AvailableData) > 0
+}
+
+// EgressCertificates returns the certificate digests this node must send over the stream.
+func (d ReconcileDeltas) EgressCertificates(isCaller bool) []uint64 {
+	if isCaller {
+		return d.RequestedCertificates
+	}
+	return d.AvailableCertificates
+}
+
+// IngressCertificates returns the certificate digests this node expects to receive over the stream.
+func (d ReconcileDeltas) IngressCertificates(isCaller bool) []uint64 {
+	if isCaller {
+		return d.AvailableCertificates
+	}
+	return d.RequestedCertificates
+}
+
+// EgressNotes returns the note digests this node must send over the stream.
+func (d ReconcileDeltas) EgressNotes(isCaller bool) []uint64 {
+	if isCaller {
+		return d.RequestedNotes
+	}
+	return d.AvailableNotes
+}
+
+// IngressNotes returns the note digests this node expects to receive over the stream.
+func (d ReconcileDeltas) IngressNotes(isCaller bool) []uint64 {
+	if isCaller {
+		return d.AvailableNotes
+	}
+	return d.RequestedNotes
+}
+
+// EgressAccusations returns the accusation digests this node must send over the stream.
+func (d ReconcileDeltas) EgressAccusations(isCaller bool) []uint64 {
+	if isCaller {
+		return d.RequestedAccusations
+	}
+	return d.AvailableAccusations
+}
+
+// IngressAccusations returns the accusation digests this node expects to receive over the stream.
+func (d ReconcileDeltas) IngressAccusations(isCaller bool) []uint64 {
+	if isCaller {
+		return d.AvailableAccusations
+	}
+	return d.RequestedAccusations
+}
+
+// EgressData returns the data digests this node must send over the stream.
+func (d ReconcileDeltas) EgressData(isCaller bool) []uint64 {
+	if isCaller {
+		return d.RequestedData
+	}
+	return d.AvailableData
+}
+
+// IngressData returns the data digests this node expects to receive over the stream.
+func (d ReconcileDeltas) IngressData(isCaller bool) []uint64 {
+	if isCaller {
+		return d.AvailableData
+	}
+	return d.RequestedData
+}
+
 // PeerReconcileSession tracks per-peer reconciliation state across certificates, notes, accusations, and data.
 // It is protected by a mutex ensuring only one active reconciliation session per peer pair is in flight.
 type PeerReconcileSession struct {
@@ -222,6 +334,7 @@ type PeerReconcileSession struct {
 	peerID       string
 	state        SessionState
 	lastActivity time.Time
+	deltas       ReconcileDeltas
 	hasDeltas    bool
 }
 
@@ -246,6 +359,22 @@ func (s *PeerReconcileSession) State() SessionState {
 	return s.state
 }
 
+// Deltas returns a copy of the recorded digest differences.
+func (s *PeerReconcileSession) Deltas() ReconcileDeltas {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deltas
+}
+
+// SetDeltas records the computed digest differences for this session.
+func (s *PeerReconcileSession) SetDeltas(deltas ReconcileDeltas) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deltas = deltas
+	s.hasDeltas = deltas.HasDeltas()
+	s.lastActivity = time.Now()
+}
+
 // TryStartReconciling attempts to atomically transition from SessionIdle to SessionReconciling.
 // Returns true if acquired, false if the session is already active.
 func (s *PeerReconcileSession) TryStartReconciling() bool {
@@ -257,6 +386,7 @@ func (s *PeerReconcileSession) TryStartReconciling() bool {
 	}
 	s.state = SessionReconciling
 	s.hasDeltas = false
+	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
 	return true
 }
@@ -274,6 +404,7 @@ func (s *PeerReconcileSession) TryStartInboundReconciling() bool {
 	}
 	s.state = SessionReconciling
 	s.hasDeltas = false
+	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
 	return true
 }
@@ -283,13 +414,17 @@ func (s *PeerReconcileSession) SetHasDeltas(hasDeltas bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hasDeltas = hasDeltas
+	if !hasDeltas {
+		s.deltas = ReconcileDeltas{}
+	}
+	s.lastActivity = time.Now()
 }
 
 // HasDeltas returns true if the session holds non-empty pending deltas.
 func (s *PeerReconcileSession) HasDeltas() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.hasDeltas
+	return s.hasDeltas || s.deltas.HasDeltas()
 }
 
 // TransitionAfterReconcile transitions the session after diff resolution.
@@ -308,7 +443,7 @@ func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionSt
 		return s.state
 	}
 
-	if !s.hasDeltas {
+	if !s.hasDeltas && !s.deltas.HasDeltas() {
 		s.state = SessionIdle
 	} else if isCaller {
 		s.state = SessionTransferring
@@ -341,6 +476,7 @@ func (s *PeerReconcileSession) FinishTransfer() {
 
 	s.state = SessionIdle
 	s.hasDeltas = false
+	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
 }
 
@@ -351,6 +487,7 @@ func (s *PeerReconcileSession) ResetToIdle() {
 
 	s.state = SessionIdle
 	s.hasDeltas = false
+	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
 }
 

@@ -78,13 +78,13 @@ func (c correct) Gossip(n *Node) {
 			n.mergeAccusations(accs)
 		}
 
-		hasDeltas := hasReconciliationDeltas(reply)
+		deltas := ExtractReconcileDeltas(reply)
 		if sess != nil {
-			sess.SetHasDeltas(hasDeltas)
+			sess.SetDeltas(deltas)
 			sess.TransitionAfterReconcile(true)
 		}
 
-		if !hasDeltas {
+		if !deltas.HasDeltas() {
 			// In sync: update cached peer fingerprints from responder's reply
 			if fpData := reply.GetFingerprintData(); fpData != nil {
 				p.SetFingerprintData(fpData)
@@ -108,17 +108,7 @@ func (c correct) Gossip(n *Node) {
 // hasReconciliationDeltas returns true if the StateResponse contains any requested
 // or available digest differences for certificates, notes, accusations, or data.
 func hasReconciliationDeltas(reply *pb.StateResponse) bool {
-	if reply == nil {
-		return false
-	}
-	return len(reply.GetRequestedCertificateDigests()) > 0 ||
-		len(reply.GetAvailableCertificateDigests()) > 0 ||
-		len(reply.GetRequestedNoteDigests()) > 0 ||
-		len(reply.GetAvailableNoteDigests()) > 0 ||
-		len(reply.GetRequestedAccusationDigests()) > 0 ||
-		len(reply.GetAvailableAccusationDigests()) > 0 ||
-		len(reply.GetRequestedDataDigests()) > 0 ||
-		len(reply.GetAvailableDataDigests()) > 0
+	return ExtractReconcileDeltas(reply).HasDeltas()
 }
 
 func (c correct) Monitor(n *Node) {

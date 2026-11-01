@@ -1418,6 +1418,10 @@ func (suite *HandlerTestSuite) TestSpread_PeerReconcileSessionStateTransitions()
 	require.NotNil(suite.T(), sess2)
 	require.Equal(suite.T(), SessionAwaitingStream, sess2.State())
 	require.True(suite.T(), sess2.HasDeltas())
+	require.Equal(suite.T(), []uint64{0x12345678}, sess2.Deltas().RequestedCertificates)
+	require.Equal(suite.T(), []uint64{0x12345678}, sess2.Deltas().IngressCertificates(false))
+	require.NotEmpty(suite.T(), sess2.Deltas().AvailableCertificates)
+	require.NotEmpty(suite.T(), sess2.Deltas().EgressCertificates(false))
 }
 
 func peerContext(p *discovery.Peer) context.Context {

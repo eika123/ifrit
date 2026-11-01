@@ -165,22 +165,13 @@ func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, repl
 			peerSess.TryStartInboundReconciling()
 		}
 
-		hasDeltas := false
-		if n.computeCertificateDeltas(args, reply) {
-			hasDeltas = true
-		}
-		if n.computeNoteDeltas(args, reply) {
-			hasDeltas = true
-		}
-		if n.computeAccusationDeltas(args, reply) {
-			hasDeltas = true
-		}
-		if n.computeDataDeltas(args, reply) {
-			hasDeltas = true
-		}
+		n.computeCertificateDeltas(args, reply)
+		n.computeNoteDeltas(args, reply)
+		n.computeAccusationDeltas(args, reply)
+		n.computeDataDeltas(args, reply)
 
 		if peerSess != nil {
-			peerSess.SetHasDeltas(hasDeltas)
+			peerSess.SetDeltas(ExtractReconcileDeltas(reply))
 			peerSess.TransitionAfterReconcile(false)
 		}
 	} else if hosts != nil {
