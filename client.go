@@ -260,6 +260,21 @@ func NewDigestSet[T any](hasher revIdxStore.Hasher[T, revIdxStore.DigestSymbol])
 	return revIdxStore.NewDigestSet(hasher)
 }
 
+// ItemCodec defines the serialization and deserialization contract for data items.
+type ItemCodec[T any] = core.ItemCodec[T]
+
+// DefaultItemCodec returns the default ItemCodec implementation for type T.
+func DefaultItemCodec[T any]() ItemCodec[T] {
+	return core.DefaultItemCodec[T]()
+}
+
+var (
+	ErrNilCodec       = core.ErrNilCodec
+	ErrDigestMismatch = core.ErrDigestMismatch
+	ErrDecodeFailed   = core.ErrDecodeFailed
+	ErrEncodeFailed   = core.ErrEncodeFailed
+)
+
 // RegisterDataStore registers an application's typed data store with the Ifrit client.
 // Ifrit selects and manages the underlying set reconciliation protocol.
 func RegisterDataStore[T any](c *Client, store ReverseIndexStore[T]) {
@@ -267,6 +282,14 @@ func RegisterDataStore[T any](c *Client, store ReverseIndexStore[T]) {
 		return
 	}
 	core.RegisterDataStore(c.node, store)
+}
+
+// RegisterDataStoreWithCodec registers an application's typed data store with the Ifrit client using a custom ItemCodec.
+func RegisterDataStoreWithCodec[T any](c *Client, store ReverseIndexStore[T], codec ItemCodec[T]) {
+	if c == nil || c.node == nil {
+		return
+	}
+	core.RegisterDataStoreWithCodec(c.node, store, codec)
 }
 
 func (c *Client) SavePrivateKey() error {

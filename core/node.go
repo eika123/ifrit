@@ -466,12 +466,17 @@ func (n *Node) GetDataReconciler() DataReconciler {
 }
 
 // RegisterDataStore registers an application's typed data store on the node,
-// wrapping it into a DataReconciler using the default or configured session factory.
+// wrapping it into a DataReconciler using the default item codec and default session factory.
 func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, revIdxStore.DigestSymbol]) {
+	RegisterDataStoreWithCodec(n, store, DefaultItemCodec[T]())
+}
+
+// RegisterDataStoreWithCodec registers an application's typed data store on the node with a custom ItemCodec.
+func RegisterDataStoreWithCodec[T any](n *Node, store ReverseIndexStore[T, revIdxStore.DigestSymbol], codec ItemCodec[T]) {
 	if n == nil {
 		return
 	}
-	n.SetDataReconciler(NewTypedDataReconciler(store, nil))
+	n.SetDataReconciler(NewTypedDataReconcilerWithCodec(store, codec, nil))
 }
 
 // SetReconciliationProtocol configures the node's set reconciliation protocol.
