@@ -1220,6 +1220,7 @@ func (suite *HandlerTestSuite) TestSpread_DataDigestReconciliationOmitsBulkBytes
 	require.NoError(suite.T(), err)
 	require.Nil(suite.T(), reply.GetExternalGossip(), "Spread must never send bulk data bytes during reconciliation")
 	require.Equal(suite.T(), []uint64{103}, reply.GetRequestedDataDigests(), "Node must request missing digest 103 from caller")
+	require.Equal(suite.T(), []uint64{102}, reply.GetAvailableDataDigests(), "Node must report missing local digest 102 available for caller")
 	require.Equal(suite.T(), []byte("local-data-fp-8b"), reply.GetFingerprintData())
 }
 

@@ -257,7 +257,7 @@ func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) {
 			return
 		}
 
-		localDelta, requestedDigests, err := ReconcileStore(
+		localDelta, localDigests, requestedDigests, err := ReconcileStore(
 			n.getAccusationSessionFactory(),
 			n.view.AccusationStore(),
 			revIdxStore.AsDigestSymbols(args.GetAccusationDigests()),
@@ -272,6 +272,7 @@ func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) {
 			reply.Accusations = append(reply.Accusations, acc.ToPbMsg())
 		}
 		reply.RequestedAccusationDigests = revIdxStore.AsUint64Slice(requestedDigests)
+		reply.AvailableAccusationDigests = revIdxStore.AsUint64Slice(localDigests)
 		return
 	}
 
@@ -288,7 +289,7 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
 			return
 		}
 
-		localDelta, requestedDigests, err := ReconcileStore(
+		localDelta, localDigests, requestedDigests, err := ReconcileStore(
 			n.getNoteSessionFactory(),
 			n.view.NoteStore(),
 			revIdxStore.AsDigestSymbols(args.GetNoteDigests()),
@@ -314,6 +315,7 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) {
 			}
 		}
 		reply.RequestedNoteDigests = revIdxStore.AsUint64Slice(requestedDigests)
+		reply.AvailableNoteDigests = revIdxStore.AsUint64Slice(localDigests)
 		return
 	}
 
@@ -366,12 +368,13 @@ func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) {
 			return
 		}
 
-		remoteDiff, err := reconciler.Reconcile(revIdxStore.AsDigestSymbols(args.GetDataDigests()))
+		localDiff, remoteDiff, err := reconciler.Reconcile(revIdxStore.AsDigestSymbols(args.GetDataDigests()))
 		if err != nil {
 			log.Error("Failed to reconcile data", "err", err)
 			return
 		}
 		reply.RequestedDataDigests = revIdxStore.AsUint64Slice(remoteDiff)
+		reply.AvailableDataDigests = revIdxStore.AsUint64Slice(localDiff)
 	}
 }
 

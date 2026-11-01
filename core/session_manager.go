@@ -1,0 +1,322 @@
+package core
+
+import (
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/joonnna/ifrit/core/discovery"
+	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+)
+
+// SessionState models the lifecycle of a set reconciliation session with a peer.
+type SessionState int
+
+const (
+	// SessionIdle indicates no active reconciliation or transfer is occurring with the peer.
+	SessionIdle SessionState = iota
+	// SessionReconciling indicates an inbound or outbound Spread is resolving set diffs.
+	SessionReconciling
+	// SessionAwaitingStream indicates diffs have been resolved on the responder, awaiting inbound stream.
+	SessionAwaitingStream
+	// SessionTransferring indicates active bulk data or control item streaming is in flight.
+	SessionTransferring
+)
+
+func (s SessionState) String() string {
+	switch s {
+	case SessionIdle:
+		return "Idle"
+	case SessionReconciling:
+		return "Reconciling"
+	case SessionAwaitingStream:
+		return "AwaitingStream"
+	case SessionTransferring:
+		return "Transferring"
+	default:
+		return "Unknown"
+	}
+}
+
+var (
+	ErrSessionBusy       = errors.New("reconciliation session is busy")
+	ErrInvalidTransition = errors.New("invalid session state transition")
+)
+
+// PeerReconcileSession tracks per-peer reconciliation state across certificates, notes, accusations, and data.
+// It is protected by a mutex ensuring only one active reconciliation session per peer pair is in flight.
+type PeerReconcileSession struct {
+	mu           sync.Mutex
+	peerID       string
+	state        SessionState
+	lastActivity time.Time
+
+	certSession ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol]
+	noteSession ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol]
+	accSession  ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol]
+	dataSession ReconcilerSession[any, revIdxStore.DigestSymbol]
+}
+
+// NewPeerReconcileSession constructs a new session in SessionIdle state for peerID.
+func NewPeerReconcileSession(peerID string) *PeerReconcileSession {
+	return &PeerReconcileSession{
+		peerID:       peerID,
+		state:        SessionIdle,
+		lastActivity: time.Now(),
+	}
+}
+
+// PeerID returns the authenticated peer identity for this session.
+func (s *PeerReconcileSession) PeerID() string {
+	return s.peerID
+}
+
+// State returns the current session state.
+func (s *PeerReconcileSession) State() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
+// TryStartReconciling attempts to atomically transition from SessionIdle to SessionReconciling.
+// Returns true if acquired, false if the session is already active.
+func (s *PeerReconcileSession) TryStartReconciling() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != SessionIdle {
+		return false
+	}
+	s.state = SessionReconciling
+	s.lastActivity = time.Now()
+	return true
+}
+
+// HasDeltas returns true if any initialized set session holds non-empty local or remote deltas.
+func (s *PeerReconcileSession) HasDeltas() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
+		return true
+	}
+	if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
+		return true
+	}
+	if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
+		return true
+	}
+	if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
+		return true
+	}
+	return false
+}
+
+// TransitionAfterReconcile transitions the session after diff resolution.
+// If isCaller is true:
+//   - If has deltas -> SessionTransferring (ready to open stream/dispatch egress)
+//   - If no deltas  -> SessionIdle
+//
+// If isCaller is false (Responder):
+//   - If has deltas -> SessionAwaitingStream (waiting for caller to open stream)
+//   - If no deltas  -> SessionIdle
+func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != SessionReconciling {
+		return s.state
+	}
+
+	hasDeltas := false
+	if s.certSession != nil && (len(s.certSession.LocalDigests()) > 0 || len(s.certSession.RemoteDigests()) > 0) {
+		hasDeltas = true
+	} else if s.noteSession != nil && (len(s.noteSession.LocalDigests()) > 0 || len(s.noteSession.RemoteDigests()) > 0) {
+		hasDeltas = true
+	} else if s.accSession != nil && (len(s.accSession.LocalDigests()) > 0 || len(s.accSession.RemoteDigests()) > 0) {
+		hasDeltas = true
+	} else if s.dataSession != nil && (len(s.dataSession.LocalDigests()) > 0 || len(s.dataSession.RemoteDigests()) > 0) {
+		hasDeltas = true
+	}
+
+	if !hasDeltas {
+		s.state = SessionIdle
+		s.resetSessions()
+	} else if isCaller {
+		s.state = SessionTransferring
+	} else {
+		s.state = SessionAwaitingStream
+	}
+
+	s.lastActivity = time.Now()
+	return s.state
+}
+
+// StartTransfer attempts to transition from SessionAwaitingStream to SessionTransferring
+// when the remote peer initiates the authenticated stream.
+func (s *PeerReconcileSession) StartTransfer() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != SessionAwaitingStream {
+		return ErrInvalidTransition
+	}
+	s.state = SessionTransferring
+	s.lastActivity = time.Now()
+	return nil
+}
+
+// FinishTransfer resets the session back to SessionIdle upon successful stream completion.
+func (s *PeerReconcileSession) FinishTransfer() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state = SessionIdle
+	s.resetSessions()
+	s.lastActivity = time.Now()
+}
+
+// ResetToIdle forcefully resets the session to SessionIdle (e.g. on RPC error or stale sweep).
+func (s *PeerReconcileSession) ResetToIdle() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state = SessionIdle
+	s.resetSessions()
+	s.lastActivity = time.Now()
+}
+
+// SetCertSession sets the certificate reconciliation session.
+func (s *PeerReconcileSession) SetCertSession(sess ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.certSession = sess
+}
+
+// CertSession returns the active certificate reconciliation session.
+func (s *PeerReconcileSession) CertSession() ReconcilerSession[*discovery.Certificate, revIdxStore.DigestSymbol] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.certSession
+}
+
+// SetNoteSession sets the note reconciliation session.
+func (s *PeerReconcileSession) SetNoteSession(sess ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noteSession = sess
+}
+
+// NoteSession returns the active note reconciliation session.
+func (s *PeerReconcileSession) NoteSession() ReconcilerSession[*discovery.Note, revIdxStore.DigestSymbol] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.noteSession
+}
+
+// SetAccSession sets the accusation reconciliation session.
+func (s *PeerReconcileSession) SetAccSession(sess ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accSession = sess
+}
+
+// AccSession returns the active accusation reconciliation session.
+func (s *PeerReconcileSession) AccSession() ReconcilerSession[*discovery.Accusation, revIdxStore.DigestSymbol] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.accSession
+}
+
+// SetDataSession sets the data reconciliation session.
+func (s *PeerReconcileSession) SetDataSession(sess ReconcilerSession[any, revIdxStore.DigestSymbol]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dataSession = sess
+}
+
+// DataSession returns the active data reconciliation session.
+func (s *PeerReconcileSession) DataSession() ReconcilerSession[any, revIdxStore.DigestSymbol] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataSession
+}
+
+func (s *PeerReconcileSession) resetSessions() {
+	s.certSession = nil
+	s.noteSession = nil
+	s.accSession = nil
+	s.dataSession = nil
+}
+
+// SweepIfStale resets the session to SessionIdle if it has remained in a non-Idle state
+// for longer than timeout. Returns true if the session was reset.
+func (s *PeerReconcileSession) SweepIfStale(timeout time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state != SessionIdle && time.Since(s.lastActivity) > timeout {
+		s.state = SessionIdle
+		s.resetSessions()
+		s.lastActivity = time.Now()
+		return true
+	}
+	return false
+}
+
+// PeerSessionManager manages bounded PeerReconcileSession instances across ring neighbours.
+type PeerSessionManager struct {
+	mu           sync.RWMutex
+	sessions     map[string]*PeerReconcileSession
+	staleTimeout time.Duration
+}
+
+// NewPeerSessionManager constructs a session manager with the given stale session timeout.
+// If staleTimeout <= 0, a default of 30 seconds is used.
+func NewPeerSessionManager(staleTimeout time.Duration) *PeerSessionManager {
+	if staleTimeout <= 0 {
+		staleTimeout = 30 * time.Second
+	}
+	return &PeerSessionManager{
+		sessions:     make(map[string]*PeerReconcileSession),
+		staleTimeout: staleTimeout,
+	}
+}
+
+// GetOrCreate returns the session for peerID, creating it in SessionIdle state if absent.
+func (m *PeerSessionManager) GetOrCreate(peerID string) *PeerReconcileSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if s, exists := m.sessions[peerID]; exists {
+		return s
+	}
+	s := NewPeerReconcileSession(peerID)
+	m.sessions[peerID] = s
+	return s
+}
+
+// Get returns the session for peerID if present, or nil.
+func (m *PeerSessionManager) Get(peerID string) *PeerReconcileSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[peerID]
+}
+
+// SweepStaleSessions iterates over all sessions and resets any that have exceeded staleTimeout.
+func (m *PeerSessionManager) SweepStaleSessions() int {
+	m.mu.RLock()
+	sessions := make([]*PeerReconcileSession, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.RUnlock()
+
+	swept := 0
+	for _, s := range sessions {
+		if s.SweepIfStale(m.staleTimeout) {
+			swept++
+		}
+	}
+	return swept
+}

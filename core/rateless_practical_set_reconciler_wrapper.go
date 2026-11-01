@@ -44,6 +44,10 @@ type RIBLTSession[T any, S Symbol[S]] struct {
 	decodeSymbol    func([]byte) S
 	symbolSize      uint32
 	receivedSymbols int
+
+	manualOverride bool
+	manualLocal    []S
+	manualRemote   []S
 }
 
 var _ ReconcilerSession[string, DigestSymbol] = (*RIBLTSession[string, DigestSymbol])(nil)
@@ -111,8 +115,27 @@ func hashDigestsToDigests[S sym[S]](h []riblt.HashedSymbol[S]) []S {
 	return res
 }
 
-func (s *RIBLTSession[T, S]) RemoteDigests() []S { return hashDigestsToDigests(s.decoder.Remote()) }
-func (s *RIBLTSession[T, S]) LocalDigests() []S  { return hashDigestsToDigests(s.decoder.Local()) }
+func (s *RIBLTSession[T, S]) RemoteDigests() []S {
+	if s.manualOverride {
+		return s.manualRemote
+	}
+	return hashDigestsToDigests(s.decoder.Remote())
+}
+
+func (s *RIBLTSession[T, S]) LocalDigests() []S {
+	if s.manualOverride {
+		return s.manualLocal
+	}
+	return hashDigestsToDigests(s.decoder.Local())
+}
+
+// SetResolvedDiffs directly sets the resolved local and remote diffs and marks the session as done.
+func (s *RIBLTSession[T, S]) SetResolvedDiffs(localDiff, remoteDiff []S) {
+	s.manualLocal = localDiff
+	s.manualRemote = remoteDiff
+	s.manualOverride = true
+	s.receivedSymbols = 1
+}
 
 // DiffDigests returns the union of RemoteDigests and LocalDigests (the symmetric difference).
 func (s *RIBLTSession[T, S]) DiffDigests() []S {
@@ -131,6 +154,9 @@ func (s *RIBLTSession[T, S]) ProcessIncomingDigests(incoming []S) {
 }
 
 func (s *RIBLTSession[T, S]) Done() bool {
+	if s.manualOverride {
+		return true
+	}
 	return s.receivedSymbols > 0 && s.decoder.Decoded()
 }
 

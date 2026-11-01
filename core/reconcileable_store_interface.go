@@ -20,6 +20,7 @@ type ReverseIndexStore[T any, S Symbol[S]] = revIdxStore.ReverseIndexStore[T, S]
 type ReconcilerSession[T, S any] interface {
 	ProcessIncomingMessage(msg []byte) error
 	ProcessIncomingDigests(incoming []S)
+	SetResolvedDiffs(localDiff, remoteDiff []S)
 	GenerateNextMessage() ([]byte, error)
 
 	Done() bool
@@ -75,32 +76,44 @@ func SessionLocalElements[T any, S Symbol[S]](store ReverseIndexStore[T, S], loc
 	return elems
 }
 
+// ReconcileStoreWithSession executes a reconciliation round using an existing session produced by factory.
+func ReconcileStoreWithSession[T any, S Symbol[S]](
+	session ReconcilerSession[T, S],
+	incomingDigests []S,
+) (localElements []T, localDigests, remoteDigests []S) {
+	if session == nil {
+		return nil, nil, nil
+	}
+	session.ProcessIncomingDigests(incomingDigests)
+	return session.LocalElements(), session.LocalDigests(), session.RemoteDigests()
+}
+
 // ReconcileStore executes a protocol-agnostic reconciliation round against the given store using
 // a session produced by factory. If factory is nil, it defaults to NaiveSessionFactory.
 func ReconcileStore[T any, S Symbol[S]](
 	factory SessionFactory[T, S],
 	store ReverseIndexStore[T, S],
 	incomingDigests []S,
-) (localElements []T, remoteDigests []S, err error) {
+) (localElements []T, localDigests, remoteDigests []S, err error) {
 	if store == nil {
-		return nil, nil, ErrNilStore
+		return nil, nil, nil, ErrNilStore
 	}
 	if factory == nil {
 		factory = NewNaiveSessionFactory[T, S]()
 	}
 	session, err := factory.NewSession(store)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	session.ProcessIncomingDigests(incomingDigests)
-	return session.LocalElements(), session.RemoteDigests(), nil
+	localElements, localDigests, remoteDigests = ReconcileStoreWithSession(session, incomingDigests)
+	return localElements, localDigests, remoteDigests, nil
 }
 
 // DataReconciler provides a type-erased reconciliation interface for arbitrary application data stores.
 type DataReconciler interface {
 	Digests() []revIdxStore.DigestSymbol
 	Fingerprint() revIdxStore.DigestSymbol
-	Reconcile(incomingDigests []revIdxStore.DigestSymbol) (remoteMissing []revIdxStore.DigestSymbol, err error)
+	Reconcile(incomingDigests []revIdxStore.DigestSymbol) (localMissingOnCaller, remoteMissingLocally []revIdxStore.DigestSymbol, err error)
 }
 
 type typedDataReconciler[T any] struct {
@@ -122,9 +135,20 @@ func (r *typedDataReconciler[T]) Fingerprint() revIdxStore.DigestSymbol {
 	return r.store.Fingerprint()
 }
 
-func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestSymbol) ([]revIdxStore.DigestSymbol, error) {
-	_, remoteDigests, err := ReconcileStore(r.factory, r.store, incomingDigests)
-	return remoteDigests, err
+func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestSymbol) ([]revIdxStore.DigestSymbol, []revIdxStore.DigestSymbol, error) {
+	if r.store == nil {
+		return nil, nil, ErrNilStore
+	}
+	factory := r.factory
+	if factory == nil {
+		factory = NewNaiveSessionFactory[T, revIdxStore.DigestSymbol]()
+	}
+	session, err := factory.NewSession(r.store)
+	if err != nil {
+		return nil, nil, err
+	}
+	session.ProcessIncomingDigests(incomingDigests)
+	return session.LocalDigests(), session.RemoteDigests(), nil
 }
 
 // NewTypedDataReconciler wraps an application's typed store and session factory into a DataReconciler.

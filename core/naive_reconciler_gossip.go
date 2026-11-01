@@ -75,6 +75,14 @@ func (session *NaiveExchangeSession[T, S]) ProcessIncomingDigests(incoming []S) 
 	session.done = true
 }
 
+// SetResolvedDiffs directly sets the resolved local and remote diffs (e.g. on the caller side
+// when receiving differential digests in StateResponse) and marks the session as done.
+func (session *NaiveExchangeSession[T, S]) SetResolvedDiffs(localDiff, remoteDiff []S) {
+	session.localDiff = localDiff
+	session.remoteDiff = remoteDiff
+	session.done = true
+}
+
 func (session *NaiveExchangeSession[T, S]) ProcessIncomingMessage(msg []byte) error {
 	var incoming []S
 	if err := json.Unmarshal(msg, &incoming); err != nil {

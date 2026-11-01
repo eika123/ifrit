@@ -19,6 +19,11 @@ message State {
     repeated uint64 accusation_digests = 7;
     repeated uint64 note_digests = 8;
     repeated uint64 data_digests = 9;
+    bytes fingerprint_certificates = 10;
+    repeated uint64 certificate_digests = 11;
+    repeated Certificate pushed_certificates = 12;
+    repeated Note pushed_notes = 13;
+    repeated Accusation pushed_accusations = 14;
 }
 /*
 message HostState {
@@ -51,6 +56,12 @@ message StateResponse {
     repeated uint64 requested_accusation_digests = 8;
     repeated uint64 requested_note_digests = 9;
     repeated uint64 requested_data_digests = 10;
+    bytes fingerprint_certificates = 11;
+    repeated uint64 available_data_digests = 12;
+    repeated uint64 requested_certificate_digests = 13;
+    repeated uint64 available_certificate_digests = 14;
+    repeated uint64 available_note_digests = 15;
+    repeated uint64 available_accusation_digests = 16;
 }
 
 //Raw certificate

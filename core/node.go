@@ -88,6 +88,8 @@ type Node struct {
 	dataReconciler      DataReconciler
 	dataReconcilerMutex sync.RWMutex
 
+	sessionManager *PeerSessionManager
+
 	dispatcher *workerpool.Dispatcher
 
 	entryAddrs []string
@@ -201,6 +203,8 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		comm: comm,
 		self: v.Self(),
 		view: v,
+
+		sessionManager: NewPeerSessionManager(0),
 
 		// Visualizer specific
 		useViz: viper.GetBool("use_viz"),
@@ -434,6 +438,11 @@ func (n *Node) DataDigests() []revIdxStore.DigestSymbol {
 // DataDigestsUint64 returns the local 64-bit uint64 data digests, or nil if no provider is registered.
 func (n *Node) DataDigestsUint64() []uint64 {
 	return revIdxStore.AsUint64Slice(n.DataDigests())
+}
+
+// SessionManager returns the peer reconciliation session manager.
+func (n *Node) SessionManager() *PeerSessionManager {
+	return n.sessionManager
 }
 
 // SetDataReconciler registers a DataReconciler on the node.
