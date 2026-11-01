@@ -36,7 +36,7 @@ func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
 	assert.True(t, s.TryStartReconciling())
 	noteStore, err := revIdxStore.NewDigestSet[*discovery.Note, revIdxStore.DigestSymbol](revIdxStore.DefaultHasher[*discovery.Note]())
 	require.NoError(t, err)
-	noteSess, err := NewNaiveExchangeSession(noteStore)
+	noteSess, err := NewNaiveSession(noteStore)
 	require.NoError(t, err)
 	noteSess.SetResolvedDiffs([]revIdxStore.DigestSymbol{100}, []revIdxStore.DigestSymbol{200})
 	s.SetNoteSession(noteSess)
@@ -112,4 +112,57 @@ func TestPeerSessionManager_StaleSweep(t *testing.T) {
 	swept := mgr.SweepStaleSessions()
 	assert.Equal(t, 1, swept)
 	assert.Equal(t, SessionIdle, s2.State())
+}
+
+func TestSessionFactoryProvider_DefaultsAndStrategies(t *testing.T) {
+	// Verify compile-time default is NaiveSessionFactoryProvider
+	defaultProv := DefaultSessionFactoryProvider()
+	require.NotNil(t, defaultProv)
+	_, isNaive := defaultProv.(NaiveSessionFactoryProvider)
+	assert.True(t, isNaive, "DefaultSessionFactoryProvider must default to NaiveSessionFactoryProvider")
+
+	assert.NotNil(t, defaultProv.CertSessionFactory())
+	assert.NotNil(t, defaultProv.NoteSessionFactory())
+	assert.NotNil(t, defaultProv.AccusationSessionFactory())
+
+	// Strategy lookup
+	naiveProv := SessionFactoryProviderForStrategy("naive")
+	_, isNaive = naiveProv.(NaiveSessionFactoryProvider)
+	assert.True(t, isNaive)
+
+	ribltProv := SessionFactoryProviderForStrategy("riblt")
+	_, isRIBLT := ribltProv.(RIBLTSessionFactoryProvider)
+	assert.True(t, isRIBLT)
+
+	assert.NotNil(t, ribltProv.CertSessionFactory())
+	assert.NotNil(t, ribltProv.NoteSessionFactory())
+	assert.NotNil(t, ribltProv.AccusationSessionFactory())
+
+	// Default factory for generic T
+	genericFactory := DefaultSessionFactory[string, revIdxStore.DigestSymbol]()
+	require.NotNil(t, genericFactory)
+
+	// SetDefaultSessionFactoryProvider
+	orig := DefaultSessionFactoryProvider()
+	defer SetDefaultSessionFactoryProvider(orig)
+
+	SetDefaultSessionFactoryProvider(RIBLTSessionFactoryProvider{})
+	_, isRIBLT = DefaultSessionFactoryProvider().(RIBLTSessionFactoryProvider)
+	assert.True(t, isRIBLT)
+}
+
+func TestNode_StartupReconciliationConfiguration(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	cert := genCert(priv, 1)
+
+	// Default node uses factories initialized at startup from config/default
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(t, err)
+	defer n.Stop()
+
+	require.NotNil(t, n.getCertSessionFactory())
+	require.NotNil(t, n.getNoteSessionFactory())
+	require.NotNil(t, n.getAccusationSessionFactory())
+	require.NotNil(t, n.SessionManager())
 }

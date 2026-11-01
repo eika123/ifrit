@@ -36,7 +36,7 @@ func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestS
 	}
 	factory := r.factory
 	if factory == nil {
-		factory = NewNaiveSessionFactory[T, revIdxStore.DigestSymbol]()
+		factory = DefaultSessionFactory[T, revIdxStore.DigestSymbol]()
 	}
 	session, err := factory.NewSession(r.store)
 	if err != nil {
@@ -52,7 +52,7 @@ func NewTypedDataReconciler[T any](
 	factory SessionFactory[T, revIdxStore.DigestSymbol],
 ) DataReconciler {
 	if factory == nil {
-		factory = NewNaiveSessionFactory[T, revIdxStore.DigestSymbol]()
+		factory = DefaultSessionFactory[T, revIdxStore.DigestSymbol]()
 	}
 	return &typedDataReconciler[T]{
 		store:   store,

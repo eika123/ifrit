@@ -37,7 +37,7 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 		return DigestSymbol(binary.LittleEndian.Uint64(buf))
 	}
 	symbolSize := uint32(8)
-	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](symbolSize, encodeDigest, decodeDigest)
+	sessionFactory := NewCustomRIBLTSessionFactory[DigestSymbol, DigestSymbol](symbolSize, encodeDigest, decodeDigest)
 	aliceSession, err := sessionFactory.NewSession(aliceStore)
 	require.NoError(t, err)
 	bobSession, err := sessionFactory.NewSession(bobStore)
@@ -83,7 +83,7 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 	decodeDigest := func(buf []byte) DigestSymbol {
 		return DigestSymbol(binary.LittleEndian.Uint64(buf))
 	}
-	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](8, encodeDigest, decodeDigest)
+	sessionFactory := NewCustomRIBLTSessionFactory[DigestSymbol, DigestSymbol](8, encodeDigest, decodeDigest)
 
 	// Create sessions (snapshots taken)
 	aliceSession, err := sessionFactory.NewSession(aliceStore)
@@ -130,7 +130,7 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 	decodeDigest := func(buf []byte) DigestSymbol {
 		return DigestSymbol(binary.LittleEndian.Uint64(buf))
 	}
-	sessionFactory := RIBLTSessionFactoryConstructor[DigestSymbol, DigestSymbol](8, encodeDigest, decodeDigest)
+	sessionFactory := NewCustomRIBLTSessionFactory[DigestSymbol, DigestSymbol](8, encodeDigest, decodeDigest)
 
 	stopWriters := make(chan struct{})
 	var wg sync.WaitGroup
@@ -200,7 +200,7 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 
 func TestSession_NilStoreReturnsError(t *testing.T) {
 	// Naive session
-	naiveSession, err := NewNaiveExchangeSession[string, DigestSymbol](nil)
+	naiveSession, err := NewNaiveSession[string, DigestSymbol](nil)
 	assert.Nil(t, naiveSession)
 	assert.ErrorIs(t, err, ErrNilStore)
 
@@ -210,7 +210,7 @@ func TestSession_NilStoreReturnsError(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNilStore)
 
 	// RIBLT session
-	ribltFactory := RIBLTSessionFactoryConstructor[string, DigestSymbol](8, func(DigestSymbol) []byte { return nil }, func([]byte) DigestSymbol { return 0 })
+	ribltFactory := NewCustomRIBLTSessionFactory[string, DigestSymbol](8, func(DigestSymbol) []byte { return nil }, func([]byte) DigestSymbol { return 0 })
 	ribSession, err := ribltFactory.NewSession(nil)
 	assert.Nil(t, ribSession)
 	assert.ErrorIs(t, err, ErrNilStore)

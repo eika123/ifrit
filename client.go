@@ -293,6 +293,8 @@ func readConfig() error {
 	viper.SetDefault("removal_timeout", 60)
 	viper.SetDefault("max_concurrent_messages", 5)
 	viper.SetDefault("use_compression", true)
+	viper.SetDefault("reconciliation_strategy", "naive")
+	viper.SetDefault("session_timeout", 30)
 
 	// Visualizer specific
 	viper.SetDefault("viz_update_interval", 10)

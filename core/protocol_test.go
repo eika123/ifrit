@@ -314,7 +314,7 @@ func TestNode_CertificateStoreAndFingerprinting(t *testing.T) {
 	assert.Equal(t, expectedViewFp, n.ViewFingerprint())
 
 	// Pluggable session factory
-	assert.Nil(t, n.getCertSessionFactory())
+	assert.NotNil(t, n.getCertSessionFactory())
 	customFactory := NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
 	n.SetCertSessionFactory(customFactory)
 	assert.Equal(t, customFactory, n.getCertSessionFactory())

@@ -185,6 +185,17 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 	}
 	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
+	strategy := viper.GetString("reconciliation_strategy")
+	provider := SessionFactoryProviderForStrategy(strategy)
+	if provider == nil {
+		provider = DefaultSessionFactoryProvider()
+	}
+
+	staleTimeout := time.Second * time.Duration(viper.GetInt32("session_timeout"))
+	if staleTimeout <= 0 {
+		staleTimeout = 30 * time.Second
+	}
+
 	n := &Node{
 		exitChan:       make(chan bool, 1),
 		startedChan:    make(chan struct{}),
@@ -204,7 +215,10 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		self: v.Self(),
 		view: v,
 
-		sessionManager: NewPeerSessionManager(0),
+		sessionManager:           NewPeerSessionManager(staleTimeout),
+		certSessionFactory:       provider.CertSessionFactory(),
+		noteSessionFactory:       provider.NoteSessionFactory(),
+		accusationSessionFactory: provider.AccusationSessionFactory(),
 
 		// Visualizer specific
 		useViz: viper.GetBool("use_viz"),
@@ -479,7 +493,10 @@ func (n *Node) SetAccusationSessionFactory(f SessionFactory[*discovery.Accusatio
 func (n *Node) getAccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
 	n.accusationSessionFactoryMutex.RLock()
 	defer n.accusationSessionFactoryMutex.RUnlock()
-	return n.accusationSessionFactory
+	if n.accusationSessionFactory != nil {
+		return n.accusationSessionFactory
+	}
+	return DefaultSessionFactoryProvider().AccusationSessionFactory()
 }
 
 // SetNoteSessionFactory allows the Fireflies layer (e.g. tests or internal protocol configuration)
@@ -493,7 +510,10 @@ func (n *Node) SetNoteSessionFactory(f SessionFactory[*discovery.Note, revIdxSto
 func (n *Node) getNoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
 	n.noteSessionFactoryMutex.RLock()
 	defer n.noteSessionFactoryMutex.RUnlock()
-	return n.noteSessionFactory
+	if n.noteSessionFactory != nil {
+		return n.noteSessionFactory
+	}
+	return DefaultSessionFactoryProvider().NoteSessionFactory()
 }
 
 // SetCertSessionFactory allows specifying a custom reconciliation session factory for certificates.
@@ -506,7 +526,10 @@ func (n *Node) SetCertSessionFactory(f SessionFactory[*discovery.Certificate, re
 func (n *Node) getCertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
 	n.certSessionFactoryMutex.RLock()
 	defer n.certSessionFactoryMutex.RUnlock()
-	return n.certSessionFactory
+	if n.certSessionFactory != nil {
+		return n.certSessionFactory
+	}
+	return DefaultSessionFactoryProvider().CertSessionFactory()
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {

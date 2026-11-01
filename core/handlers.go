@@ -208,17 +208,12 @@ func (n *Node) reconcileCertificates(sess *PeerReconcileSession, args *pb.State,
 		return
 	}
 
-	factory := n.getCertSessionFactory()
-	if factory == nil {
-		// fallback when no factory is provided
-		factory = NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
-	}
-
 	certStore := n.view.CertStore()
 	if certStore == nil {
 		return
 	}
 
+	factory := n.getCertSessionFactory()
 	session, err := factory.NewSession(certStore)
 	if err != nil {
 		log.Error("Failed to create certificate reconciliation session", "err", err)
@@ -343,16 +338,12 @@ func (n *Node) reconcileAccusations(sess *PeerReconcileSession, args *pb.State, 
 			return
 		}
 
-		factory := n.getAccusationSessionFactory()
-		if factory == nil {
-			factory = NewNaiveSessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]()
-		}
-
 		accStore := n.view.AccusationStore()
 		if accStore == nil {
 			return
 		}
 
+		factory := n.getAccusationSessionFactory()
 		session, err := factory.NewSession(accStore)
 		if err != nil {
 			log.Error("Failed to create accusation reconciliation session", "err", err)
@@ -388,16 +379,12 @@ func (n *Node) reconcileNotes(sess *PeerReconcileSession, args *pb.State, reply 
 			return
 		}
 
-		factory := n.getNoteSessionFactory()
-		if factory == nil {
-			factory = NewNaiveSessionFactory[*discovery.Note, revIdxStore.DigestSymbol]()
-		}
-
 		noteStore := n.view.NoteStore()
 		if noteStore == nil {
 			return
 		}
 
+		factory := n.getNoteSessionFactory()
 		session, err := factory.NewSession(noteStore)
 		if err != nil {
 			log.Error("Failed to create note reconciliation session", "err", err)

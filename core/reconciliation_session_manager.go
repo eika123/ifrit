@@ -2,9 +2,11 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
@@ -35,6 +37,86 @@ type ReconcilerSession[T, S any] interface {
 // SessionFactory creates a new reconciliation session backed by a store snapshot/view.
 type SessionFactory[T any, S Symbol[S]] interface {
 	NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error)
+}
+
+// SessionFactoryProvider provides SessionFactory instances for core control stores
+// (Certificates, Notes, Accusations).
+type SessionFactoryProvider interface {
+	CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]
+	NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol]
+	AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]
+}
+
+// NaiveSessionFactoryProvider constructs naive exchange session factories for all control stores.
+type NaiveSessionFactoryProvider struct{}
+
+func (NaiveSessionFactoryProvider) CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
+	return NewNaiveSessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol]()
+}
+
+func (NaiveSessionFactoryProvider) NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
+	return NewNaiveSessionFactory[*discovery.Note, revIdxStore.DigestSymbol]()
+}
+
+func (NaiveSessionFactoryProvider) AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
+	return NewNaiveSessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol]()
+}
+
+// RIBLTSessionFactoryProvider constructs rateless IBLT session factories for all control stores.
+type RIBLTSessionFactoryProvider struct{}
+
+func (RIBLTSessionFactoryProvider) CertSessionFactory() SessionFactory[*discovery.Certificate, revIdxStore.DigestSymbol] {
+	return NewRIBLTSessionFactory[*discovery.Certificate]()
+}
+
+func (RIBLTSessionFactoryProvider) NoteSessionFactory() SessionFactory[*discovery.Note, revIdxStore.DigestSymbol] {
+	return NewRIBLTSessionFactory[*discovery.Note]()
+}
+
+func (RIBLTSessionFactoryProvider) AccusationSessionFactory() SessionFactory[*discovery.Accusation, revIdxStore.DigestSymbol] {
+	return NewRIBLTSessionFactory[*discovery.Accusation]()
+}
+
+var (
+	defaultSessionFactoryProviderMu sync.RWMutex
+	defaultSessionFactoryProvider   SessionFactoryProvider = NaiveSessionFactoryProvider{}
+)
+
+// DefaultSessionFactoryProvider returns the current package-level / compile-time default session factory provider.
+func DefaultSessionFactoryProvider() SessionFactoryProvider {
+	defaultSessionFactoryProviderMu.RLock()
+	defer defaultSessionFactoryProviderMu.RUnlock()
+	return defaultSessionFactoryProvider
+}
+
+// SetDefaultSessionFactoryProvider updates the package-level default session factory provider.
+func SetDefaultSessionFactoryProvider(p SessionFactoryProvider) {
+	if p == nil {
+		return
+	}
+	defaultSessionFactoryProviderMu.Lock()
+	defer defaultSessionFactoryProviderMu.Unlock()
+	defaultSessionFactoryProvider = p
+}
+
+// DefaultSessionFactory returns a default session factory for generic type T and symbol S.
+// By default, it returns a NaiveSessionFactory.
+func DefaultSessionFactory[T any, S Symbol[S]]() SessionFactory[T, S] {
+	return NewNaiveSessionFactory[T, S]()
+}
+
+// SessionFactoryProviderForStrategy resolves a SessionFactoryProvider from a strategy name string
+// (e.g. "naive", "riblt", "rateless_iblt"). If unknown or empty, falls back to DefaultSessionFactoryProvider().
+func SessionFactoryProviderForStrategy(strategy string) SessionFactoryProvider {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "riblt", "rateless_iblt":
+		return RIBLTSessionFactoryProvider{}
+	case "naive", "":
+		return NaiveSessionFactoryProvider{}
+	default:
+		log.Warn("Unknown reconciliation strategy, falling back to default provider", "strategy", strategy)
+		return DefaultSessionFactoryProvider()
+	}
 }
 
 // DiffDigests returns the union of local and remote digests (the symmetric difference).
@@ -77,7 +159,7 @@ func ReconcileStore[T any, S Symbol[S]](
 		return nil, nil, nil, ErrNilStore
 	}
 	if factory == nil {
-		factory = NewNaiveSessionFactory[T, S]()
+		factory = DefaultSessionFactory[T, S]()
 	}
 	session, err := factory.NewSession(store)
 	if err != nil {

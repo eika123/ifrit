@@ -1,6 +1,3 @@
-// Wraps the rateless practical set reconciliation pacakge https://github.com/yangl1996/riblt
-// to fit the current interface ReconcileableStore expected by Ifrit.
-
 package core
 
 import (
@@ -25,10 +22,6 @@ import (
 
 // 						-- network[msgA1,...,msgAk] -->  DecodeB(msgA1,...,msgAk) --> setB: Bob
 
-type sym[S any] interface {
-	riblt.Symbol[S]
-}
-
 // DigestSymbol is aliased from revIdxStore.DigestSymbol.
 type DigestSymbol = revIdxStore.DigestSymbol
 
@@ -52,9 +45,9 @@ type RIBLTSession[T any, S Symbol[S]] struct {
 
 var _ ReconcilerSession[string, DigestSymbol] = (*RIBLTSession[string, DigestSymbol])(nil)
 
-// newRIBLTSession constructs a new RIBLT reconciliation session backed by the given store.
+// NewRIBLTSession constructs a new RIBLT reconciliation session backed by the given store.
 // Returns ErrNilStore if store is nil.
-func newRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
+func NewRIBLTSession[T any, S Symbol[S]](store ReverseIndexStore[T, S],
 	symbolSize uint32,
 	encodeSymbol func(S) []byte,
 	decodeSymbol func([]byte) S) (*RIBLTSession[T, S], error) {
@@ -80,8 +73,8 @@ type RIBLTSessionFactory[T any, S Symbol[S]] struct {
 	DecodeSymbol func([]byte) S
 }
 
-// A factory of factories for RIBLT; use this to construct your applications session factory when using rIBLT
-func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
+// NewCustomRIBLTSessionFactory constructs an RIBLT session factory with customized symbol sizes and codecs.
+func NewCustomRIBLTSessionFactory[T any, S Symbol[S]](
 	symbolSize uint32,
 	encode func(S) []byte,
 	decode func([]byte) S,
@@ -93,9 +86,24 @@ func RIBLTSessionFactoryConstructor[T any, S Symbol[S]](
 	}
 }
 
+// NewRIBLTSessionFactory constructs a SessionFactory backed by rateless IBLT using standard 64-bit digest symbols.
+func NewRIBLTSessionFactory[T any]() *RIBLTSessionFactory[T, revIdxStore.DigestSymbol] {
+	return NewCustomRIBLTSessionFactory[T, revIdxStore.DigestSymbol](
+		8,
+		func(s revIdxStore.DigestSymbol) []byte {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(s))
+			return buf
+		},
+		func(b []byte) revIdxStore.DigestSymbol {
+			return revIdxStore.DigestSymbol(binary.LittleEndian.Uint64(b))
+		},
+	)
+}
+
 // NewSession implements SessionFactory[T, S]
 func (f *RIBLTSessionFactory[T, S]) NewSession(store ReverseIndexStore[T, S]) (ReconcilerSession[T, S], error) {
-	return newRIBLTSession[T](store, f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
+	return NewRIBLTSession[T](store, f.SymbolSize, f.EncodeSymbol, f.DecodeSymbol)
 }
 
 func (session *RIBLTSession[T, S]) initCodecs() {
@@ -107,7 +115,7 @@ func (session *RIBLTSession[T, S]) initCodecs() {
 	}
 }
 
-func hashDigestsToDigests[S sym[S]](h []riblt.HashedSymbol[S]) []S {
+func hashDigestsToDigests[S Symbol[S]](h []riblt.HashedSymbol[S]) []S {
 	res := make([]S, len(h))
 	for i, hs := range h {
 		res[i] = hs.Symbol
