@@ -24,8 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 type HandlerTestSuite struct {
@@ -1374,6 +1376,50 @@ func (suite *HandlerTestSuite) TestSpread_PeerReconcileSessionStateTransitions()
 	require.Equal(suite.T(), []uint64{0x12345678}, sess2.Deltas().IngressCertificates(false))
 	require.NotEmpty(suite.T(), sess2.Deltas().AvailableCertificates)
 	require.NotEmpty(suite.T(), sess2.Deltas().EgressCertificates(false))
+}
+
+func (suite *HandlerTestSuite) TestSpread_CrossedWiresTieBreaker() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	args := &proto.State{
+		FingerprintCertificates: []byte("divergent-fp"),
+		CertificateDigests:      []uint64{0x9999},
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+	}
+
+	origSelfId := node.self.Id
+	defer func() {
+		node.self.Id = origSelfId
+	}()
+
+	// SCENARIO 1: Local node holds priority (selfID < remoteID).
+	// Higher peer succ must yield; local node rejects succ's inbound Spread with codes.Aborted.
+	node.self.Id = "\x00" // guarantee selfID < succ.Id
+	sess := node.sessionManager.GetOrCreate(succ.Id)
+	seqOut, ok := sess.TryStartOutboundReconciling()
+	require.True(suite.T(), ok)
+	require.Equal(suite.T(), SessionOutboundReconciling, sess.State())
+
+	reply, err := node.Spread(ctx, args)
+	require.Error(suite.T(), err)
+	require.Nil(suite.T(), reply)
+	require.Equal(suite.T(), codes.Aborted, status.Code(err))
+	// Session must still be in SessionOutboundReconciling with the same sequence number!
+	require.Equal(suite.T(), SessionOutboundReconciling, sess.State())
+	require.Equal(suite.T(), seqOut, sess.Seq())
+
+	// SCENARIO 2: Remote peer wins priority (remoteID < selfID).
+	// Higher peer local node yields to succ; local node accepts succ's inbound Spread!
+	node.self.Id = "\xff\xff\xff\xff" // guarantee succ.Id < selfID
+	reply2, err2 := node.Spread(ctx, args)
+	require.NoError(suite.T(), err2)
+	require.NotNil(suite.T(), reply2)
+	// Local session must have transitioned to SessionAwaitingStream (due to deltas) with incremented seq!
+	require.Equal(suite.T(), SessionAwaitingStream, sess.State())
+	require.Greater(suite.T(), sess.Seq(), seqOut)
 }
 
 func peerContext(p *discovery.Peer) context.Context {

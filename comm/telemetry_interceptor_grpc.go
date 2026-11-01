@@ -126,8 +126,9 @@ func logSpreadExchange(
 	}
 	now := time.Now()
 
-	// 1. Rebuttal logging: if hosts is empty and ownNote is present, this message is refuting an accusation
-	isRebuttal := len(stateReq.GetExistingHosts()) == 0 && stateReq.GetOwnNote() != nil
+	// 1. Rebuttal logging: if no fingerprints are present and ownNote is present, this message is refuting an accusation
+	hasFingerprints := stateReq.GetFingerprintView() != nil || stateReq.GetFingerprintAccusations() != nil || stateReq.GetFingerprintData() != nil || stateReq.GetFingerprintCertificates() != nil
+	isRebuttal := !hasFingerprints && stateReq.GetOwnNote() != nil
 	if isRebuttal {
 		ownNote := stateReq.GetOwnNote()
 		telemetryLogger.OnRebuttal(RebuttalEvent{

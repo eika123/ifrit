@@ -15,48 +15,54 @@ func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
 	assert.Equal(t, SessionIdle, s.State())
 
 	// Cannot transition directly to transferring from idle
-	err := s.StartTransfer()
+	err := s.StartTransfer(1)
 	assert.ErrorIs(t, err, ErrInvalidTransition)
 
-	// TryStartReconciling
-	assert.True(t, s.TryStartReconciling())
-	assert.Equal(t, SessionReconciling, s.State())
+	// TryStartOutboundReconciling
+	seq, ok := s.TryStartOutboundReconciling()
+	assert.True(t, ok)
+	assert.Equal(t, SessionOutboundReconciling, s.State())
 
 	// Mutual exclusion: simultaneous initiation attempt returns false
-	assert.False(t, s.TryStartReconciling())
+	_, ok = s.TryStartOutboundReconciling()
+	assert.False(t, ok)
 
 	// Transition without deltas -> returns to Idle
-	nextState := s.TransitionAfterReconcile(true)
+	nextState := s.TransitionAfterReconcile(seq, true)
 	assert.Equal(t, SessionIdle, nextState)
 	assert.Equal(t, SessionIdle, s.State())
 
 	// Reconcile with deltas as Caller
-	assert.True(t, s.TryStartReconciling())
+	seq, ok = s.TryStartOutboundReconciling()
+	assert.True(t, ok)
 	s.SetHasDeltas(true)
 
 	assert.True(t, s.HasDeltas())
-	nextState = s.TransitionAfterReconcile(true) // caller
+	nextState = s.TransitionAfterReconcile(seq, true) // caller
 	assert.Equal(t, SessionTransferring, nextState)
 	assert.Equal(t, SessionTransferring, s.State())
 
-	// FinishTransfer returns to Idle
-	s.FinishTransfer()
+	// CompleteTransfer returns to Idle
+	assert.True(t, s.CompleteTransfer(seq))
 	assert.Equal(t, SessionIdle, s.State())
 	assert.False(t, s.HasDeltas())
 
 	// Reconcile with deltas as Responder
-	assert.True(t, s.TryStartReconciling())
+	seq, ok, err = s.TryStartInboundReconciling("self-1", "peer-1")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, SessionInboundReconciling, s.State())
 	s.SetHasDeltas(true)
-	nextState = s.TransitionAfterReconcile(false) // responder
+	nextState = s.TransitionAfterReconcile(seq, false) // responder
 	assert.Equal(t, SessionAwaitingStream, nextState)
 	assert.Equal(t, SessionAwaitingStream, s.State())
 
 	// Remote peer opens stream -> transitions to Transferring
-	err = s.StartTransfer()
+	err = s.StartTransfer(seq)
 	require.NoError(t, err)
 	assert.Equal(t, SessionTransferring, s.State())
 
-	s.FinishTransfer()
+	s.CompleteTransfer(seq)
 	assert.Equal(t, SessionIdle, s.State())
 }
 
@@ -64,31 +70,114 @@ func TestPeerReconcileSession_InboundReconcilingTransitions(t *testing.T) {
 	s := NewPeerReconcileSession("peer-inbound")
 
 	// Inbound from Idle succeeds
-	assert.True(t, s.TryStartInboundReconciling())
-	assert.Equal(t, SessionReconciling, s.State())
+	seq, ok, err := s.TryStartInboundReconciling("self-node", "peer-inbound")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, SessionInboundReconciling, s.State())
 
 	// Transition to AwaitingStream (deltas found)
 	s.SetHasDeltas(true)
-	s.TransitionAfterReconcile(false)
+	s.TransitionAfterReconcile(seq, false)
 	assert.Equal(t, SessionAwaitingStream, s.State())
 
 	// New inbound Spread arrives while AwaitingStream (supersedes old round) -> succeeds
-	assert.True(t, s.TryStartInboundReconciling())
-	assert.Equal(t, SessionReconciling, s.State())
+	seq2, ok, err := s.TryStartInboundReconciling("self-node", "peer-inbound")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Greater(t, seq2, seq)
+	assert.Equal(t, SessionInboundReconciling, s.State())
 
 	// Transition to Transferring
 	s.SetHasDeltas(true)
-	s.TransitionAfterReconcile(false)
-	err := s.StartTransfer()
+	s.TransitionAfterReconcile(seq2, false)
+	err = s.StartTransfer(seq2)
 	require.NoError(t, err)
 	assert.Equal(t, SessionTransferring, s.State())
 
 	// Inbound Spread rejected while actively transferring
-	assert.False(t, s.TryStartInboundReconciling())
+	_, ok, err = s.TryStartInboundReconciling("self-node", "peer-inbound")
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, ErrSessionBusy)
 	assert.Equal(t, SessionTransferring, s.State())
 
-	s.FinishTransfer()
+	assert.True(t, s.CompleteTransfer(seq2))
 	assert.Equal(t, SessionIdle, s.State())
+}
+
+func TestPeerReconcileSession_TieBreaker_HigherPeerYieldsToLowerPeer(t *testing.T) {
+	// Node A ("0001") is lower peer, Node B ("0002") is higher peer.
+	idA := "0001"
+	idB := "0002"
+
+	// SCENARIO 1: We are Node B (higher peer). Node A (lower peer) calls us while we are dialing A.
+	// Higher peer B must yield to lower peer A!
+	sessOnB := NewPeerReconcileSession(idA)
+	seqOutB, ok := sessOnB.TryStartOutboundReconciling()
+	require.True(t, ok)
+	assert.Equal(t, SessionOutboundReconciling, sessOnB.State())
+
+	// Inbound Spread from A arrives at B: selfID = B ("0002"), remoteID = A ("0001")
+	// Since remoteID < selfID, B yields priority to A!
+	seqInA, ok, err := sessOnB.TryStartInboundReconciling(idB, idA)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Greater(t, seqInA, seqOutB)
+	assert.Equal(t, SessionInboundReconciling, sessOnB.State())
+
+	// Stale outbound attempt on B returns and tries to mutate session with seqOutB:
+	// All must be safely rejected due to stale seq!
+	assert.False(t, sessOnB.SetDeltas(seqOutB, ReconcileDeltas{RequestedData: []uint64{1}}))
+	assert.Equal(t, SessionInboundReconciling, sessOnB.TransitionAfterReconcile(seqOutB, true))
+	assert.False(t, sessOnB.ResetIfSeq(seqOutB))
+	assert.Equal(t, SessionInboundReconciling, sessOnB.State())
+
+	// Responder B computes deltas for A using seqInA:
+	deltas := ReconcileDeltas{AvailableData: []uint64{42}}
+	assert.True(t, sessOnB.SetDeltas(seqInA, deltas))
+	next := sessOnB.TransitionAfterReconcile(seqInA, false)
+	assert.Equal(t, SessionAwaitingStream, next)
+	assert.Equal(t, SessionAwaitingStream, sessOnB.State())
+
+	// SCENARIO 2: We are Node A (lower peer). Node B (higher peer) calls us while we are dialing B.
+	// Lower peer A holds priority! It must reject B's inbound attempt!
+	sessOnA := NewPeerReconcileSession(idB)
+	seqOutA, ok := sessOnA.TryStartOutboundReconciling()
+	require.True(t, ok)
+	assert.Equal(t, SessionOutboundReconciling, sessOnA.State())
+
+	// Inbound Spread from B arrives at A: selfID = A ("0001"), remoteID = B ("0002")
+	// Since remoteID < selfID is false, A holds priority and rejects B!
+	_, ok, err = sessOnA.TryStartInboundReconciling(idA, idB)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, ErrSessionBusy)
+	assert.Equal(t, SessionOutboundReconciling, sessOnA.State())
+
+	// Outbound call for A completes normally:
+	assert.True(t, sessOnA.SetDeltas(seqOutA, ReconcileDeltas{AvailableData: []uint64{99}}))
+	next = sessOnA.TransitionAfterReconcile(seqOutA, true)
+	assert.Equal(t, SessionTransferring, next)
+	assert.Equal(t, SessionTransferring, sessOnA.State())
+}
+
+func TestPeerReconcileSession_StaleSeqRejection(t *testing.T) {
+	s := NewPeerReconcileSession("peer-stale")
+
+	seq1, ok := s.TryStartOutboundReconciling()
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), seq1)
+
+	// Sweep invalidates seq1 by incrementing seq
+	swept := s.SweepIfStale(0) // immediately stale
+	assert.True(t, swept)
+	assert.Equal(t, SessionIdle, s.State())
+	assert.Equal(t, uint64(2), s.Seq())
+
+	// Old goroutine waking up with seq1 tries to operate:
+	assert.False(t, s.SetDeltas(seq1, ReconcileDeltas{RequestedData: []uint64{10}}))
+	assert.False(t, s.ResetIfSeq(seq1))
+	assert.Equal(t, SessionIdle, s.TransitionAfterReconcile(seq1, true))
+	assert.ErrorIs(t, s.StartTransfer(seq1), ErrInvalidTransition)
+	assert.False(t, s.CompleteTransfer(seq1))
 }
 
 func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
@@ -103,7 +192,7 @@ func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			defer wg.Done()
-			if s.TryStartReconciling() {
+			if _, ok := s.TryStartOutboundReconciling(); ok {
 				mu.Lock()
 				acquiredCount++
 				mu.Unlock()
@@ -114,7 +203,7 @@ func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
 
 	// Exactly one goroutine should win the race
 	assert.Equal(t, 1, acquiredCount)
-	assert.Equal(t, SessionReconciling, s.State())
+	assert.Equal(t, SessionOutboundReconciling, s.State())
 }
 
 func TestPeerSessionManager_StaleSweep(t *testing.T) {
@@ -123,11 +212,13 @@ func TestPeerSessionManager_StaleSweep(t *testing.T) {
 	s1 := mgr.GetOrCreate("peer-a")
 	s2 := mgr.GetOrCreate("peer-b")
 
-	assert.True(t, s1.TryStartReconciling())
-	assert.True(t, s2.TryStartReconciling())
+	seq1, ok1 := s1.TryStartOutboundReconciling()
+	assert.True(t, ok1)
+	_, ok2 := s2.TryStartOutboundReconciling()
+	assert.True(t, ok2)
 
 	// S1 finishes normally
-	s1.TransitionAfterReconcile(true)
+	s1.TransitionAfterReconcile(seq1, true)
 	assert.Equal(t, SessionIdle, s1.State())
 
 	// S2 gets stuck in Reconciling

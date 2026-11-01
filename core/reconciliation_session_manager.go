@@ -188,8 +188,10 @@ type SessionState int
 const (
 	// SessionIdle indicates no active reconciliation or transfer is occurring with the peer.
 	SessionIdle SessionState = iota
-	// SessionReconciling indicates an inbound or outbound Spread is resolving set diffs.
-	SessionReconciling
+	// SessionOutboundReconciling indicates an outbound Spread RPC is in flight resolving diffs.
+	SessionOutboundReconciling
+	// SessionInboundReconciling indicates an inbound Spread RPC is being processed on the responder.
+	SessionInboundReconciling
 	// SessionAwaitingStream indicates diffs have been resolved on the responder, awaiting inbound stream.
 	SessionAwaitingStream
 	// SessionTransferring indicates active bulk data or control item streaming is in flight.
@@ -200,8 +202,10 @@ func (s SessionState) String() string {
 	switch s {
 	case SessionIdle:
 		return "Idle"
-	case SessionReconciling:
-		return "Reconciling"
+	case SessionOutboundReconciling:
+		return "OutboundReconciling"
+	case SessionInboundReconciling:
+		return "InboundReconciling"
 	case SessionAwaitingStream:
 		return "AwaitingStream"
 	case SessionTransferring:
@@ -333,6 +337,7 @@ type PeerReconcileSession struct {
 	mu           sync.Mutex
 	peerID       string
 	state        SessionState
+	seq          uint64
 	lastActivity time.Time
 	deltas       ReconcileDeltas
 	hasDeltas    bool
@@ -359,6 +364,13 @@ func (s *PeerReconcileSession) State() SessionState {
 	return s.state
 }
 
+// Seq returns the current generation sequence number of this session.
+func (s *PeerReconcileSession) Seq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seq
+}
+
 // Deltas returns a copy of the recorded digest differences.
 func (s *PeerReconcileSession) Deltas() ReconcileDeltas {
 	s.mu.Lock()
@@ -366,47 +378,75 @@ func (s *PeerReconcileSession) Deltas() ReconcileDeltas {
 	return s.deltas
 }
 
-// SetDeltas records the computed digest differences for this session.
-func (s *PeerReconcileSession) SetDeltas(deltas ReconcileDeltas) {
+// SetDeltas records the computed digest differences for this session if seq matches current generation.
+// Returns true if deltas were accepted, false if seq is stale.
+func (s *PeerReconcileSession) SetDeltas(seq uint64, deltas ReconcileDeltas) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.seq != seq {
+		return false
+	}
 	s.deltas = deltas
 	s.hasDeltas = deltas.HasDeltas()
 	s.lastActivity = time.Now()
+	return true
 }
 
-// TryStartReconciling attempts to atomically transition from SessionIdle to SessionReconciling.
-// Returns true if acquired, false if the session is already active.
-func (s *PeerReconcileSession) TryStartReconciling() bool {
+// TryStartOutboundReconciling attempts to transition from SessionIdle to SessionOutboundReconciling.
+// Returns the new generation sequence number and true if acquired, or (0, false) if busy.
+func (s *PeerReconcileSession) TryStartOutboundReconciling() (uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.state != SessionIdle {
-		return false
+		return 0, false
 	}
-	s.state = SessionReconciling
+	s.seq++
+	s.state = SessionOutboundReconciling
 	s.hasDeltas = false
 	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
-	return true
+	return s.seq, true
 }
 
-// TryStartInboundReconciling attempts to transition the responder session to SessionReconciling
-// upon receiving an inbound Spread RPC. It transitions if the session is SessionIdle or
-// SessionAwaitingStream (superseded by a fresh reconciliation round), but returns false if
-// actively transferring (SessionTransferring).
-func (s *PeerReconcileSession) TryStartInboundReconciling() bool {
+// TryStartInboundReconciling attempts to transition the session to SessionInboundReconciling
+// upon receiving an inbound Spread RPC.
+// If s.state == SessionTransferring or SessionInboundReconciling, it returns (0, false, ErrSessionBusy).
+// If s.state == SessionOutboundReconciling (crossed-wires collision):
+//   - If remoteID < selfID (higher peer yields to lower peer): yields priority to remote peer,
+//     increments seq, and transitions to SessionInboundReconciling, returning (seq, true, nil).
+//   - If selfID <= remoteID: local node holds priority, rejects inbound request, returning (0, false, ErrSessionBusy).
+//
+// If s.state == SessionIdle or SessionAwaitingStream: transitions to SessionInboundReconciling,
+// increments seq, and returns (seq, true, nil).
+func (s *PeerReconcileSession) TryStartInboundReconciling(selfID, remoteID string) (uint64, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == SessionTransferring {
-		return false
+	if s.state == SessionTransferring || s.state == SessionInboundReconciling {
+		return 0, false, ErrSessionBusy
 	}
-	s.state = SessionReconciling
+
+	if s.state == SessionOutboundReconciling {
+		// Tie-breaker: higher peer yields to lower peer
+		if remoteID < selfID {
+			s.seq++
+			s.state = SessionInboundReconciling
+			s.hasDeltas = false
+			s.deltas = ReconcileDeltas{}
+			s.lastActivity = time.Now()
+			return s.seq, true, nil
+		}
+		return 0, false, ErrSessionBusy
+	}
+
+	s.seq++
+	s.state = SessionInboundReconciling
 	s.hasDeltas = false
 	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
-	return true
+	return s.seq, true, nil
 }
 
 // SetHasDeltas manually marks whether the session has pending deltas.
@@ -427,28 +467,43 @@ func (s *PeerReconcileSession) HasDeltas() bool {
 	return s.hasDeltas || s.deltas.HasDeltas()
 }
 
-// TransitionAfterReconcile transitions the session after diff resolution.
-// If isCaller is true:
+// TransitionAfterReconcile transitions the session after diff resolution if seq matches.
+// If s.seq != seq, no transition occurs and current state is returned.
+// If isCaller is true (caller finishing outbound reconciliation):
+//   - requires s.state == SessionOutboundReconciling
 //   - If has deltas -> SessionTransferring (ready to open stream/dispatch egress)
 //   - If no deltas  -> SessionIdle
 //
-// If isCaller is false (Responder):
+// If isCaller is false (responder finishing inbound reconciliation):
+//   - requires s.state == SessionInboundReconciling
 //   - If has deltas -> SessionAwaitingStream (waiting for caller to open stream)
 //   - If no deltas  -> SessionIdle
-func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionState {
+func (s *PeerReconcileSession) TransitionAfterReconcile(seq uint64, isCaller bool) SessionState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state != SessionReconciling {
+	if s.seq != seq {
 		return s.state
 	}
 
-	if !s.hasDeltas && !s.deltas.HasDeltas() {
-		s.state = SessionIdle
-	} else if isCaller {
-		s.state = SessionTransferring
+	if isCaller {
+		if s.state != SessionOutboundReconciling {
+			return s.state
+		}
+		if !s.hasDeltas && !s.deltas.HasDeltas() {
+			s.state = SessionIdle
+		} else {
+			s.state = SessionTransferring
+		}
 	} else {
-		s.state = SessionAwaitingStream
+		if s.state != SessionInboundReconciling {
+			return s.state
+		}
+		if !s.hasDeltas && !s.deltas.HasDeltas() {
+			s.state = SessionIdle
+		} else {
+			s.state = SessionAwaitingStream
+		}
 	}
 
 	s.lastActivity = time.Now()
@@ -457,10 +512,14 @@ func (s *PeerReconcileSession) TransitionAfterReconcile(isCaller bool) SessionSt
 
 // StartTransfer attempts to transition from SessionAwaitingStream to SessionTransferring
 // when the remote peer initiates the authenticated stream.
-func (s *PeerReconcileSession) StartTransfer() error {
+// Requires s.seq == seq.
+func (s *PeerReconcileSession) StartTransfer(seq uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.seq != seq {
+		return ErrInvalidTransition
+	}
 	if s.state != SessionAwaitingStream {
 		return ErrInvalidTransition
 	}
@@ -469,22 +528,44 @@ func (s *PeerReconcileSession) StartTransfer() error {
 	return nil
 }
 
-// FinishTransfer resets the session back to SessionIdle upon successful stream completion.
-func (s *PeerReconcileSession) FinishTransfer() {
+// CompleteTransfer resets the session back to SessionIdle upon stream completion
+// if seq matches current generation.
+func (s *PeerReconcileSession) CompleteTransfer(seq uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.seq != seq {
+		return false
+	}
 	s.state = SessionIdle
 	s.hasDeltas = false
 	s.deltas = ReconcileDeltas{}
 	s.lastActivity = time.Now()
+	return true
 }
 
-// ResetToIdle forcefully resets the session to SessionIdle (e.g. on RPC error or stale sweep).
+// ResetIfSeq resets the session to SessionIdle if seq matches current generation.
+// Returns true if reset, false if seq is stale (superseded).
+func (s *PeerReconcileSession) ResetIfSeq(seq uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.seq != seq {
+		return false
+	}
+	s.state = SessionIdle
+	s.hasDeltas = false
+	s.deltas = ReconcileDeltas{}
+	s.lastActivity = time.Now()
+	return true
+}
+
+// ResetToIdle forcefully resets the session to SessionIdle (e.g. on un-gated error or test teardown).
 func (s *PeerReconcileSession) ResetToIdle() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.seq++
 	s.state = SessionIdle
 	s.hasDeltas = false
 	s.deltas = ReconcileDeltas{}
@@ -498,8 +579,10 @@ func (s *PeerReconcileSession) SweepIfStale(timeout time.Duration) bool {
 	defer s.mu.Unlock()
 
 	if s.state != SessionIdle && time.Since(s.lastActivity) > timeout {
+		s.seq++
 		s.state = SessionIdle
 		s.hasDeltas = false
+		s.deltas = ReconcileDeltas{}
 		s.lastActivity = time.Now()
 		return true
 	}

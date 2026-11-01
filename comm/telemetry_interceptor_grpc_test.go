@@ -171,9 +171,8 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	rec := &recordingLogger{}
 	interceptor := gossipClientInterceptorFactory(rec)
 
-	// 1. Rebuttal message (ExistingHosts is empty/nil, OwnNote != nil)
+	// 1. Rebuttal message (no fingerprints, OwnNote != nil)
 	rebuttalReq := &pb.State{
-		ExistingHosts: nil,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
 			Epoch: 10,
@@ -195,9 +194,14 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	assert.Equal(t, uint64(10), rec.rebuttalEvents[0].Epoch)
 	assert.Equal(t, uint32(3), rec.rebuttalEvents[0].Mask)
 
-	// 2. Regular Gossip message (ExistingHosts != nil)
+	// 2. Regular Gossip message (has fingerprints and OwnNote; must NOT be classified as rebuttal)
 	gossipReq := &pb.State{
-		ExistingHosts:  map[string]uint64{"peerA": 1},
+		FingerprintView: []byte("fp-view"),
+		OwnNote: &pb.Note{
+			Id:    []byte("my-node-id"),
+			Epoch: 10,
+			Mask:  3,
+		},
 		ExternalGossip: []byte("application data payload"),
 	}
 	respWithAcc := &pb.StateResponse{
@@ -221,14 +225,16 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	err = interceptor(context.Background(), "/proto.gossip/Spread", gossipReq, respWithAcc, nil, invoker)
 	require.NoError(t, err)
 
+	// Rebuttal events must still be 1 (regular gossip must NOT create a rebuttal event)
+	assert.Len(t, rec.rebuttalEvents, 1)
 	assert.Len(t, rec.gossipEvents, 1)
 	assert.Equal(t, len("application data payload"), rec.gossipEvents[0].PayloadDataSize)
 	assert.Len(t, rec.accusationEvents, 1)
 	assert.Equal(t, uint32(1), rec.accusationEvents[0].RingNum)
 	assert.Len(t, rec.noteEvents, 1)
-	// 3. Rebuttal with piggybacked application payload
+
+	// 3. Rebuttal with piggybacked application payload (no fingerprints, OwnNote != nil, ExternalGossip != nil)
 	piggybackReq := &pb.State{
-		ExistingHosts: nil,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
 			Epoch: 11,
@@ -249,9 +255,8 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 	rec := &recordingLogger{}
 	interceptor := gossipServerInterceptorFactory(rec)
 
-	// 1. Incoming Rebuttal message
+	// 1. Incoming Rebuttal message (no fingerprints, OwnNote != nil)
 	rebuttalReq := &pb.State{
-		ExistingHosts: nil,
 		OwnNote: &pb.Note{
 			Id:    []byte("rebutting-peer"),
 			Epoch: 8,
@@ -283,8 +288,8 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	clientInterceptor := gossipClientInterceptorFactory(clientRec)
 
 	req := &pb.State{
-		ExistingHosts:  map[string]uint64{"peerA": 1},
-		ExternalGossip: []byte("request payload (100)"),
+		FingerprintView: []byte("fp-view"),
+		ExternalGossip:  []byte("request payload (100)"),
 	}
 	resp := &pb.StateResponse{
 		ExternalGossip: []byte("response payload (200)"),

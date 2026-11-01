@@ -4,6 +4,8 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type correct struct {
@@ -40,9 +42,12 @@ func (c correct) Gossip(n *Node) {
 		}
 
 		var sess *PeerReconcileSession
+		var seq uint64
 		if n.sessionManager != nil {
 			sess = n.sessionManager.GetOrCreate(p.Id)
-			if !sess.TryStartReconciling() {
+			var ok bool
+			seq, ok = sess.TryStartOutboundReconciling()
+			if !ok {
 				continue
 			}
 		}
@@ -53,9 +58,13 @@ func (c correct) Gossip(n *Node) {
 		reply, err := n.comm.Gossip(p.Addr, msg)
 		if err != nil {
 			if sess != nil {
-				sess.ResetToIdle()
+				sess.ResetIfSeq(seq)
 			}
-			log.Error(err.Error(), "addr", p.Addr)
+			if status.Code(err) == codes.Aborted {
+				log.Debug("Outbound gossip aborted by peer tie-breaker", "addr", p.Addr)
+			} else {
+				log.Error(err.Error(), "addr", p.Addr)
+			}
 			continue
 		}
 
@@ -72,8 +81,8 @@ func (c correct) Gossip(n *Node) {
 
 		deltas := ExtractReconcileDeltas(reply)
 		if sess != nil {
-			sess.SetDeltas(deltas)
-			sess.TransitionAfterReconcile(true)
+			sess.SetDeltas(seq, deltas)
+			sess.TransitionAfterReconcile(seq, true)
 		}
 
 		if !deltas.HasDeltas() {

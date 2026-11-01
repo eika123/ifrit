@@ -13,8 +13,10 @@ import (
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -60,7 +62,9 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, reply)
 	}
 
-	n.computeControlAndDataDeltas(remoteId, args, reply)
+	if err := n.computeControlAndDataDeltas(remoteId, args, reply); err != nil {
+		return nil, err
+	}
 	n.handleExternalGossip(args, reply)
 	n.populateReplyFingerprints(reply)
 
@@ -147,14 +151,30 @@ func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, w
 	return reply, nil
 }
 
-func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) {
+func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) error {
 	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
 
 	if hasFingerprints {
 		var peerSess *PeerReconcileSession
+		var seq uint64
 		if n.sessionManager != nil {
+			selfId := ""
+			if n.self != nil {
+				selfId = n.self.Id
+			}
 			peerSess = n.sessionManager.GetOrCreate(remoteId)
-			peerSess.TryStartInboundReconciling()
+			var err error
+			var ok bool
+			seq, ok, err = peerSess.TryStartInboundReconciling(selfId, remoteId)
+			if !ok {
+				if errors.Is(err, ErrSessionBusy) {
+					return status.Error(codes.Aborted, ErrSessionBusy.Error())
+				}
+				if err != nil {
+					return err
+				}
+				return status.Error(codes.Aborted, ErrSessionBusy.Error())
+			}
 		}
 
 		n.computeCertificateDeltas(args, reply)
@@ -163,10 +183,12 @@ func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, repl
 		n.computeDataDeltas(args, reply)
 
 		if peerSess != nil {
-			peerSess.SetDeltas(ExtractReconcileDeltas(reply))
-			peerSess.TransitionAfterReconcile(false)
+			peerSess.SetDeltas(seq, ExtractReconcileDeltas(reply))
+			peerSess.TransitionAfterReconcile(seq, false)
 		}
 	}
+
+	return nil
 }
 
 func (n *Node) handleExternalGossip(args *pb.State, reply *pb.StateResponse) {
