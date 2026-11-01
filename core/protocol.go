@@ -105,12 +105,6 @@ func (c correct) Gossip(n *Node) {
 	}
 }
 
-// hasReconciliationDeltas returns true if the StateResponse contains any requested
-// or available digest differences for certificates, notes, accusations, or data.
-func hasReconciliationDeltas(reply *pb.StateResponse) bool {
-	return ExtractReconcileDeltas(reply).HasDeltas()
-}
-
 func (c correct) Monitor(n *Node) {
 
 	// Fireflies protocol: ping one successor per ring,
