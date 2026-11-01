@@ -141,6 +141,9 @@ func (n *Node) gossipLoop() {
 			log.Info("Exiting gossiping")
 			return
 		case <-time.After(n.getGossipTimeout()):
+			if n.sessionManager != nil {
+				n.sessionManager.SweepStaleSessions()
+			}
 			n.protocol().Gossip(n)
 		}
 	}

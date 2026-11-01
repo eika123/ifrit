@@ -61,8 +61,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, reply)
 	}
 
-	n.ingestPushedControlItems(args)
-	n.reconcileControlAndData(remoteId, args, reply)
+	n.computeControlAndDataDeltas(remoteId, args, reply)
 	n.handleExternalGossip(args, reply)
 	n.populateReplyFingerprints(reply)
 
@@ -155,40 +154,34 @@ func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, w
 	return reply, nil
 }
 
-func (n *Node) ingestPushedControlItems(args *pb.State) {
-	if pushedCerts := args.GetPushedCertificates(); len(pushedCerts) > 0 {
-		n.mergeCertificates(pushedCerts)
-	}
-	if pushedNotes := args.GetPushedNotes(); len(pushedNotes) > 0 {
-		n.mergeNotes(pushedNotes)
-	}
-	if pushedAccs := args.GetPushedAccusations(); len(pushedAccs) > 0 {
-		n.mergeAccusations(pushedAccs)
-	}
-}
-
-func (n *Node) reconcileControlAndData(remoteId string, args *pb.State, reply *pb.StateResponse) {
+func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) {
 	hosts := args.GetExistingHosts()
 	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
 
 	if hasFingerprints {
+		var peerSess *PeerReconcileSession
+		if n.sessionManager != nil {
+			peerSess = n.sessionManager.GetOrCreate(remoteId)
+			peerSess.TryStartInboundReconciling()
+		}
+
 		hasDeltas := false
-		if n.reconcileCertificates(args, reply) {
+		if n.computeCertificateDeltas(args, reply) {
 			hasDeltas = true
 		}
-		if n.reconcileNotes(args, reply) {
+		if n.computeNoteDeltas(args, reply) {
 			hasDeltas = true
 		}
-		if n.reconcileAccusations(args, reply) {
+		if n.computeAccusationDeltas(args, reply) {
 			hasDeltas = true
 		}
-		if n.reconcileData(args, reply) {
+		if n.computeDataDeltas(args, reply) {
 			hasDeltas = true
 		}
 
-		if n.sessionManager != nil {
-			peerSess := n.sessionManager.GetOrCreate(remoteId)
+		if peerSess != nil {
 			peerSess.SetHasDeltas(hasDeltas)
+			peerSess.TransitionAfterReconcile(false)
 		}
 	} else if hosts != nil {
 		n.mergeViews(hosts, reply)
@@ -207,8 +200,8 @@ func (n *Node) handleExternalGossip(args *pb.State, reply *pb.StateResponse) {
 	}
 }
 
-// reconcileStore runs a generic reconciliation round against store using the provided constructor closure.
-func reconcileStore[T any](
+// computeStoreDeltas runs a generic set difference computation against store using the provided constructor closure.
+func computeStoreDeltas[T any](
 	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
 	callerFingerprint []byte,
 	localFingerprint []byte,
@@ -233,9 +226,9 @@ func reconcileStore[T any](
 	return delta, revIdxStore.AsUint64Slice(locDigs), revIdxStore.AsUint64Slice(reqDigs), nil
 }
 
-func (n *Node) reconcileCertificates(args *pb.State, reply *pb.StateResponse) bool {
+func (n *Node) computeCertificateDeltas(args *pb.State, reply *pb.StateResponse) bool {
 	protoDef := n.ReconciliationProtocol()
-	localDelta, localDigests, requestedDigests, err := reconcileStore(
+	localDelta, localDigests, requestedDigests, err := computeStoreDeltas(
 		n.view.CertStore(),
 		args.GetFingerprintCertificates(),
 		n.CertFingerprintBytes(),
@@ -243,16 +236,13 @@ func (n *Node) reconcileCertificates(args *pb.State, reply *pb.StateResponse) bo
 		protoDef.NewCertSession,
 	)
 	if err != nil {
-		log.Error("Failed to reconcile certificates", "err", err)
+		log.Error("Failed to compute certificate deltas", "err", err)
 		return false
 	}
 	if len(localDelta) == 0 && len(requestedDigests) == 0 {
 		return false
 	}
 
-	for _, cert := range localDelta {
-		reply.Certificates = append(reply.Certificates, cert.ToPbMsg())
-	}
 	reply.RequestedCertificateDigests = requestedDigests
 	reply.AvailableCertificateDigests = localDigests
 
@@ -356,11 +346,11 @@ func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 	handler(input, reply)
 }
 
-func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) bool {
+func (n *Node) computeAccusationDeltas(args *pb.State, reply *pb.StateResponse) bool {
 	callerFp := args.GetFingerprintAccusations()
 	if callerFp != nil {
 		protoDef := n.ReconciliationProtocol()
-		localDelta, localDigests, requestedDigests, err := reconcileStore(
+		localDelta, localDigests, requestedDigests, err := computeStoreDeltas(
 			n.view.AccusationStore(),
 			callerFp,
 			n.AccusationFingerprintBytes(),
@@ -368,16 +358,13 @@ func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) boo
 			protoDef.NewAccSession,
 		)
 		if err != nil {
-			log.Error("Failed to reconcile accusations", "err", err)
+			log.Error("Failed to compute accusation deltas", "err", err)
 			return false
 		}
 		if len(localDelta) == 0 && len(requestedDigests) == 0 {
 			return false
 		}
 
-		for _, acc := range localDelta {
-			reply.Accusations = append(reply.Accusations, acc.ToPbMsg())
-		}
 		reply.RequestedAccusationDigests = requestedDigests
 		reply.AvailableAccusationDigests = localDigests
 		return true
@@ -390,11 +377,11 @@ func (n *Node) reconcileAccusations(args *pb.State, reply *pb.StateResponse) boo
 	return len(n.view.Accusations()) > 0
 }
 
-func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) bool {
+func (n *Node) computeNoteDeltas(args *pb.State, reply *pb.StateResponse) bool {
 	callerFp := args.GetFingerprintView()
 	if callerFp != nil {
 		protoDef := n.ReconciliationProtocol()
-		localDelta, localDigests, requestedDigests, err := reconcileStore(
+		localDelta, localDigests, requestedDigests, err := computeStoreDeltas(
 			n.view.NoteStore(),
 			callerFp,
 			n.ViewFingerprintBytes(),
@@ -402,28 +389,13 @@ func (n *Node) reconcileNotes(args *pb.State, reply *pb.StateResponse) bool {
 			protoDef.NewNoteSession,
 		)
 		if err != nil {
-			log.Error("Failed to reconcile notes", "err", err)
+			log.Error("Failed to compute note deltas", "err", err)
 			return false
 		}
 		if len(localDelta) == 0 && len(requestedDigests) == 0 {
 			return false
 		}
 
-		seenCerts := make(map[string]struct{})
-		for _, note := range localDelta {
-			reply.Notes = append(reply.Notes, note.ToPbMsg())
-			if note.Id() == n.self.Id && n.self.Certificate() != nil {
-				if _, seen := seenCerts[n.self.Id]; !seen {
-					seenCerts[n.self.Id] = struct{}{}
-					reply.Certificates = append(reply.Certificates, &pb.Certificate{Raw: n.self.Certificate()})
-				}
-			} else if p := n.view.Peer(note.Id()); p != nil && p.Certificate() != nil {
-				if _, seen := seenCerts[note.Id()]; !seen {
-					seenCerts[note.Id()] = struct{}{}
-					reply.Certificates = append(reply.Certificates, &pb.Certificate{Raw: p.Certificate()})
-				}
-			}
-		}
 		reply.RequestedNoteDigests = requestedDigests
 		reply.AvailableNoteDigests = localDigests
 		return true
@@ -470,7 +442,7 @@ func (n *Node) mergeViewsHostNotes(hosts map[string]uint64, reply *pb.StateRespo
 	}
 }
 
-func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) bool {
+func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
 	callerFp := args.GetFingerprintData()
 	if callerFp != nil {
 		if bytes.Equal(callerFp, n.FingerprintData()) {
@@ -484,7 +456,7 @@ func (n *Node) reconcileData(args *pb.State, reply *pb.StateResponse) bool {
 
 		localDiff, remoteDiff, err := reconciler.Reconcile(revIdxStore.AsDigestSymbols(args.GetDataDigests()))
 		if err != nil {
-			log.Error("Failed to reconcile data", "err", err)
+			log.Error("Failed to compute data deltas", "err", err)
 			return false
 		}
 		reply.RequestedDataDigests = revIdxStore.AsUint64Slice(remoteDiff)

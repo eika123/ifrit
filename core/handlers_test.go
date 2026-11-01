@@ -1068,8 +1068,9 @@ func (suite *HandlerTestSuite) TestSpread_DivergentAccusationDigestsReturnsOnlyM
 
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
-	require.Len(suite.T(), reply.GetAccusations(), 1, "Divergent accusation set must return missing delta")
-	require.Equal(suite.T(), succ.Id, string(reply.GetAccusations()[0].GetAccused()))
+	require.Empty(suite.T(), reply.GetAccusations(), "Bulk items must not be piggybacked on Spread")
+	expectedDigests := node.AccusationDigestsUint64()
+	require.Equal(suite.T(), expectedDigests, reply.GetAvailableAccusationDigests(), "Divergent accusation set must return missing delta digests")
 	require.Equal(suite.T(), node.AccusationFingerprintBytes(), reply.GetFingerprintAccusations())
 }
 
@@ -1123,13 +1124,8 @@ func (suite *HandlerTestSuite) TestSpread_DivergentNoteDigestsReturnsOnlyMissing
 
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
-	require.Len(suite.T(), reply.GetNotes(), 1, "Divergent note set must return only missing delta")
-
-	missingNote, found, err := node.view.NoteByDigest(allDigests[0])
-	require.NoError(suite.T(), err)
-	require.True(suite.T(), found)
-	require.Equal(suite.T(), missingNote.Id(), string(reply.GetNotes()[0].GetId()))
-	require.Equal(suite.T(), missingNote.Epoch(), reply.GetNotes()[0].GetEpoch())
+	require.Empty(suite.T(), reply.GetNotes(), "Bulk items must not be piggybacked on Spread")
+	require.Equal(suite.T(), []uint64{uint64(allDigests[0])}, reply.GetAvailableNoteDigests(), "Divergent note set must return only missing delta digest")
 	require.Equal(suite.T(), node.ViewFingerprintBytes(), reply.GetFingerprintView())
 }
 
@@ -1317,11 +1313,7 @@ func (suite *HandlerTestSuite) TestSpread_DivergentCertificateDigestsReturnsOnly
 
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
-	require.Len(suite.T(), reply.GetCertificates(), 1, "Divergent certificate set must return only missing delta")
-
-	missingCert, found := certStore.GetByDigest(allDigests[0])
-	require.True(suite.T(), found)
-	require.Equal(suite.T(), missingCert.Raw(), reply.GetCertificates()[0].GetRaw())
+	require.Empty(suite.T(), reply.GetCertificates(), "Bulk items must not be piggybacked on Spread")
 	require.Equal(suite.T(), []uint64{0xfeedbeef}, reply.GetRequestedCertificateDigests(), "Node must request unknown certificate digest")
 	require.Equal(suite.T(), []uint64{uint64(allDigests[0])}, reply.GetAvailableCertificateDigests(), "Node must offer available delta digest")
 }
@@ -1356,8 +1348,6 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticCertReconciliation() {
 
 func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
 	node := suite.n
-	succ, _ := node.view.MyRingNeighbours(1)
-	ctx := peerContext(succ)
 
 	// Generate key and certificate for an unknown peer
 	priv, err := genKeys()
@@ -1369,32 +1359,16 @@ func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
 
 	note := discovery.NewNote(peerId, 1, math.MaxUint32, priv)
 
-	// Step 1: Ingest note before certificate via PushedNotes
-	args1 := &proto.State{
-		FingerprintView:        node.ViewFingerprintBytes(),
-		FingerprintAccusations: node.AccusationFingerprintBytes(),
-		PushedNotes:            []*proto.Note{note},
-	}
-
-	reply1, err := node.Spread(ctx, args1)
-	require.NoError(suite.T(), err)
-	require.NotNil(suite.T(), reply1)
+	// Step 1: Ingest note before certificate into Tier 1 raw noteStore
+	node.view.NoteStore().Insert(discovery.NoteFromPb(note))
 
 	// Verify note was ingested in Tier 1 NoteStore, but peer is not in full view or alive
 	require.False(suite.T(), node.view.Exists(peerId), "Peer must still not exist in full view")
 	_, hasActiveNote := node.view.ActiveNote(peerId)
 	require.False(suite.T(), hasActiveNote, "Peer must not have an active note before cert is known")
 
-	// Step 2: Certificate arrives via PushedCertificates
-	args2 := &proto.State{
-		FingerprintView:        node.ViewFingerprintBytes(),
-		FingerprintAccusations: node.AccusationFingerprintBytes(),
-		PushedCertificates:     []*proto.Certificate{{Raw: cert.Raw}},
-	}
-
-	reply2, err := node.Spread(ctx, args2)
-	require.NoError(suite.T(), err)
-	require.NotNil(suite.T(), reply2)
+	// Step 2: Certificate arrives via mergeCertificates
+	node.mergeCertificates([]*proto.Certificate{{Raw: cert.Raw}})
 
 	// Verify certificate admitted peer, and orphaned note was automatically promoted!
 	require.True(suite.T(), node.view.Exists(peerId), "Peer must now exist in full view")
@@ -1405,6 +1379,45 @@ func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
 	peer := node.view.Peer(peerId)
 	require.NotNil(suite.T(), peer)
 	require.True(suite.T(), node.view.IsAlive(peer), "Peer must now be marked alive")
+}
+
+func (suite *HandlerTestSuite) TestSpread_PeerReconcileSessionStateTransitions() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	ctx := peerContext(succ)
+
+	// Case 1: In-sync arguments (no deltas) -> session must end in SessionIdle
+	inSyncArgs := &proto.State{
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+		FingerprintCertificates: node.CertFingerprintBytes(),
+	}
+
+	reply, err := node.Spread(ctx, inSyncArgs)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply)
+
+	sess := node.sessionManager.Get(succ.Id)
+	require.NotNil(suite.T(), sess)
+	require.Equal(suite.T(), SessionIdle, sess.State())
+	require.False(suite.T(), sess.HasDeltas())
+
+	// Case 2: Divergent arguments (deltas computed) -> session must end in SessionAwaitingStream
+	divergentArgs := &proto.State{
+		FingerprintCertificates: []byte("divergent-fp"),
+		CertificateDigests:      []uint64{0x12345678},
+		FingerprintView:         node.ViewFingerprintBytes(),
+		FingerprintAccusations:  node.AccusationFingerprintBytes(),
+	}
+
+	reply2, err := node.Spread(ctx, divergentArgs)
+	require.NoError(suite.T(), err)
+	require.NotNil(suite.T(), reply2)
+
+	sess2 := node.sessionManager.Get(succ.Id)
+	require.NotNil(suite.T(), sess2)
+	require.Equal(suite.T(), SessionAwaitingStream, sess2.State())
+	require.True(suite.T(), sess2.HasDeltas())
 }
 
 func peerContext(p *discovery.Peer) context.Context {

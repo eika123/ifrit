@@ -2,6 +2,8 @@ package core
 
 import (
 	"encoding/binary"
+	"errors"
+	"sync"
 	"testing"
 
 	pb "github.com/joonnna/ifrit/protobuf"
@@ -316,4 +318,81 @@ func TestNode_CertificateStoreAndFingerprinting(t *testing.T) {
 	protoDef := n.ReconciliationProtocol()
 	assert.Equal(t, "naive", protoDef.Name)
 	assert.NotNil(t, protoDef.NewCertSession)
+}
+
+type mockGossipComm struct {
+	commStub
+	mu            sync.Mutex
+	gossipedAddrs []string
+	response      *pb.StateResponse
+	err           error
+}
+
+func (m *mockGossipComm) Gossip(addr string, msg *pb.State) (*pb.StateResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gossipedAddrs = append(m.gossipedAddrs, addr)
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.response != nil {
+		return m.response, nil
+	}
+	return &pb.StateResponse{}, nil
+}
+
+func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	cert := genCert(priv, 1)
+
+	comm := &mockGossipComm{}
+	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	require.NoError(t, err)
+
+	p, _, err := createTestPeer()
+	require.NoError(t, err)
+	p.Addr = "peer-divergent-addr"
+	// Ensure peer is divergent
+	p.SetFingerprintData([]byte("diff-data"))
+	n.view.AddLive(p)
+
+	// Case 1: RPC returns divergent deltas -> session transitions to SessionTransferring
+	comm.response = &pb.StateResponse{
+		AvailableCertificateDigests: []uint64{0x12345},
+	}
+	n.p.Gossip(n)
+
+	sess := n.SessionManager().Get(p.Id)
+	require.NotNil(t, sess)
+	assert.Equal(t, SessionTransferring, sess.State())
+	assert.True(t, sess.HasDeltas())
+
+	// Case 2: Concurrency guard - while session is in SessionTransferring, next Gossip tick skips peer
+	comm.mu.Lock()
+	comm.gossipedAddrs = nil
+	comm.mu.Unlock()
+	n.p.Gossip(n)
+	comm.mu.Lock()
+	assert.Empty(t, comm.gossipedAddrs, "Peer must be skipped while session is busy transferring")
+	comm.mu.Unlock()
+
+	// Finish or reset session to test next case
+	sess.ResetToIdle()
+
+	// Case 3: RPC returns empty deltas -> session transitions to SessionIdle, fingerprints updated
+	newFpData := []byte("converged-data-fp")
+	comm.response = &pb.StateResponse{
+		FingerprintData: newFpData,
+	}
+	n.p.Gossip(n)
+	assert.Equal(t, SessionIdle, sess.State())
+	assert.False(t, sess.HasDeltas())
+	assert.Equal(t, newFpData, p.FingerprintData())
+
+	// Case 4: RPC error -> session resets to SessionIdle
+	p.SetFingerprintData([]byte("diverged-again"))
+	comm.err = errors.New("network dial failure")
+	n.p.Gossip(n)
+	assert.Equal(t, SessionIdle, sess.State())
 }

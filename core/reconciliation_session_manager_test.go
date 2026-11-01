@@ -60,6 +60,37 @@ func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
 	assert.Equal(t, SessionIdle, s.State())
 }
 
+func TestPeerReconcileSession_InboundReconcilingTransitions(t *testing.T) {
+	s := NewPeerReconcileSession("peer-inbound")
+
+	// Inbound from Idle succeeds
+	assert.True(t, s.TryStartInboundReconciling())
+	assert.Equal(t, SessionReconciling, s.State())
+
+	// Transition to AwaitingStream (deltas found)
+	s.SetHasDeltas(true)
+	s.TransitionAfterReconcile(false)
+	assert.Equal(t, SessionAwaitingStream, s.State())
+
+	// New inbound Spread arrives while AwaitingStream (supersedes old round) -> succeeds
+	assert.True(t, s.TryStartInboundReconciling())
+	assert.Equal(t, SessionReconciling, s.State())
+
+	// Transition to Transferring
+	s.SetHasDeltas(true)
+	s.TransitionAfterReconcile(false)
+	err := s.StartTransfer()
+	require.NoError(t, err)
+	assert.Equal(t, SessionTransferring, s.State())
+
+	// Inbound Spread rejected while actively transferring
+	assert.False(t, s.TryStartInboundReconciling())
+	assert.Equal(t, SessionTransferring, s.State())
+
+	s.FinishTransfer()
+	assert.Equal(t, SessionIdle, s.State())
+}
+
 func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
 	s := NewPeerReconcileSession("peer-2")
 

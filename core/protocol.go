@@ -47,30 +47,54 @@ func (c correct) Gossip(n *Node) {
 			continue
 		}
 
+		var sess *PeerReconcileSession
+		if n.sessionManager != nil {
+			sess = n.sessionManager.GetOrCreate(p.Id)
+			if !sess.TryStartReconciling() {
+				continue
+			}
+		}
+
 		msg := n.collectGossipContentForPeer(p)
 
 		// the comm.Gossip actually does the RPC
 		reply, err := n.comm.Gossip(p.Addr, msg)
 		if err != nil {
+			if sess != nil {
+				sess.ResetToIdle()
+			}
 			log.Error(err.Error(), "addr", p.Addr)
 			continue
 		}
 
-		//log.Debug("Gossiped", "addr", p.Addr)
-
-		n.mergeCertificates(reply.GetCertificates())
-		n.mergeNotes(reply.GetNotes())
-		n.mergeAccusations(reply.GetAccusations())
-
-		// Update cached peer fingerprints from responder's reply
-		if fpData := reply.GetFingerprintData(); fpData != nil {
-			p.SetFingerprintData(fpData)
+		// Ingest control items if present (e.g. bootstrap response)
+		if certs := reply.GetCertificates(); len(certs) > 0 {
+			n.mergeCertificates(certs)
 		}
-		if fpAcc := reply.GetFingerprintAccusations(); fpAcc != nil {
-			p.SetFingerprintAccusations(fpAcc)
+		if notes := reply.GetNotes(); len(notes) > 0 {
+			n.mergeNotes(notes)
 		}
-		if fpView := reply.GetFingerprintView(); fpView != nil {
-			p.SetFingerprintView(fpView)
+		if accs := reply.GetAccusations(); len(accs) > 0 {
+			n.mergeAccusations(accs)
+		}
+
+		hasDeltas := hasReconciliationDeltas(reply)
+		if sess != nil {
+			sess.SetHasDeltas(hasDeltas)
+			sess.TransitionAfterReconcile(true)
+		}
+
+		if !hasDeltas {
+			// In sync: update cached peer fingerprints from responder's reply
+			if fpData := reply.GetFingerprintData(); fpData != nil {
+				p.SetFingerprintData(fpData)
+			}
+			if fpAcc := reply.GetFingerprintAccusations(); fpAcc != nil {
+				p.SetFingerprintAccusations(fpAcc)
+			}
+			if fpView := reply.GetFingerprintView(); fpView != nil {
+				p.SetFingerprintView(fpView)
+			}
 		}
 
 		if handler := n.getResponseHandler(); handler != nil {
@@ -79,6 +103,22 @@ func (c correct) Gossip(n *Node) {
 			}
 		}
 	}
+}
+
+// hasReconciliationDeltas returns true if the StateResponse contains any requested
+// or available digest differences for certificates, notes, accusations, or data.
+func hasReconciliationDeltas(reply *pb.StateResponse) bool {
+	if reply == nil {
+		return false
+	}
+	return len(reply.GetRequestedCertificateDigests()) > 0 ||
+		len(reply.GetAvailableCertificateDigests()) > 0 ||
+		len(reply.GetRequestedNoteDigests()) > 0 ||
+		len(reply.GetAvailableNoteDigests()) > 0 ||
+		len(reply.GetRequestedAccusationDigests()) > 0 ||
+		len(reply.GetAvailableAccusationDigests()) > 0 ||
+		len(reply.GetRequestedDataDigests()) > 0 ||
+		len(reply.GetAvailableDataDigests()) > 0
 }
 
 func (c correct) Monitor(n *Node) {
@@ -127,277 +167,3 @@ func (c correct) Monitor(n *Node) {
 		}
 	}
 }
-
-/*
-func (sa spamAccusations) Gossip(n *Node) {
-	msg, err := createFalseAccusations(n)
-	if err != nil {
-		log.Error(err.Error())
-		return
-	}
-
-	allNodes := n.getView()
-
-	for _, p := range allNodes {
-		reply, err := n.client.Gossip(p.addr, msg)
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-		n.mergeCertificates(reply.GetCertificates())
-		n.mergeNotes(reply.GetNotes())
-	}
-}
-
-func (sa spamAccusations) Monitor(n *Node) {
-	for _, ring := range n.ringMap {
-		succ, err := ring.getRingSucc()
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-
-		p := n.getLivePeer(succ.key)
-		if p == nil {
-			continue
-		}
-
-		peerNote := p.getNote()
-		if peerNote == nil {
-			continue
-		}
-
-		a := &accusation{
-			peerId:  p.peerId,
-			epoch:   peerNote.epoch,
-			accuser: n.peerId,
-			mask:    peerNote.mask,
-			ringNum: ring.ringNum,
-		}
-
-		err = a.sign(n.privKey)
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-
-		err = p.setAccusation(a)
-		if err != nil {
-			log.Error(err.Error())
-			return
-		}
-
-		if !n.timerExist(p.key) {
-			n.startTimer(p.key, peerNote, n.peer, p.addr)
-		}
-
-	}
-}
-
-func (sa spamAccusations) Rebuttal(n *Node) {
-	var err error
-	var neighbours []string
-
-	for {
-		neighbours, err = n.getGossipPartners()
-		if err != nil {
-			log.Error(err.Error())
-		} else {
-			break
-		}
-	}
-
-	noteMsg := n.localNoteToPbMsg()
-
-	msg := &gossip.State{
-		OwnNote: noteMsg,
-	}
-
-	for _, addr := range neighbours {
-		if addr == n.addr {
-			continue
-		}
-		_, err = n.client.Gossip(addr, msg)
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-	}
-}
-
-func (sa spamAccusations) Timeouts(n *Node) {
-}
-
-func createFalseAccusations(n *Node) (*gossip.State, error) {
-	var i uint32
-	msg := &gossip.State{}
-
-	view := n.getView()
-
-	for _, p := range view {
-		peerNote := p.getNote()
-		if peerNote == nil {
-			continue
-		}
-
-		for i = 1; i <= n.numRings; i++ {
-			a := &accusation{
-				peerId:  p.peerId,
-				epoch:   peerNote.epoch,
-				accuser: n.peerId,
-				mask:    peerNote.mask,
-				ringNum: i,
-			}
-
-			err := a.sign(n.privKey)
-			if err != nil {
-				log.Error(err.Error())
-				continue
-			}
-
-			err = p.setAccusation(a)
-			if err != nil {
-				log.Error(err.Error())
-				continue
-			}
-
-			//msg.Accusations = append(msg.Accusations, a.toPbMsg())
-		}
-	}
-
-	noteMsg := n.localNoteToPbMsg()
-
-	msg.OwnNote = noteMsg
-
-	return msg, nil
-}
-
-func (e experiment) Rebuttal(n *Node) {
-	var err error
-	var neighbours []string
-
-	for {
-		neighbours, err = n.getGossipPartners()
-		if err != nil {
-			log.Error(err.Error())
-		} else {
-			break
-		}
-	}
-
-	noteMsg := n.localNoteToPbMsg()
-
-	msg := &gossip.State{
-		OwnNote: noteMsg,
-	}
-
-	for _, addr := range neighbours {
-		if addr == n.addr {
-			continue
-		}
-		_, err = n.client.Gossip(addr, msg)
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-	}
-}
-
-func dos(addr string, msg *gossip.State, n *Node) {
-	_, err := n.client.Gossip(addr, msg)
-	if err != nil {
-		log.Error("%s, addr: %s", err.Error(), addr)
-	}
-}
-
-func (e experiment) Gossip(n *Node) {
-		msg, err := n.collectGossipContent()
-		if err != nil {
-			return
-		}
-
-	msg := &gossip.State{}
-
-	for i := 0; i < e.maxConc; i++ {
-		go dos(e.addr, msg, n)
-	}
-}
-
-func (e experiment) Monitor(n *Node) {
-	for _, ring := range n.ringMap {
-		succ, err := ring.getRingSucc()
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-
-		p := n.getLivePeer(succ.key)
-		if p == nil {
-			continue
-		}
-
-		err = n.ping(p)
-		if err != nil {
-			if err != errDead {
-				continue
-			}
-
-			log.Debug("%s is dead, accusing", p.addr)
-			peerNote := p.getNote()
-			//Will always have note for a peer in our liveView, except when the peer stems
-			//from the initial contact list of the CA, if it's dead
-			//we should remove it to ensure it doesn't stay in our liveView.
-			//Not possible to accuse a peer without a note.
-			if peerNote == nil {
-				n.removeLivePeer(p.key)
-				continue
-			}
-
-			a := &accusation{
-				peerId:  p.peerId,
-				epoch:   peerNote.epoch,
-				accuser: n.peerId,
-				mask:    peerNote.mask,
-				ringNum: ring.ringNum,
-			}
-
-			acc := p.getRingAccusation(ring.ringNum)
-			if a.equal(acc) {
-				log.Debug("Already accused peer on this ring")
-				if !n.timerExist(p.key) {
-					n.startTimer(p.key, peerNote, n.peer, p.addr)
-				}
-				continue
-			}
-
-			err = a.sign(n.privKey)
-			if err != nil {
-				log.Error(err.Error())
-				continue
-			}
-
-			err = p.setAccusation(a)
-			if err != nil {
-				log.Error(err.Error())
-				continue
-			}
-			if !n.timerExist(p.key) {
-				n.startTimer(p.key, peerNote, n.peer, p.addr)
-			}
-		}
-	}
-}
-
-func (e experiment) Timeouts(n *Node) {
-	timeouts := n.getAllTimeouts()
-	for key, t := range timeouts {
-		log.Debug("Have timeout for: %s", t.addr)
-		since := time.Since(t.timeStamp)
-		if since.Seconds() > n.nodeDeadTimeout {
-			log.Debug("%s timeout expired, removing from live", t.addr)
-			n.deleteTimeout(key)
-			n.removeLivePeer(key)
-		}
-	}
-}
-*/

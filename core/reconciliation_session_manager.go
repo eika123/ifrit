@@ -261,6 +261,23 @@ func (s *PeerReconcileSession) TryStartReconciling() bool {
 	return true
 }
 
+// TryStartInboundReconciling attempts to transition the responder session to SessionReconciling
+// upon receiving an inbound Spread RPC. It transitions if the session is SessionIdle or
+// SessionAwaitingStream (superseded by a fresh reconciliation round), but returns false if
+// actively transferring (SessionTransferring).
+func (s *PeerReconcileSession) TryStartInboundReconciling() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state == SessionTransferring {
+		return false
+	}
+	s.state = SessionReconciling
+	s.hasDeltas = false
+	s.lastActivity = time.Now()
+	return true
+}
+
 // SetHasDeltas manually marks whether the session has pending deltas.
 func (s *PeerReconcileSession) SetHasDeltas(hasDeltas bool) {
 	s.mu.Lock()
