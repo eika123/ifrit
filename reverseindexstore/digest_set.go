@@ -13,54 +13,115 @@ import (
 // Hasher computes a deterministic, cross-platform digest for an element.
 type Hasher[T any, S Symbol[S]] func(item T) S
 
-// DefaultHasher returns a deterministic 64-bit FNV-1a hasher for type T.
-// If item implements an interface with Digest() uint64 or ID() string, it uses that directly.
-// Otherwise, it falls back to hashing the item's canonical JSON representation.
-func DefaultHasher[T any]() Hasher[T, DigestSymbol] {
-	return func(item T) DigestSymbol {
-		// If item is already a DigestSymbol, return directly
-		if ds, ok := any(item).(DigestSymbol); ok {
-			return ds
-		}
-		// Custom Digest() uint64 interface
-		if d, ok := any(item).(interface{ Digest() uint64 }); ok {
-			return DigestSymbol(d.Digest())
-		}
-		// Custom Digest() DigestSymbol interface
-		if d, ok := any(item).(interface{ Digest() DigestSymbol }); ok {
-			return d.Digest()
-		}
-		// Custom CryptographicIdentity() []byte interface (SHA-256 truncated to 64-bit uint64)
-		if c, ok := any(item).(interface{ CryptographicIdentity() []byte }); ok {
-			sum := sha256.Sum256(c.CryptographicIdentity())
+var ErrUnhashableType = errors.New("type cannot be deterministically hashed")
+
+// DefaultHasher returns a deterministic 64-bit hasher for type T after validating at factory time
+// that T satisfies an explicit deterministic identity contract:
+//   - If T is []byte or *[]byte, it returns a zero-allocation SHA-256 hasher truncated to 64-bit BigEndian.
+//   - If T is string, it returns an FNV-1a hasher.
+//   - If T implements DigestSymbol, it returns an identity hasher.
+//   - If T implements Digest() uint64/DigestSymbol, it invokes that method directly.
+//   - If T implements CryptographicIdentity() []byte/string, it computes a SHA-256 digest truncated to 64-bit BigEndian.
+//   - If T implements ID() string, it computes an FNV-1a hash of the ID.
+//
+// If T does not satisfy any of these deterministic contracts, an error wrapping ErrUnhashableType is returned.
+// Arbitrary structs must explicitly implement an identity contract (such as CryptographicIdentity() []byte
+// or ID() string) or supply a custom Hasher to NewDigestSet.
+func DefaultHasher[T any]() (Hasher[T, DigestSymbol], error) {
+	var zero T
+
+	// 1. Concrete primitive/fast-path types
+	switch any(zero).(type) {
+	case []byte:
+		return func(item T) DigestSymbol {
+			b := any(item).([]byte)
+			sum := sha256.Sum256(b)
 			return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
-		}
-		// Custom CryptographicIdentity() string interface (SHA-256 truncated to 64-bit uint64)
-		if c, ok := any(item).(interface{ CryptographicIdentity() string }); ok {
-			sum := sha256.Sum256([]byte(c.CryptographicIdentity()))
+		}, nil
+	case *[]byte:
+		return func(item T) DigestSymbol {
+			bPtr := any(item).(*[]byte)
+			if bPtr == nil {
+				return 0
+			}
+			sum := sha256.Sum256(*bPtr)
 			return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
-		}
-		// Custom ID() string interface
-		if id, ok := any(item).(interface{ ID() string }); ok {
-			h := fnv.New64a()
-			_, _ = h.Write([]byte(id.ID()))
-			return DigestSymbol(h.Sum64())
-		}
-		// Native string
-		if s, ok := any(item).(string); ok {
+		}, nil
+	case string:
+		return func(item T) DigestSymbol {
+			s := any(item).(string)
 			h := fnv.New64a()
 			_, _ = h.Write([]byte(s))
 			return DigestSymbol(h.Sum64())
-		}
-		// Fallback to deterministic JSON serialization
-		b, err := json.Marshal(item)
-		if err != nil {
-			b = []byte(fmt.Sprintf("%v", item))
-		}
-		h := fnv.New64a()
-		_, _ = h.Write(b)
-		return DigestSymbol(h.Sum64())
+		}, nil
+	case DigestSymbol:
+		return func(item T) DigestSymbol {
+			return any(item).(DigestSymbol)
+		}, nil
 	}
+
+	// 2. Custom interfaces implemented by T
+	if _, ok := any(zero).(DigestSymbol); ok {
+		return func(item T) DigestSymbol {
+			return any(item).(DigestSymbol)
+		}, nil
+	}
+	if _, ok := any(zero).(interface{ Digest() uint64 }); ok {
+		return func(item T) DigestSymbol {
+			if d, ok := any(item).(interface{ Digest() uint64 }); ok {
+				return DigestSymbol(d.Digest())
+			}
+			return 0
+		}, nil
+	}
+	if _, ok := any(zero).(interface{ Digest() DigestSymbol }); ok {
+		return func(item T) DigestSymbol {
+			if d, ok := any(item).(interface{ Digest() DigestSymbol }); ok {
+				return d.Digest()
+			}
+			return 0
+		}, nil
+	}
+	if _, ok := any(zero).(interface{ CryptographicIdentity() []byte }); ok {
+		return func(item T) DigestSymbol {
+			if c, ok := any(item).(interface{ CryptographicIdentity() []byte }); ok {
+				sum := sha256.Sum256(c.CryptographicIdentity())
+				return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
+			}
+			return 0
+		}, nil
+	}
+	if _, ok := any(zero).(interface{ CryptographicIdentity() string }); ok {
+		return func(item T) DigestSymbol {
+			if c, ok := any(item).(interface{ CryptographicIdentity() string }); ok {
+				sum := sha256.Sum256([]byte(c.CryptographicIdentity()))
+				return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
+			}
+			return 0
+		}, nil
+	}
+	if _, ok := any(zero).(interface{ ID() string }); ok {
+		return func(item T) DigestSymbol {
+			if id, ok := any(item).(interface{ ID() string }); ok {
+				h := fnv.New64a()
+				_, _ = h.Write([]byte(id.ID()))
+				return DigestSymbol(h.Sum64())
+			}
+			return 0
+		}, nil
+	}
+
+	return nil, fmt.Errorf("%w: type %T does not implement CryptographicIdentity, Digest(), ID(), nor is it a native []byte or string", ErrUnhashableType, zero)
+}
+
+// MustDefaultHasher returns DefaultHasher[T]() or panics if T is not deterministically hashable.
+// Intended for package initialization or tests with statically known types.
+func MustDefaultHasher[T any]() Hasher[T, DigestSymbol] {
+	h, err := DefaultHasher[T]()
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 // digestSet represents a reverse-index hash set that maps deterministic digests

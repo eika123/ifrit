@@ -106,7 +106,7 @@ func (suite *CertificateTestSuite) TestDefaultHasherIntegration() {
 	c1 := NewCertificate(raw1)
 	c2 := NewCertificate(raw2)
 
-	hasher := revIdxStore.DefaultHasher[*Certificate]()
+	hasher := revIdxStore.MustDefaultHasher[*Certificate]()
 	d1 := hasher(c1)
 	d2 := hasher(c2)
 

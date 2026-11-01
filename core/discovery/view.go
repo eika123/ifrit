@@ -148,17 +148,17 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	accusationStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Accusation]())
+	accusationStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Accusation]())
 	if err != nil {
 		return nil, err
 	}
 
-	noteStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Note]())
+	noteStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Note]())
 	if err != nil {
 		return nil, err
 	}
 
-	certStore, err := revIdxStore.NewDigestSet(revIdxStore.DefaultHasher[*Certificate]())
+	certStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Certificate]())
 	if err != nil {
 		return nil, err
 	}
@@ -170,14 +170,14 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 	activeNotes := versionvector.NewVersionVectorMutable[string, *Note, revIdxStore.DigestSymbol](
 		func(n *Note) string { return n.id },
 		func(item versionvector.VersionedItem[*Note]) revIdxStore.DigestSymbol {
-			return revIdxStore.DefaultHasher[*Note]()(item.Item)
+			return revIdxStore.MustDefaultHasher[*Note]()(item.Item)
 		},
 	)
 
 	activeAccusations := versionvector.NewVersionVectorMutable[string, *Accusation, revIdxStore.DigestSymbol](
 		func(a *Accusation) string { return accusationRingKey(a.accused, a.ringNum) },
 		func(item versionvector.VersionedItem[*Accusation]) revIdxStore.DigestSymbol {
-			return revIdxStore.DefaultHasher[*Accusation]()(item.Item)
+			return revIdxStore.MustDefaultHasher[*Accusation]()(item.Item)
 		},
 	)
 

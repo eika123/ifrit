@@ -21,6 +21,10 @@ type user struct {
 	AddedBy   string `json:"added_by"`
 }
 
+func (u user) CryptographicIdentity() []byte {
+	return []byte(u.ID)
+}
+
 // Application represents a gossip node managing a convergent Grow-only Set (G-Set)
 // of user records using Ifrit's pluggable ReverseIndexStore abstraction.
 type application struct {
@@ -67,7 +71,7 @@ func newApp() (*application, error) {
 	}
 
 	// Create thread-safe reconcilable store and register it with the client.
-	store, err := ifrit.NewDigestSet[user](ifrit.DefaultHasher[user]())
+	store, err := ifrit.NewDigestSet[user](ifrit.MustDefaultHasher[user]())
 	if err != nil {
 		return nil, err
 	}

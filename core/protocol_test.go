@@ -101,7 +101,7 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	assert.Nil(t, ps.fpDataProvider(), "unregistered data store must produce nil data fingerprint")
 
 	// Register an application data store with an element
-	store, err := revIdxStore.NewDigestSet[string, revIdxStore.DigestSymbol](revIdxStore.DefaultHasher[string]())
+	store, err := revIdxStore.NewDigestSet[string, revIdxStore.DigestSymbol](revIdxStore.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	store.AddElement("app-data-element-1")
 

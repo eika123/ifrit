@@ -12,7 +12,7 @@ import (
 )
 
 func TestSetUnionMerging(t *testing.T) {
-	hasher := ifrit.DefaultHasher[user]()
+	hasher := ifrit.MustDefaultHasher[user]()
 	s1, err := ifrit.NewDigestSet(hasher)
 	require.NoError(t, err)
 	s1.AddElement(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
@@ -42,7 +42,7 @@ func TestSetUnionMerging(t *testing.T) {
 }
 
 func TestApplicationGossipSetIntegration(t *testing.T) {
-	gSet, err := ifrit.NewDigestSet[user](ifrit.DefaultHasher[user]())
+	gSet, err := ifrit.NewDigestSet[user](ifrit.MustDefaultHasher[user]())
 	require.NoError(t, err)
 	defer gSet.Close()
 
@@ -66,7 +66,7 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 		wgPeers.Add(1)
 		go func(peerIdx int) {
 			defer wgPeers.Done()
-			peerSet, err := ifrit.NewDigestSet(ifrit.DefaultHasher[user]())
+			peerSet, err := ifrit.NewDigestSet(ifrit.MustDefaultHasher[user]())
 			require.NoError(t, err)
 			for i := 0; i < itemsPerPeer; i++ {
 				peerSet.AddElement(user{

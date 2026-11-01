@@ -62,7 +62,7 @@ func (i itemWithCryptoString) CryptographicIdentity() string {
 }
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
-	hasher := reverseindexstore.DefaultHasher[userItem]()
+	hasher := reverseindexstore.MustDefaultHasher[userItem]()
 	s, err := reverseindexstore.NewDigestSet[userItem, reverseindexstore.DigestSymbol](hasher)
 	require.NoError(t, err)
 
@@ -122,45 +122,137 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 
 func TestDigestSet_DefaultHasherVariants(t *testing.T) {
 	// 1. Direct DigestSymbol
-	hSymbol := reverseindexstore.DefaultHasher[reverseindexstore.DigestSymbol]()
+	hSymbol, err := reverseindexstore.DefaultHasher[reverseindexstore.DigestSymbol]()
+	require.NoError(t, err)
 	ds := reverseindexstore.DigestSymbol(42)
 	assert.Equal(t, ds, hSymbol(ds))
 
 	// 2. uint64 Digest() interface
-	hUint64 := reverseindexstore.DefaultHasher[itemWithUint64Digest]()
+	hUint64, err := reverseindexstore.DefaultHasher[itemWithUint64Digest]()
+	require.NoError(t, err)
 	assert.Equal(t, reverseindexstore.DigestSymbol(99), hUint64(itemWithUint64Digest{val: 99}))
 
 	// 3. DigestSymbol Digest() interface
-	hSymItem := reverseindexstore.DefaultHasher[itemWithSymbolDigest]()
+	hSymItem, err := reverseindexstore.DefaultHasher[itemWithSymbolDigest]()
+	require.NoError(t, err)
 	assert.Equal(t, reverseindexstore.DigestSymbol(123), hSymItem(itemWithSymbolDigest{val: 123}))
 
 	// 4. Native string
-	hStr := reverseindexstore.DefaultHasher[string]()
+	hStr, err := reverseindexstore.DefaultHasher[string]()
+	require.NoError(t, err)
 	hExpected := fnv.New64a()
 	hExpected.Write([]byte("hello"))
 	assert.Equal(t, reverseindexstore.DigestSymbol(hExpected.Sum64()), hStr("hello"))
 
-	// 5. Plain struct JSON fallback
-	hPlain := reverseindexstore.DefaultHasher[itemPlain]()
-	assert.NotZero(t, hPlain(itemPlain{Name: "Carol", Age: 30}))
+	// 5. Plain struct without identity contract returns error
+	hPlain, err := reverseindexstore.DefaultHasher[itemPlain]()
+	require.Error(t, err)
+	assert.Nil(t, hPlain)
+	assert.ErrorIs(t, err, reverseindexstore.ErrUnhashableType)
 
 	// 6. CryptographicIdentity with []byte (SHA-256 truncated to 64-bit uint64)
-	hCryptoBytes := reverseindexstore.DefaultHasher[itemWithCryptoBytes]()
+	hCryptoBytes, err := reverseindexstore.DefaultHasher[itemWithCryptoBytes]()
+	require.NoError(t, err)
 	payload := []byte("crypto-payload-123")
 	sumB := sha256.Sum256(payload)
 	expectedCryptoB := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumB[:8]))
 	assert.Equal(t, expectedCryptoB, hCryptoBytes(itemWithCryptoBytes{payload: payload}))
 
 	// 7. CryptographicIdentity with string (SHA-256 truncated to 64-bit uint64)
-	hCryptoStr := reverseindexstore.DefaultHasher[itemWithCryptoString]()
+	hCryptoStr, err := reverseindexstore.DefaultHasher[itemWithCryptoString]()
+	require.NoError(t, err)
 	strID := "crypto-id-456"
 	sumS := sha256.Sum256([]byte(strID))
 	expectedCryptoS := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumS[:8]))
 	assert.Equal(t, expectedCryptoS, hCryptoStr(itemWithCryptoString{id: strID}))
+
+	// 8. Native []byte fast path (SHA-256 truncated to 64-bit uint64, zero allocations)
+	hBytes, err := reverseindexstore.DefaultHasher[[]byte]()
+	require.NoError(t, err)
+	rawPayload := []byte("fast-path-raw-byte-slice-data")
+	sumRaw := sha256.Sum256(rawPayload)
+	expectedRaw := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumRaw[:8]))
+	assert.Equal(t, expectedRaw, hBytes(rawPayload))
+
+	// 9. Pointer to []byte (*[]byte)
+	hBytesPtr, err := reverseindexstore.DefaultHasher[*[]byte]()
+	require.NoError(t, err)
+	assert.Equal(t, expectedRaw, hBytesPtr(&rawPayload))
+	assert.Zero(t, hBytesPtr(nil))
+}
+
+type unhashableItem struct {
+	Ch chan int
+}
+
+func TestDefaultHasher_UnhashableTypeReturnsError(t *testing.T) {
+	hasher, err := reverseindexstore.DefaultHasher[unhashableItem]()
+	require.Error(t, err)
+	assert.Nil(t, hasher)
+	assert.ErrorIs(t, err, reverseindexstore.ErrUnhashableType)
+
+	// MustDefaultHasher panics for unhashable types
+	assert.Panics(t, func() {
+		reverseindexstore.MustDefaultHasher[unhashableItem]()
+	})
+}
+
+func TestDigestSet_ByteArrayFastPathAndStoreIntegration(t *testing.T) {
+	hasher := reverseindexstore.MustDefaultHasher[[]byte]()
+
+	// 1. Verify determinism and empty slice behavior
+	emptyDigest := hasher([]byte{})
+	sumEmpty := sha256.Sum256([]byte{})
+	expectedEmpty := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumEmpty[:8]))
+	assert.Equal(t, expectedEmpty, emptyDigest)
+
+	nilDigest := hasher(nil)
+	assert.Equal(t, emptyDigest, nilDigest)
+
+	// 2. Distinct inputs produce distinct digests
+	blobA := []byte("chunk-alpha-001")
+	blobB := []byte("chunk-bravo-002")
+	digestA := hasher(blobA)
+	digestB := hasher(blobB)
+	assert.NotEqual(t, digestA, digestB)
+
+	// 3. DigestSet integration with []byte
+	store, err := reverseindexstore.NewDigestSet[[]byte, reverseindexstore.DigestSymbol](hasher)
+	require.NoError(t, err)
+
+	added := store.AddElements(blobA, blobB)
+	assert.Equal(t, 2, added)
+	assert.Equal(t, 2, store.Size())
+	assert.Equal(t, digestA.XOR(digestB), store.Fingerprint())
+
+	gotA, found := store.GetByDigest(digestA)
+	require.True(t, found)
+	assert.Equal(t, blobA, gotA)
+
+	gotB, found := store.GetByDigest(digestB)
+	require.True(t, found)
+	assert.Equal(t, blobB, gotB)
+
+	// 4. Large blob hashing (5 MB)
+	largeBlob := make([]byte, 5*1024*1024)
+	for i := range largeBlob {
+		largeBlob[i] = byte(i % 256)
+	}
+	largeDigest := hasher(largeBlob)
+	sumLarge := sha256.Sum256(largeBlob)
+	expectedLarge := reverseindexstore.DigestSymbol(binary.BigEndian.Uint64(sumLarge[:8]))
+	assert.Equal(t, expectedLarge, largeDigest)
+
+	// 5. Zero heap allocation verification for []byte hashing
+	sample := []byte("benchmark-allocation-check")
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = hasher(sample)
+	})
+	assert.Zero(t, allocs, "DefaultHasher[[]byte] must incur 0 heap allocations")
 }
 
 func TestDigestSet_CopyAndIsolation(t *testing.T) {
-	hasher := reverseindexstore.DefaultHasher[string]()
+	hasher := reverseindexstore.MustDefaultHasher[string]()
 	s, err := reverseindexstore.NewDigestSet[string, reverseindexstore.DigestSymbol](hasher)
 	require.NoError(t, err)
 
@@ -175,7 +267,7 @@ func TestDigestSet_CopyAndIsolation(t *testing.T) {
 }
 
 func TestDigestSet_JSONSerialization(t *testing.T) {
-	hasher := reverseindexstore.DefaultHasher[string]()
+	hasher := reverseindexstore.MustDefaultHasher[string]()
 	s, err := reverseindexstore.NewDigestSet[string, reverseindexstore.DigestSymbol](hasher)
 	require.NoError(t, err)
 
@@ -193,7 +285,7 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 }
 
 func TestDigestSet_ConcurrentAccess(t *testing.T) {
-	hasher := reverseindexstore.DefaultHasher[string]()
+	hasher := reverseindexstore.MustDefaultHasher[string]()
 	s, err := reverseindexstore.NewDigestSet[string, reverseindexstore.DigestSymbol](hasher)
 	require.NoError(t, err)
 
@@ -234,7 +326,7 @@ func TestDigestSymbolConversions(t *testing.T) {
 }
 
 func TestDigestSet_InsertAndDigest(t *testing.T) {
-	hasher := reverseindexstore.DefaultHasher[string]()
+	hasher := reverseindexstore.MustDefaultHasher[string]()
 	s, err := reverseindexstore.NewDigestSet[string, reverseindexstore.DigestSymbol](hasher)
 	require.NoError(t, err)
 
@@ -255,4 +347,21 @@ func TestDigestSet_InsertAndDigest(t *testing.T) {
 	assert.Equal(t, expectedDigest, d2)
 	assert.False(t, newlyAdded2)
 	assert.Equal(t, 1, s.Size())
+}
+
+func BenchmarkDefaultHasher_ByteArray(b *testing.B) {
+	hasher := reverseindexstore.MustDefaultHasher[[]byte]()
+	sizes := []int{64, 1024, 64 * 1024, 1024 * 1024}
+
+	for _, sz := range sizes {
+		b.Run(fmt.Sprintf("size=%dB", sz), func(b *testing.B) {
+			data := make([]byte, sz)
+			b.SetBytes(int64(sz))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = hasher(data)
+			}
+		})
+	}
 }

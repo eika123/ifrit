@@ -232,11 +232,20 @@ func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
 type ReverseIndexStore[T any] = revIdxStore.ReverseIndexStore[T, revIdxStore.DigestSymbol]
 
-var ErrNilHasher = revIdxStore.ErrNilHasher
+var (
+	ErrNilHasher      = revIdxStore.ErrNilHasher
+	ErrUnhashableType = revIdxStore.ErrUnhashableType
+)
 
-// DefaultHasher returns a deterministic 64-bit FNV-1a hasher for type T.
-func DefaultHasher[T any]() revIdxStore.Hasher[T, revIdxStore.DigestSymbol] {
+// DefaultHasher returns a deterministic 64-bit hasher for type T after validating at factory time
+// that T is deterministically hashable, or returns an error wrapping ErrUnhashableType.
+func DefaultHasher[T any]() (revIdxStore.Hasher[T, revIdxStore.DigestSymbol], error) {
 	return revIdxStore.DefaultHasher[T]()
+}
+
+// MustDefaultHasher returns DefaultHasher[T]() or panics if T is not deterministically hashable.
+func MustDefaultHasher[T any]() revIdxStore.Hasher[T, revIdxStore.DigestSymbol] {
+	return revIdxStore.MustDefaultHasher[T]()
 }
 
 // NewCustomDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.

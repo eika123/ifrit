@@ -11,7 +11,7 @@ import (
 )
 
 func TestDigestSymbol_Reconciliation(t *testing.T) {
-	hasher := revIdxStore.DefaultHasher[DigestSymbol]()
+	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
 	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
@@ -63,7 +63,7 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 }
 
 func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
-	hasher := revIdxStore.DefaultHasher[DigestSymbol]()
+	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
 	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
@@ -110,7 +110,7 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 }
 
 func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
-	hasher := revIdxStore.DefaultHasher[DigestSymbol]()
+	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
 	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
