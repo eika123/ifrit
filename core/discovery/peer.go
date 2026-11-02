@@ -46,6 +46,8 @@ type Peer struct {
 
 	nPingMutex sync.RWMutex
 
+	// scratch pad between udp ping-pongs and gossip loop
+	// used to detect divergence, triggering calls on spread
 	fingerprintData  []byte
 	fingerprintAcc   []byte
 	fingerprintView  []byte

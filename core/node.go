@@ -695,6 +695,13 @@ func (n *Node) Start() {
 			n.mergeCertificates(reply.GetCertificates())
 			n.mergeNotes(reply.GetNotes())
 			n.mergeAccusations(reply.GetAccusations())
+
+			deltas := ExtractReconcileDeltas(reply)
+			if deltas.HasDeltas() {
+				if err := n.syncBootstrap(addr, deltas); err != nil {
+					log.Error("Bootstrap sync stream failed", "addr", addr, "err", err)
+				}
+			}
 		}
 	}
 

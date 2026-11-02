@@ -11,43 +11,77 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) error {
+func (n *Node) startReconSession(remoteId string, args *pb.State, reply *pb.StateResponse) (*PeerReconcileSession, uint64, error) {
 	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
 
+	var peerSess *PeerReconcileSession
+	var seq uint64
+
+	var err error
+	var ok bool
+
 	if hasFingerprints {
-		var peerSess *PeerReconcileSession
-		var seq uint64
+
 		if n.sessionManager != nil {
 			selfId := ""
 			if n.self != nil {
 				selfId = n.self.Id
 			}
 			peerSess = n.sessionManager.GetOrCreate(remoteId)
-			var err error
-			var ok bool
 			seq, ok, err = peerSess.TryStartInboundReconciling(selfId, remoteId)
 			if !ok {
 				if errors.Is(err, ErrSessionBusy) {
-					return status.Error(codes.Aborted, ErrSessionBusy.Error())
+					return nil, 0, status.Error(codes.Aborted, ErrSessionBusy.Error())
 				}
 				if err != nil {
-					return err
+					return nil, 0, err
 				}
-				return status.Error(codes.Aborted, ErrSessionBusy.Error())
+				return nil, 0, status.Error(codes.Aborted, ErrSessionBusy.Error())
 			}
 		}
 
+		return peerSess, seq, nil
+	}
+	return nil, 0, nil
+
+}
+
+func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) error {
+	session, seq, err := n.startReconSession(remoteId, args, reply)
+	if err != nil {
+		return err
+	}
+
+	n.computeCertificateDeltas(args, reply)
+	n.computeNoteDeltas(args, reply)
+	n.computeAccusationDeltas(args, reply)
+	n.computeDataDeltas(args, reply)
+
+	if session != nil {
+		session.SetDeltas(seq, ExtractReconcileDeltas(reply))
+		session.TransitionAfterReconcile(seq, false)
+	}
+	return nil
+}
+
+func (n *Node) computeControlDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) error {
+	hasFingerprints := args.GetFingerprintView() != nil || args.GetFingerprintAccusations() != nil || args.GetFingerprintData() != nil || args.GetFingerprintCertificates() != nil
+
+	session, seq, err := n.startReconSession(remoteId, args, reply)
+	if err != nil {
+		return err
+	}
+
+	if hasFingerprints {
 		n.computeCertificateDeltas(args, reply)
 		n.computeNoteDeltas(args, reply)
 		n.computeAccusationDeltas(args, reply)
-		n.computeDataDeltas(args, reply)
-
-		if peerSess != nil {
-			peerSess.SetDeltas(seq, ExtractReconcileDeltas(reply))
-			peerSess.TransitionAfterReconcile(seq, false)
-		}
 	}
 
+	if session != nil {
+		session.SetDeltas(seq, ExtractReconcileDeltas(reply))
+		session.TransitionAfterReconcile(seq, false)
+	}
 	return nil
 }
 
@@ -175,4 +209,3 @@ func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
 	}
 	return false
 }
-

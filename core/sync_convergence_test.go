@@ -17,6 +17,7 @@ import (
 
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core/discovery"
+	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -318,4 +319,112 @@ func TestSync_TelemetryAccountingDuringConvergence(t *testing.T) {
 
 	expectedBytes := int64(len(item1) + len(item2))
 	assert.GreaterOrEqual(t, totalBytes, expectedBytes, "Stream telemetry must record at least the chunked item payload bytes")
+}
+
+// TestSync_NewPeerNetworkIntegration verifies that an unobserved new peer integrates
+// into an existing network via Spread digest negotiation followed by streaming Sync,
+// without piggybacking certificates or notes on SpreadResponse.
+func TestSync_NewPeerNetworkIntegration(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	// Node A is an established network node with its own certificate and self note
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	// Ensure Node A has initialized its self note in view
+	selfNoteA := nodeA.view.SelfNote()
+	if selfNoteA == nil {
+		nodeA.view.AddTestNote(nodeA.self, privA, 1)
+	}
+
+	// Node B is a fresh new peer with only its certificate and self note (no contact list / empty view)
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	selfNoteB := nodeB.view.SelfNote()
+	if selfNoteB == nil {
+		nodeB.view.AddTestNote(nodeB.self, privB, 1)
+		selfNoteB = nodeB.view.SelfNote()
+	}
+
+	idA := string(certA.SubjectKeyId)
+	idB := string(certB.SubjectKeyId)
+
+	// Pre-condition: Node B does not know about Node A
+	require.False(t, nodeB.view.Exists(idA), "Node B must not have Node A in full view initially")
+	require.False(t, nodeA.view.Exists(idB), "Node A must not have Node B in full view initially")
+
+	// 1. Node B contacts Node A via Spread RPC (gossip bootstrap)
+	msg := &pb.State{
+		FingerprintCertificates: nodeB.CertFingerprintBytes(),
+		FingerprintView:         nodeB.ViewFingerprintBytes(),
+		FingerprintAccusations:  nodeB.AccusationFingerprintBytes(),
+		FingerprintData:         nodeB.FingerprintData(),
+	}
+	if selfNoteB != nil {
+		msg.OwnNote = selfNoteB.ToPbMsg()
+	}
+
+	reply, err := nodeB.comm.Gossip(commA.Addr(), msg)
+	require.NoError(t, err, "Node B must successfully send Spread RPC to Node A")
+	require.NotNil(t, reply, "SpreadResponse must not be nil")
+
+	// 2. Verify Zero-Piggybacking invariant on SpreadResponse
+	assert.Empty(t, reply.GetCertificates(), "SpreadResponse must not piggyback certificates")
+	assert.Empty(t, reply.GetNotes(), "SpreadResponse must not piggyback notes")
+
+	// 3. Verify non-empty fingerprints in SpreadResponse
+	assert.NotEmpty(t, reply.GetFingerprintCertificates(), "SpreadResponse must return non-empty certificate fingerprint")
+	assert.NotEmpty(t, reply.GetFingerprintView(), "SpreadResponse must return non-empty view fingerprint")
+	assert.NotEmpty(t, reply.GetFingerprintAccusations(), "SpreadResponse must return non-empty accusations fingerprint")
+
+	assert.Equal(t, nodeA.CertFingerprintBytes(), reply.GetFingerprintCertificates(),
+		"SpreadResponse certificate fingerprint must match Node A's fingerprint")
+	assert.Equal(t, nodeA.ViewFingerprintBytes(), reply.GetFingerprintView(),
+		"SpreadResponse view fingerprint must match Node A's fingerprint")
+
+	// 4. Verify deltas were negotiated
+	deltas := ExtractReconcileDeltas(reply)
+	require.True(t, deltas.HasDeltas(), "SpreadResponse must contain negotiated control deltas")
+
+	// 5. Ingest fast-path accusations and trigger streaming Sync to pull down Node A's control items
+	if accs := reply.GetAccusations(); len(accs) > 0 {
+		nodeB.mergeAccusations(accs)
+	}
+
+	err = nodeB.syncBootstrap(commA.Addr(), deltas)
+	require.NoError(t, err, "Node B must successfully stream sync with Node A")
+
+	// 6. Verify Node B now has Node A's certificate and peer representation
+	require.Eventually(t, func() bool {
+		return nodeB.view.Exists(idA)
+	}, 3*time.Second, 20*time.Millisecond, "Node B must have admitted Node A into full view via Sync")
+
+	peerAOnB := nodeB.view.Peer(idA)
+	require.NotNil(t, peerAOnB, "Node B must have Peer object for Node A")
+
+	// 7. Verify Node B has converged on Node A's certificate fingerprint
+	assert.Equal(t, nodeA.CertFingerprintBytes(), nodeB.CertFingerprintBytes(),
+		"Certificate fingerprints must match after bootstrap sync")
+
+	// 8. Verify single-round quiescence: subsequent gossip to Node A reports no deltas
+	msgInSync := &pb.State{
+		FingerprintCertificates: nodeB.CertFingerprintBytes(),
+		FingerprintView:         nodeB.ViewFingerprintBytes(),
+		FingerprintAccusations:  nodeB.AccusationFingerprintBytes(),
+		FingerprintData:         nodeB.FingerprintData(),
+	}
+	replyInSync, err := nodeB.comm.Gossip(commA.Addr(), msgInSync)
+	require.NoError(t, err)
+	deltasInSync := ExtractReconcileDeltas(replyInSync)
+
+	// 8. Verify control state quiescence: subsequent gossip to Node A reports zero control deltas
+	assert.Empty(t, deltasInSync.AvailableCertificates, "Subsequent gossip must have zero available certificate deltas")
+	assert.Empty(t, deltasInSync.RequestedCertificates, "Subsequent gossip must have zero requested certificate deltas")
+	assert.Empty(t, deltasInSync.AvailableNotes, "Subsequent gossip must have zero available note deltas")
+	assert.Empty(t, deltasInSync.RequestedNotes, "Subsequent gossip must have zero requested note deltas")
+	assert.Empty(t, deltasInSync.AvailableAccusations, "Subsequent gossip must have zero available accusation deltas")
+	assert.Empty(t, deltasInSync.RequestedAccusations, "Subsequent gossip must have zero requested accusation deltas")
 }

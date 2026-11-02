@@ -53,7 +53,7 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 	reply := n.newStateResponse()
 
 	if !n.view.ShouldBeNeighbour(remoteId) {
-		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, reply)
+		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, args, reply)
 	}
 
 	if err := n.computeControlAndDataDeltas(remoteId, args, reply); err != nil {

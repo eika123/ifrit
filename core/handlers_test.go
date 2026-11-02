@@ -266,18 +266,19 @@ func (suite *HandlerTestSuite) TestSpread() {
 			require.ElementsMatchf(suite.T(), t.accs, accs,
 				"Invalid accusation output for test %d.", i)
 		} else {
-			var neighbours []string
-			for _, p := range node.view.FindNeighbours(nonExistingPeer.Id) {
-				neighbours = append(neighbours, p.Id)
-			}
+			// Zero-piggybacking invariant: non-neighbour Spread must not piggyback raw certificates or notes.
+			require.Emptyf(suite.T(), reply.GetCertificates(),
+				"SpreadResponse must not piggyback certificates in test %d.", i)
+			require.Emptyf(suite.T(), reply.GetNotes(),
+				"SpreadResponse must not piggyback notes in test %d.", i)
 
-			neighbours = append(neighbours, node.self.Id)
-
-			require.ElementsMatchf(suite.T(), neighbours, certs,
-				"Invalid certificate output for test %d.", i)
-
-			require.ElementsMatchf(suite.T(), neighbours, notes,
-				"Invalid note output for test %d.", i)
+			// Fingerprints must be populated and non-empty for control state reconciliation
+			require.NotEmptyf(suite.T(), reply.GetFingerprintCertificates(),
+				"SpreadResponse must include non-empty certificate fingerprint in test %d.", i)
+			require.NotEmptyf(suite.T(), reply.GetFingerprintView(),
+				"SpreadResponse must include non-empty view fingerprint in test %d.", i)
+			require.NotEmptyf(suite.T(), reply.GetFingerprintAccusations(),
+				"SpreadResponse must include non-empty accusations fingerprint in test %d.", i)
 		}
 	}
 }

@@ -43,32 +43,36 @@ func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.
 	return peer, wasObserved, wasAccused, nil
 }
 
-func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, wasObserved bool, wasAccused bool, reply *pb.StateResponse) (*pb.StateResponse, error) {
+func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, wasObserved bool, wasAccused bool, args *pb.State, reply *pb.StateResponse) (*pb.StateResponse, error) {
 	if wasObserved {
 		if !wasAccused {
 			return nil, errNotMyNeighbour
 		}
+		// the number of active accusations is bounded by the number of rings --
+		// this acts as a fast path to piggyback active accusations that are on a
+		// timer
 		for _, a := range n.view.ActiveAccusationsForPeer(peer) {
 			reply.Accusations = append(reply.Accusations, a.ToPbMsg())
 		}
 		return reply, nil
 	}
 
-	// Help new peer integrate into the network
-	reply.Certificates = append(reply.Certificates,
-		&pb.Certificate{Raw: n.cm.Certificate().Raw})
-	if selfNote := n.view.SelfNote(); selfNote != nil {
-		reply.Notes = append(reply.Notes, selfNote.ToPbMsg())
-	}
+	// priority reconciliation: certs, notes and accusations first.
+	// Trigger applicaiton data reconciliation on next round when the remote peer
+	// is integrated into the correct fireflies ring
 
-	for _, p := range n.view.FindNeighbours(remoteId) {
-		reply.Certificates = append(reply.Certificates,
-			&pb.Certificate{Raw: p.Certificate()})
-		if note, ok := n.view.ActiveNote(p.Id); ok {
-			reply.Notes = append(reply.Notes, note.ToPbMsg())
-		}
+	// fingerpints
+	reply.FingerprintCertificates = n.CertFingerprintBytes()
+	reply.FingerprintView = n.ViewFingerprintBytes()
+	reply.FingerprintAccusations = n.AccusationFingerprintBytes()
+
+	// force data reecon after integration -- find a better way to negotiate this later
+	reply.FingerprintData = args.FingerprintData
+
+	// compute control deltas for certs, notes, and accusations
+	if err := n.computeControlDeltas(remoteId, args, reply); err != nil {
+		return nil, err
 	}
 
 	return reply, nil
 }
-

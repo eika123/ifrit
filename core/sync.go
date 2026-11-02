@@ -108,6 +108,37 @@ func (n *Node) runSyncSession(p *discovery.Peer, sess *PeerReconcileSession, seq
 	}
 }
 
+// syncBootstrap executes a synchronous outbound Sync stream to an entry point address
+// using negotiated deltas, ingesting initial certificates and notes.
+func (n *Node) syncBootstrap(addr string, deltas ReconcileDeltas) error {
+	if !deltas.HasDeltas() {
+		return nil
+	}
+
+	timeout := n.SyncConfig().Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(n.syncCtx, timeout)
+	defer cancel()
+
+	stream, err := n.comm.OpenSyncStream(ctx, addr)
+	if err != nil || stream == nil {
+		return fmt.Errorf("sync bootstrap: failed to open sync stream to %s: %w", addr, err)
+	}
+
+	sess := NewPeerReconcileSession(addr)
+	seq, ok := sess.TryStartOutboundReconciling()
+	if !ok {
+		return fmt.Errorf("sync bootstrap: failed to start outbound session for %s", addr)
+	}
+	sess.SetDeltas(seq, deltas)
+	sess.TransitionAfterReconcile(seq, true)
+
+	return n.executeBidirectionalSync(ctx, stream, nil, sess, seq, true)
+}
+
 // executeBidirectionalSync executes the symmetric streaming transfer engine.
 // It is invoked on both the Caller (outbound) and the Responder (inbound).
 func (n *Node) executeBidirectionalSync(
