@@ -3,6 +3,8 @@ package ifrit
 import (
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -55,14 +57,53 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, err
 	}
 
-	udpConn, udpAddr, err := netutil.ListenUdp(config.Hostname, config.UDPPort)
-	if err != nil {
-		return nil, err
-	}
+	var (
+		udpConn *net.UDPConn
+		udpAddr string
+		l       net.Listener
+		tcpAddr string
+	)
 
-	l, tcpAddr, err := netutil.GetListener(config.Hostname, config.TCPPort)
-	if err != nil {
-		return nil, err
+	for {
+		var err error
+		udpConn, udpAddr, err = netutil.ListenUdp(config.Hostname, config.UDPPort)
+		if err != nil {
+			return nil, err
+		}
+
+		l, tcpAddr, err = netutil.GetListener(config.Hostname, config.TCPPort)
+		if err != nil {
+			if closeErr := udpConn.Close(); closeErr != nil {
+				log.Error("failed to close udpConn on listener error", "err", closeErr)
+			}
+			return nil, err
+		}
+
+		// In X.509 DER encoding, elements within Subject.Locality are canonicalized
+		// in lexicographical order. Therefore, tcpAddr must be lexicographically smaller
+		// than udpAddr so that peer deserialization (peer.Addr = Locality[0], peer.PingAddr = Locality[1])
+		// preserves the mapping correctly. When ephemeral ports are requested (port 0),
+		// retry until tcpAddr < udpAddr.
+		if tcpAddr < udpAddr {
+			break
+		}
+
+		if config.TCPPort != 0 && config.UDPPort != 0 {
+			if closeErr := udpConn.Close(); closeErr != nil {
+				log.Error("failed to close udpConn", "err", closeErr)
+			}
+			if closeErr := l.Close(); closeErr != nil {
+				log.Error("failed to close tcpListener", "err", closeErr)
+			}
+			return nil, fmt.Errorf("invalid port configuration: tcpAddr %q must be lexicographically smaller than udpAddr %q for X.509 certificate ordering", tcpAddr, udpAddr)
+		}
+
+		if closeErr := udpConn.Close(); closeErr != nil {
+			log.Error("failed to close udpConn during port ordering retry", "err", closeErr)
+		}
+		if closeErr := l.Close(); closeErr != nil {
+			log.Error("failed to close tcpListener during port ordering retry", "err", closeErr)
+		}
 	}
 
 	log.Debug("addrs", "rpc", tcpAddr, "udp", udpAddr)
