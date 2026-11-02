@@ -13,6 +13,7 @@ matching across all nodes.
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -119,7 +120,7 @@ def check_node_healthy(node: str) -> bool:
 
 
 def wait_for_health(nodes: list[str], timeout: float = 15.0) -> None:
-    print(f"[INFO] Waiting for {len(nodes)} nodes to become healthy (timeout: {timeout}s)...")
+    print(f"[INFO] Waiting for {len(nodes)} nodes to become healthy (timeout: {timeout:.1f}s)...")
     start = time.time()
     pending = set(nodes)
 
@@ -129,9 +130,27 @@ def wait_for_health(nodes: list[str], timeout: float = 15.0) -> None:
             time.sleep(0.2)
 
     if pending:
-        raise TimeoutError(f"Health check timed out after {timeout}s for nodes: {sorted(pending)}")
+        raise TimeoutError(f"Health check timed out after {timeout:.1f}s for nodes: {sorted(pending)}")
 
     print(f"[INFO] All {len(nodes)} nodes are healthy.")
+
+
+def calculate_default_timeout(num_nodes: int, items_per_node: int) -> float:
+    """
+    Compute an adaptive convergence timeout based on cluster size and data volume.
+
+    Formula:
+      T = T_base + C_rounds * ceil(log2(N)) + C_data * (N * I)
+
+    Where:
+      - T_base = 20.0s (startup grace and baseline anti-entropy interval)
+      - C_rounds = 3.0s per gossip round (log2(N))
+      - C_data = 0.05s per total item streamed across cluster
+    """
+    total_items = num_nodes * items_per_node
+    rounds = math.ceil(math.log2(max(num_nodes, 2)))
+    adaptive = 20.0 + (3.0 * rounds) + (0.05 * total_items)
+    return max(25.0, round(adaptive, 1))
 
 
 def run_dissemination_test(
@@ -167,7 +186,7 @@ def run_dissemination_test(
                 print(f"[ERROR] POST {url} failed: {e}", file=sys.stderr)
                 return False
 
-    print(f"[INFO] Successfully injected items. Waiting for network convergence (timeout: {timeout}s)...")
+    print(f"[INFO] Successfully injected items. Waiting for network convergence (timeout: {timeout:.1f}s)...")
 
     # 3. Poll GET /items on all nodes until complete convergence
     start_time = time.time()
@@ -215,7 +234,7 @@ def run_dissemination_test(
         time.sleep(0.3)
 
     # 4. Timeout failure report
-    print(f"\n[ERROR] Dissemination failed to converge within {timeout}s!", file=sys.stderr)
+    print(f"\n[ERROR] Dissemination failed to converge within {timeout:.1f}s!", file=sys.stderr)
     print("Diagnostics per node:", file=sys.stderr)
     for node in nodes:
         url = to_url(node, "/items")
@@ -260,8 +279,8 @@ def main():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=25.0,
-        help="Maximum seconds to wait for network convergence (default: 25.0)",
+        default=None,
+        help="Maximum seconds to wait for network convergence (default: dynamic based on nodes and items)",
     )
     parser.add_argument(
         "--health-timeout",
@@ -291,9 +310,14 @@ def main():
         print(f"[ERROR] {e}", file=sys.stderr)
         sys.exit(1)
 
+    timeout = args.timeout
+    if timeout is None:
+        timeout = calculate_default_timeout(len(node_list), args.items)
+        print(f"[INFO] Using dynamically scaled convergence timeout: {timeout:.1f}s (for {len(node_list)} nodes, {args.items} items/node)")
+
     print("[INFO] Nodes seem healthy and stable -- starting dissemination test")
     success = run_dissemination_test(
-        node_list, items_per_node=args.items, timeout=args.timeout
+        node_list, items_per_node=args.items, timeout=timeout
     )
     sys.exit(0 if success else 1)
 
