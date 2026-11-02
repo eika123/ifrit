@@ -178,9 +178,10 @@ func NewApp(cfg *AppConfig) (*App, error) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", app.handleHealth)
-	mux.HandleFunc("/status", app.handleHealth)
-	mux.HandleFunc("/items", app.handleItems)
+	mux.HandleFunc("GET /health", app.handleHealth)
+	mux.HandleFunc("GET /status", app.handleHealth)
+	mux.HandleFunc("GET /items", app.handleGetItems)
+	mux.HandleFunc("POST /items", app.handlePostItem)
 
 	app.httpServer = &http.Server{
 		Handler:      mux,
@@ -241,11 +242,6 @@ func (a *App) Client() *ifrit.Client {
 }
 
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
 	resp := HealthResponse{
 		Status:      "ok",
 		StoreSize:   a.store.Size(),
@@ -259,63 +255,58 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *App) handleItems(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		elems := a.store.Elements()
-		sort.Strings(elems)
+func (a *App) handleGetItems(w http.ResponseWriter, r *http.Request) {
+	elems := a.store.Elements()
+	sort.Strings(elems)
 
-		resp := ItemsResponse{
-			Items:       elems,
-			Count:       len(elems),
-			Fingerprint: fmt.Sprintf("%016x", uint64(a.store.Fingerprint())),
-		}
+	resp := ItemsResponse{
+		Items:       elems,
+		Count:       len(elems),
+		Fingerprint: fmt.Sprintf("%016x", uint64(a.store.Fingerprint())),
+	}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Error("failed to encode items response", "err", err)
-		}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error("failed to encode items response", "err", err)
+	}
+}
 
-	case http.MethodPost:
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"read body failed: %v"}`, err), http.StatusBadRequest)
-			return
-		}
+func (a *App) handlePostItem(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"read body failed: %v"}`, err), http.StatusBadRequest)
+		return
+	}
 
-		var item string
-		var jsonReq struct {
-			Item string `json:"item"`
-		}
-		if err := json.Unmarshal(body, &jsonReq); err == nil && jsonReq.Item != "" {
-			item = jsonReq.Item
-		} else {
-			item = strings.TrimSpace(string(body))
-		}
+	var item string
+	var jsonReq struct {
+		Item string `json:"item"`
+	}
+	if err := json.Unmarshal(body, &jsonReq); err == nil && jsonReq.Item != "" {
+		item = jsonReq.Item
+	} else {
+		item = strings.TrimSpace(string(body))
+	}
 
-		if item == "" {
-			http.Error(w, `{"error":"empty item"}`, http.StatusBadRequest)
-			return
-		}
+	if item == "" {
+		http.Error(w, `{"error":"empty item"}`, http.StatusBadRequest)
+		return
+	}
 
-		isNew := a.store.AddElement(item)
+	isNew := a.store.AddElement(item)
 
-		resp := PostItemResponse{
-			Status:      "added",
-			Item:        item,
-			IsNew:       isNew,
-			StoreSize:   a.store.Size(),
-			Fingerprint: fmt.Sprintf("%016x", uint64(a.store.Fingerprint())),
-		}
+	resp := PostItemResponse{
+		Status:      "added",
+		Item:        item,
+		IsNew:       isNew,
+		StoreSize:   a.store.Size(),
+		Fingerprint: fmt.Sprintf("%016x", uint64(a.store.Fingerprint())),
+	}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Error("failed to encode post item response", "err", err)
-		}
-
-	default:
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error("failed to encode post item response", "err", err)
 	}
 }
