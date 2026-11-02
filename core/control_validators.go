@@ -3,7 +3,9 @@ package core
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"errors"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
 	"golang.org/x/net/context"
@@ -58,7 +60,7 @@ func (n *Node) validateCtx(ctx context.Context) (*x509.Certificate, error) {
 // validateRemoteAccusation verifies that an accusation against a remote peer matches the peer's
 // current note epoch, is on an enabled ring, that the accuserPeer is the legitimate predecessor of accusedPeer,
 // and carries a valid cryptographic signature.
-func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer, marshaledAcc []byte) error {
+func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
 	ringNum := a.GetRingNum()
 	epoch := a.GetEpoch()
 
@@ -75,10 +77,51 @@ func (n *Node) validateRemoteAccusation(a *pb.Accusation, accuserPeer, accusedPe
 		return errInvalidAccuser
 	}
 
-	sign := a.GetSignature()
-	if !n.cs.Verify(marshaledAcc, sign.GetR(), sign.GetS(), accuserPeer.PublicKey()) {
+	return n.verifySignedMessage(a, a.GetSignature(), accuserPeer)
+}
+
+// verifySignedMessage strips the signature from a protobuf message (Note or Accusation),
+// marshals the payload, and verifies the ECDSA signature against the signer's public key.
+func (n *Node) verifySignedMessage(msg proto.Message, sign *pb.Signature, signer *discovery.Peer) error {
+	if sign == nil || signer == nil || signer.PublicKey() == nil {
+		return errInvalidSignature
+	}
+
+	content, err := marshalWithoutSignature(msg)
+	if err != nil {
+		return err
+	}
+
+	if !n.cs.Verify(content, sign.GetR(), sign.GetS(), signer.PublicKey()) {
 		return errInvalidSignature
 	}
 
 	return nil
+}
+
+// marshalWithoutSignature strips the signature from a Note or Accusation,
+// marshals the payload to bytes for cryptographic verification, and restores the signature.
+func marshalWithoutSignature(msg proto.Message) ([]byte, error) {
+	var sign *pb.Signature
+
+	switch m := msg.(type) {
+	case *pb.Note:
+		sign = m.GetSignature()
+		if sign == nil {
+			return nil, errInvalidSignature
+		}
+		m.Signature = nil
+		defer func() { m.Signature = sign }()
+	case *pb.Accusation:
+		sign = m.GetSignature()
+		if sign == nil {
+			return nil, errInvalidSignature
+		}
+		m.Signature = nil
+		defer func() { m.Signature = sign }()
+	default:
+		return nil, errors.New("unsupported message type for signature stripping")
+	}
+
+	return proto.Marshal(msg)
 }

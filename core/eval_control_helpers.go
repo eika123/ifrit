@@ -3,7 +3,6 @@ package core
 import (
 	"crypto/x509"
 
-	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
@@ -150,13 +149,8 @@ func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.
 //     - If new, verifies that the target note epoch matches, the ring is not disabled, and the accuser is the valid predecessor.
 //     - Stores the accusation on the peer and starts a suspicion removal timer if the peer is live.
 func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
-	marshaledAcc, err := n.marshalAccusationContent(a)
-	if err != nil {
-		return err
-	}
-
 	if n.self.Id == accusedPeer.Id {
-		return n.handleSelfAccusation(a, accuserPeer, marshaledAcc)
+		return n.handleSelfAccusation(a, accuserPeer)
 	}
 
 	ringNum := a.GetRingNum()
@@ -170,7 +164,7 @@ func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discov
 		return errAccAlreadyExists
 	}
 
-	if err := n.validateRemoteAccusation(a, accuserPeer, accusedPeer, marshaledAcc); err != nil {
+	if err := n.validateRemoteAccusation(a, accuserPeer, accusedPeer); err != nil {
 		return err
 	}
 
@@ -186,9 +180,6 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return errInvalidSignature
 	}
 
-	r := sign.GetR()
-	s := sign.GetS()
-
 	// Get the peer this note is about.
 	peer := node.view.Peer(string(newNote.GetId()))
 	if peer == nil {
@@ -203,17 +194,17 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return errInvalidMask
 	}
 
-	newNote.Signature = nil
-	bytes, err := proto.Marshal(newNote)
-	newNote.Signature = sign
-	if err != nil {
+	if err := node.verifySignedMessage(newNote, sign, peer); err != nil {
 		return err
 	}
 
-	if valid := node.cs.Verify(bytes, r, s, peer.PublicKey()); !valid {
-		return errInvalidSignature
-	}
+	node.applyValidNote(newNote, peer)
+	return nil
+}
 
+// applyValidNote records a validated note in NoteStore, advances the peer's active note
+// in the view, updates live/timer status, and promotes any pending accusations.
+func (node *Node) applyValidNote(newNote *pb.Note, peer *discovery.Peer) {
 	rawNote := discovery.NoteFromPb(newNote)
 	if node.view.NoteStore() != nil {
 		node.view.NoteStore().Insert(rawNote)
@@ -233,12 +224,10 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 			node.view.AddLive(peer)
 		}
 
-		log.Debug("Rebuttal received or live peer updated", "epoch", epoch, "addr", peer.Addr)
+		log.Debug("Rebuttal received or live peer updated", "epoch", newNote.GetEpoch(), "addr", peer.Addr)
 	}
 
 	node.promotePendingAccusationsForPeer(peer.Id)
-
-	return nil
 }
 
 // evalCertificate validates a certificate and adds it to the full view if valid and not already present,
@@ -323,24 +312,10 @@ func (n *Node) promotePendingNotesForPeer(id string) {
 	}
 }
 
-// marshalAccusationContent strips the signature, marshals the accusation payload,
-// and restores the signature on the protobuf struct.
-func (n *Node) marshalAccusationContent(a *pb.Accusation) ([]byte, error) {
-	sign := a.GetSignature()
-	if sign == nil {
-		return nil, errInvalidSignature
-	}
-
-	a.Signature = nil
-	bytes, err := proto.Marshal(a)
-	a.Signature = sign
-	return bytes, err
-}
-
 // handleSelfAccusation validates and responds to an incoming accusation against the local node.
 // If the accuser is a legitimate ring predecessor with a valid signature, an immediate
 // rebuttal broadcast is triggered.
-func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Peer, marshaledAcc []byte) error {
+func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Peer) error {
 	ringNum := a.GetRingNum()
 	epoch := a.GetEpoch()
 
@@ -348,9 +323,8 @@ func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Pee
 		return errInvalidAccuser
 	}
 
-	sign := a.GetSignature()
-	if !n.cs.Verify(marshaledAcc, sign.GetR(), sign.GetS(), accuserPeer.PublicKey()) {
-		return errInvalidSignature
+	if err := n.verifySignedMessage(a, a.GetSignature(), accuserPeer); err != nil {
+		return err
 	}
 
 	if n.view.ShouldRebuttal(epoch, ringNum) {
