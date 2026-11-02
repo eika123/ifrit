@@ -1087,7 +1087,6 @@ func (suite *HandlerTestSuite) TestSpread_DataDigestReconciliationOmitsBulkBytes
 
 	reply, err := node.Spread(ctx, args)
 	require.NoError(suite.T(), err)
-	require.Nil(suite.T(), reply.GetExternalGossip(), "Spread must never send bulk data bytes during reconciliation")
 	require.Equal(suite.T(), []uint64{103}, reply.GetRequestedDataDigests(), "Node must request missing digest 103 from caller")
 	require.Equal(suite.T(), []uint64{102}, reply.GetAvailableDataDigests(), "Node must report missing local digest 102 available for caller")
 	require.Equal(suite.T(), []byte("local-data-fp-8b"), reply.GetFingerprintData())
@@ -1130,26 +1129,6 @@ func (suite *HandlerTestSuite) TestSpread_DataReconciliationWithTypedDataStore()
 	require.NoError(suite.T(), err)
 	require.Equal(suite.T(), []uint64{9999}, reply.GetRequestedDataDigests(), "Node must request missing digest 9999 from caller")
 	require.Equal(suite.T(), node.FingerprintData(), reply.GetFingerprintData())
-}
-
-func (suite *HandlerTestSuite) TestSpread_LegacyFallbackWithoutFingerprints() {
-	node := suite.n
-	succ, _ := node.view.MyRingNeighbours(1)
-	ctx := peerContext(succ)
-
-	node.SetGossipHandler(func(b []byte) ([]byte, error) {
-		return []byte("echo-legacy"), nil
-	})
-
-	args := &proto.State{
-		ExternalGossip: []byte("legacy-data"),
-	}
-
-	reply, err := node.Spread(ctx, args)
-	require.NoError(suite.T(), err)
-	require.Equal(suite.T(), []byte("echo-legacy"), reply.GetExternalGossip(), "Legacy external gossip handler must be called")
-	require.NotNil(suite.T(), reply.GetFingerprintView(), "Responder must always attach its own fingerprints")
-	require.NotNil(suite.T(), reply.GetFingerprintAccusations())
 }
 
 func (suite *HandlerTestSuite) TestSpread_InSyncCertificatesReturnsZeroCertificates() {

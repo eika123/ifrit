@@ -99,12 +99,6 @@ func (c correct) Gossip(n *Node) {
 				p.SetFingerprintView(fpView)
 			}
 		}
-
-		if handler := n.getResponseHandler(); handler != nil {
-			if replyGossip := reply.GetExternalGossip(); replyGossip != nil {
-				handler(replyGossip)
-			}
-		}
 	}
 }
 

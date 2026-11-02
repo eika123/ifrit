@@ -181,7 +181,6 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 			Epoch: 10,
 			Mask:  3,
 		},
-		ExternalGossip: nil,
 	}
 	resp := &pb.StateResponse{}
 
@@ -205,7 +204,6 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 			Epoch: 10,
 			Mask:  3,
 		},
-		ExternalGossip: []byte("application data payload"),
 	}
 	respWithAcc := &pb.StateResponse{
 		Accusations: []*pb.Accusation{
@@ -231,27 +229,10 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	// Rebuttal events must still be 1 (regular gossip must NOT create a rebuttal event)
 	assert.Len(t, rec.rebuttalEvents, 1)
 	assert.Len(t, rec.gossipEvents, 1)
-	assert.Equal(t, len("application data payload"), rec.gossipEvents[0].PayloadDataSize)
+	assert.Equal(t, 0, rec.gossipEvents[0].PayloadDataSize)
 	assert.Len(t, rec.accusationEvents, 1)
 	assert.Equal(t, uint32(1), rec.accusationEvents[0].RingNum)
 	assert.Len(t, rec.noteEvents, 1)
-
-	// 3. Rebuttal with piggybacked application payload (no fingerprints, OwnNote != nil, ExternalGossip != nil)
-	piggybackReq := &pb.State{
-		OwnNote: &pb.Note{
-			Id:    []byte("my-node-id"),
-			Epoch: 11,
-			Mask:  3,
-		},
-		ExternalGossip: []byte("piggybacked data"),
-	}
-	err = interceptor(context.Background(), "/proto.gossip/Spread", piggybackReq, resp, nil, invoker)
-	require.NoError(t, err)
-
-	assert.Len(t, rec.rebuttalEvents, 2)
-	assert.Equal(t, uint64(11), rec.rebuttalEvents[1].Epoch)
-	assert.Len(t, rec.gossipEvents, 2)
-	assert.Equal(t, len("piggybacked data"), rec.gossipEvents[1].PayloadDataSize)
 }
 
 func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
@@ -286,17 +267,14 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 }
 
 func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
-	// Client interceptor receives a response containing ExternalGossip
+	// Client interceptor records outbound gossip exchange
 	clientRec := &recordingLogger{}
 	clientInterceptor := gossipClientInterceptorFactory(clientRec)
 
 	req := &pb.State{
 		FingerprintView: []byte("fp-view"),
-		ExternalGossip:  []byte("request payload (100)"),
 	}
-	resp := &pb.StateResponse{
-		ExternalGossip: []byte("response payload (200)"),
-	}
+	resp := &pb.StateResponse{}
 
 	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
 		return nil
@@ -307,13 +285,11 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	err := clientInterceptor(context.Background(), "/proto.gossip/Spread", req, resp, nil, invoker)
 	require.NoError(t, err)
 
-	require.Len(t, clientRec.gossipEvents, 2)
+	require.Len(t, clientRec.gossipEvents, 1)
 	assert.Equal(t, "OUTGOING", clientRec.gossipEvents[0].Direction)
-	assert.Equal(t, len("request payload (100)"), clientRec.gossipEvents[0].PayloadDataSize)
-	assert.Equal(t, "INCOMING", clientRec.gossipEvents[1].Direction)
-	assert.Equal(t, len("response payload (200)"), clientRec.gossipEvents[1].PayloadDataSize)
+	assert.Equal(t, 0, clientRec.gossipEvents[0].PayloadDataSize)
 
-	// Server interceptor handles a request and returns a response containing ExternalGossip
+	// Server interceptor handles a request
 	serverRec := &recordingLogger{}
 	serverInterceptor := gossipServerInterceptorFactory(serverRec)
 
@@ -328,11 +304,9 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	_, err = serverInterceptor(context.Background(), req, info, handler)
 	require.NoError(t, err)
 
-	require.Len(t, serverRec.gossipEvents, 2)
+	require.Len(t, serverRec.gossipEvents, 1)
 	assert.Equal(t, "INCOMING", serverRec.gossipEvents[0].Direction)
-	assert.Equal(t, len("request payload (100)"), serverRec.gossipEvents[0].PayloadDataSize)
-	assert.Equal(t, "OUTGOING", serverRec.gossipEvents[1].Direction)
-	assert.Equal(t, len("response payload (200)"), serverRec.gossipEvents[1].PayloadDataSize)
+	assert.Equal(t, 0, serverRec.gossipEvents[0].PayloadDataSize)
 }
 
 type mockClientStream struct {

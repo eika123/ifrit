@@ -144,9 +144,8 @@ func logSpreadExchange(
 		})
 	}
 
-	// 2. Gossip exchange logging: log application payload if data is present or if this is a standard gossip exchange
-	payloadSize := len(stateReq.GetExternalGossip())
-	if payloadSize > 0 || !isRebuttal {
+	// 2. Gossip exchange logging: log gossip exchange event
+	if !isRebuttal {
 		telemetryLogger.OnGossipExchange(GossipEvent{
 			Timestamp:       now,
 			Direction:       requestDir,
@@ -154,21 +153,7 @@ func logSpreadExchange(
 			HostPort:        "",
 			RemoteHost:      remoteHost,
 			RemotePort:      remotePort,
-			PayloadDataSize: payloadSize,
-		})
-	}
-
-	// 3. Response gossip logging: log application payload returned in StateResponse
-	respPayloadSize := len(stateResp.GetExternalGossip())
-	if respPayloadSize > 0 {
-		telemetryLogger.OnGossipExchange(GossipEvent{
-			Timestamp:       now,
-			Direction:       responseDir,
-			Host:            host,
-			HostPort:        "",
-			RemoteHost:      remoteHost,
-			RemotePort:      remotePort,
-			PayloadDataSize: respPayloadSize,
+			PayloadDataSize: 0,
 		})
 	}
 

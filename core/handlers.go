@@ -66,7 +66,6 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 	if err := n.computeControlAndDataDeltas(remoteId, args, reply); err != nil {
 		return nil, err
 	}
-	n.handleExternalGossip(args, reply)
 	n.populateReplyFingerprints(reply)
 
 	return reply, nil
@@ -190,18 +189,6 @@ func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, repl
 	}
 
 	return nil
-}
-
-func (n *Node) handleExternalGossip(args *pb.State, reply *pb.StateResponse) {
-	extGossip := args.GetExternalGossip()
-	if handler := n.getGossipHandler(); handler != nil && extGossip != nil {
-		replyGossip, err := handler(extGossip)
-		if err != nil {
-			log.Error(err.Error())
-		} else {
-			reply.ExternalGossip = replyGossip
-		}
-	}
 }
 
 // computeStoreDeltas runs a generic set difference computation against store using the provided constructor closure.

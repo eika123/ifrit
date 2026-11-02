@@ -254,22 +254,6 @@ func (c *Client) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) {
 	c.node.SetMsgHandler(msgHandler)
 }
 
-// Registers the given function as the gossip handler.
-// Invoked each time ifrit receives application gossip.
-// The returned byte slice will be sent back as the response.
-// If the callback returns a non-nil error, it will be sent back as the response instead.
-func (c *Client) RegisterGossipHandler(gossipHandler func([]byte) ([]byte, error)) {
-	c.node.SetGossipHandler(gossipHandler)
-}
-
-// Registers the given function as the gossip response handler.
-// Invoked when ifrit receives a response after gossiping application data.
-// All responses originates from a gossip handler invocation.
-// If the ResponseHandler is not registered or nil, responses will be discarded.
-func (c *Client) RegisterResponseHandler(responseHandler func([]byte)) {
-	c.node.SetResponseHandler(responseHandler)
-}
-
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
 type ReverseIndexStore[T any] = revIdxStore.ReverseIndexStore[T, revIdxStore.DigestSymbol]
 
