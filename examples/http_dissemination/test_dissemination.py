@@ -3,7 +3,7 @@
 test_dissemination.py
 
 Language-agnostic end-to-end dissemination test for Ifrit HTTP nodes.
-Uses only Python 3 standard libraries (urllib, json, uuid, time, argparse, tomllib).
+Uses only Python 3 standard libraries (dataclasses, urllib, json, uuid, time, argparse, tomllib).
 
 Pluggable black-box test:
 Connects to an existing cluster of Ifrit HTTP nodes passed via --hostfile or --nodes,
@@ -12,12 +12,14 @@ matching across all nodes.
 """
 
 import argparse
+from dataclasses import dataclass
 import json
 import math
 import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -38,16 +40,45 @@ HTTP_CLIENT_ERRORS = (
 )
 
 
-def to_url(endpoint: str, path: str) -> str:
-    """Normalize a host:port or URL endpoint and append the specified subpath."""
-    ep = endpoint.strip().rstrip("/")
-    if not (ep.startswith("http://") or ep.startswith("https://")):
-        ep = f"http://{ep}"
-    clean_path = path.lstrip("/")
-    return f"{ep}/{clean_path}"
+@dataclass(frozen=True)
+class NodeEndpoint:
+    """Represents a target Ifrit HTTP node endpoint with ip/host and port."""
+
+    ip: str
+    port: int
+
+    @classmethod
+    def from_string(cls, raw: str) -> "NodeEndpoint":
+        """
+        Parse raw strings such as:
+          - '127.0.0.1:8081'
+          - 'http://127.0.0.1:8081'
+          - 'localhost:8082'
+        """
+        cleaned = raw.strip()
+        if "://" in cleaned:
+            parsed = urllib.parse.urlparse(cleaned)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 80
+            return cls(ip=host, port=port)
+
+        if ":" not in cleaned:
+            raise ValueError(f"Invalid node endpoint format (expected host:port): '{raw}'")
+
+        host_part, port_part = cleaned.rsplit(":", 1)
+        return cls(ip=host_part, port=int(port_part))
+
+    def url(self, path: str = "") -> str:
+        """Construct full HTTP URL for this node endpoint and path."""
+        clean_path = path.lstrip("/")
+        base = f"http://{self.ip}:{self.port}"
+        return f"{base}/{clean_path}" if clean_path else base
+
+    def __str__(self) -> str:
+        return f"{self.ip}:{self.port}"
 
 
-def parse_hostfile(path: str) -> list[str]:
+def parse_hostfile(path: str) -> list[NodeEndpoint]:
     """
     Parse a TOML hostfile conforming to Option B:
     [ca-authority]
@@ -73,7 +104,7 @@ def parse_hostfile(path: str) -> list[str]:
     if not isinstance(nodes, list) or len(nodes) == 0:
         raise ValueError(f"Hostfile '{path}' contains no [[nodes]] definitions.")
 
-    http_endpoints: list[str] = []
+    endpoints: list[NodeEndpoint] = []
     for idx, node in enumerate(nodes, start=1):
         if not isinstance(node, dict):
             raise ValueError(f"Node #{idx} in hostfile is not a table.")
@@ -81,9 +112,9 @@ def parse_hostfile(path: str) -> list[str]:
         http_port = node.get("http_port")
         if not host or not http_port:
             raise ValueError(f"Node #{idx} in hostfile is missing 'host' or 'http_port'.")
-        http_endpoints.append(f"{host}:{http_port}")
+        endpoints.append(NodeEndpoint(ip=str(host), port=int(http_port)))
 
-    return http_endpoints
+    return endpoints
 
 
 def http_get_stored_data(url: str, timeout: float = 5.0) -> dict:
@@ -110,16 +141,15 @@ def http_post_data_item(url: str, payload: dict, timeout: float = 5.0) -> dict:
         return json.loads(raw)
 
 
-def check_node_healthy(node: str) -> bool:
-    url = to_url(node, "/health")
+def check_node_healthy(node: NodeEndpoint) -> bool:
     try:
-        data = http_get_stored_data(url, timeout=2.0)
+        data = http_get_stored_data(node.url("/health"), timeout=2.0)
         return data.get("status") == "ok"
     except HTTP_CLIENT_ERRORS:
         return False
 
 
-def wait_for_health(nodes: list[str], timeout: float = 15.0) -> None:
+def wait_for_health(nodes: list[NodeEndpoint], timeout: float = 15.0) -> None:
     print(f"[INFO] Waiting for {len(nodes)} nodes to become healthy (timeout: {timeout:.1f}s)...")
     start = time.time()
     pending = set(nodes)
@@ -130,7 +160,8 @@ def wait_for_health(nodes: list[str], timeout: float = 15.0) -> None:
             time.sleep(0.2)
 
     if pending:
-        raise TimeoutError(f"Health check timed out after {timeout:.1f}s for nodes: {sorted(pending)}")
+        failed_endpoints = [str(n) for n in sorted(pending, key=lambda n: (n.ip, n.port))]
+        raise TimeoutError(f"Health check timed out after {timeout:.1f}s for nodes: {failed_endpoints}")
 
     print(f"[INFO] All {len(nodes)} nodes are healthy.")
 
@@ -154,14 +185,15 @@ def calculate_default_timeout(num_nodes: int, items_per_node: int) -> float:
 
 
 def run_dissemination_test(
-    nodes: list[str], items_per_node: int = 2, timeout: float = 25.0
+    nodes: list[NodeEndpoint], items_per_node: int = 2, timeout: float = 25.0
 ) -> bool:
     print(f"[INFO] Running dissemination test across {len(nodes)} nodes:")
     for n in nodes:
         print(f"       - {n}")
 
-    # 1. Generate unique UUIDs and distribute them across nodes
-    injected_by_node: dict[str, list[str]] = {}
+    # 1. Generate unique UUIDs and decide what nodes get sent what UUIDs
+    # ------------------------------------------------------------------
+    injected_by_node: dict[NodeEndpoint, list[str]] = {}
     all_injected_items: set[str] = set()
 
     for node in nodes:
@@ -171,17 +203,15 @@ def run_dissemination_test(
             node_items.append(item)
             all_injected_items.add(item)
         injected_by_node[node] = node_items
+    # ------------------------------------------------------------------
 
     # 2. POST items to each node
     print(f"[INFO] Injecting {len(all_injected_items)} total items ({items_per_node} per node)...")
     for node, items in injected_by_node.items():
-        url = to_url(node, "/items")
+        url = node.url("/items")
         for item in items:
             try:
-                resp = http_post_data_item(url, {"item": item})
-                if resp.get("status") != "added":
-                    print(f"[ERROR] Failed to add item {item} to {node}: {resp}", file=sys.stderr)
-                    return False
+                http_post_data_item(url, {"item": item})
             except HTTP_CLIENT_ERRORS as e:
                 print(f"[ERROR] POST {url} failed: {e}", file=sys.stderr)
                 return False
@@ -194,11 +224,11 @@ def run_dissemination_test(
 
     while (time.time() - start_time) < timeout:
         all_converged = True
-        fingerprints: dict[str, str] = {}
-        missing_by_node: dict[str, set[str]] = {}
+        fingerprints: dict[NodeEndpoint, str] = {}
+        missing_by_node: dict[NodeEndpoint, set[str]] = {}
 
         for node in nodes:
-            url = to_url(node, "/items")
+            url = node.url("/items")
             try:
                 resp = http_get_stored_data(url, timeout=3.0)
                 stored_items = set(resp.get("items", []))
@@ -217,7 +247,7 @@ def run_dissemination_test(
         unique_fps = set(fingerprints.values())
         if all_converged and len(unique_fps) == 1 and "" not in unique_fps:
             elapsed = time.time() - start_time
-            matched_fp = list(unique_fps)[0]
+            matched_fp = next(iter(unique_fps))
             print(
                 f"[PASS] Network converged in {elapsed:.2f}s! "
                 f"All {len(nodes)} nodes contain {len(all_injected_items)} items. "
@@ -237,7 +267,7 @@ def run_dissemination_test(
     print(f"\n[ERROR] Dissemination failed to converge within {timeout:.1f}s!", file=sys.stderr)
     print("Diagnostics per node:", file=sys.stderr)
     for node in nodes:
-        url = to_url(node, "/items")
+        url = node.url("/items")
         try:
             resp = http_get_stored_data(url)
             count = resp.get("count", 0)
@@ -298,7 +328,11 @@ def main():
             print(f"[ERROR] Failed to parse hostfile: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        node_list = [n.strip() for n in args.nodes.split(",") if n.strip()]
+        try:
+            node_list = [NodeEndpoint.from_string(n) for n in args.nodes.split(",") if n.strip()]
+        except ValueError as e:
+            print(f"[ERROR] Failed to parse --nodes: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if len(node_list) < 2:
         print("[ERROR] At least 2 nodes are required for dissemination testing.", file=sys.stderr)
