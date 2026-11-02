@@ -1,0 +1,22 @@
+[ca-authority]
+host = "127.0.0.1"
+port = 8321
+
+[[nodes]]
+host = "127.0.0.1"
+http_port = 8081
+tcp_port = 9000
+udp_port = 9001
+
+[[nodes]]
+host = "127.0.0.1"
+http_port = 8082
+tcp_port = 9002
+udp_port = 9003
+
+[[nodes]]
+host = "127.0.0.1"
+http_port = 8083
+tcp_port = 9004
+udp_port = 9005
+

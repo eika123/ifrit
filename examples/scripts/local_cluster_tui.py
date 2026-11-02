@@ -35,7 +35,8 @@ class ProcessPane:
             text=True,
             bufsize=1,
             env=full_env,
-            cwd=self.cwd
+            cwd=self.cwd,
+            preexec_fn=os.setsid
         )
         self.running = True
         threading.Thread(target=self._reader, daemon=True).start()
@@ -54,11 +55,11 @@ class ProcessPane:
     def stop(self):
         if self.proc and self.proc.poll() is None:
             try:
-                self.proc.terminate()
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
                 self.proc.wait(timeout=1.0)
             except Exception:
                 try:
-                    self.proc.kill()
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
                 except Exception:
                     pass
 
@@ -223,7 +224,7 @@ def main():
 
     try:
         curses.wrapper(run_tui, panes)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, Exception):
         pass
     finally:
         for p in panes:
