@@ -11,11 +11,9 @@ import (
 func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.Note) (*discovery.Peer, bool, bool, error) {
 	var wasObserved, wasAccused bool
 
-	// TIER 1: Unconditional raw ingestion of own note
-	if ownNote != nil {
-		if rawNote := discovery.NoteFromPb(ownNote); rawNote != nil && n.view.NoteStore() != nil {
-			n.view.NoteStore().Insert(rawNote)
-		}
+	if err := n.validateCertificate(cert); err != nil {
+		log.Error(err.Error())
+		return nil, wasObserved, wasAccused, err
 	}
 
 	peer := n.view.Peer(remoteId)
@@ -24,8 +22,8 @@ func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.
 		wasAccused = n.view.IsAccused(peer)
 	}
 
-	if n.view.ShouldBeNeighbour(remoteId) || !wasObserved {
-		if err := n.evalCertificate(cert); err != nil {
+	if !wasObserved {
+		if err := n.evalValidCertificate(cert); err != nil {
 			log.Error(err.Error())
 			return nil, wasObserved, wasAccused, err
 		}
@@ -35,8 +33,12 @@ func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.
 	}
 
 	if ownNote != nil {
-		if err := n.evalNote(ownNote); err != nil && err != errOldNote {
-			log.Debug(err.Error())
+		if string(ownNote.GetId()) != remoteId {
+			log.Warn("admitCaller: ownNote ID does not match mTLS certificate remoteId", "noteId", string(ownNote.GetId()), "remoteId", remoteId)
+		} else {
+			if err := n.evalNote(ownNote); err != nil && err != errOldNote {
+				log.Debug(err.Error())
+			}
 		}
 	}
 

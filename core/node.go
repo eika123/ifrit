@@ -240,7 +240,11 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 			if n.self.Id == string(c.SubjectKeyId) {
 				continue
 			}
-			err := n.evalCertificate(c)
+			if err := n.validateCertificate(c); err != nil {
+				log.Error("Invalid contact certificate", "err", err)
+				continue
+			}
+			err := n.evalValidCertificate(c)
 			if err != nil {
 				log.Error(err.Error())
 			}

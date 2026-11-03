@@ -67,12 +67,18 @@ func (suite *HandlerTestSuite) TestEvalCertificate() {
 		},
 	}
 	for i, t := range tests {
+		valErr := node.validateCertificate(t.cert)
 		if !t.nonNilError {
-			require.Equalf(suite.T(), t.out, node.evalCertificate(t.cert),
+			require.Equalf(suite.T(), t.out, valErr,
 				"Invalid output for test %d.", i)
 		} else {
-			require.Errorf(suite.T(), node.evalCertificate(t.cert),
+			require.Errorf(suite.T(), valErr,
 				"Invalid output for test %d.", i)
+		}
+
+		if valErr == nil {
+			err := node.evalValidCertificate(t.cert)
+			require.NoError(suite.T(), err, "evalValidCertificate should succeed for valid cert")
 		}
 
 		if t.cert != nil {
@@ -138,4 +144,3 @@ func (suite *HandlerTestSuite) TestValidateCtx() {
 		require.Equalf(suite.T(), t.cert, c, "Invalid output for test %d.", i)
 	}
 }
-

@@ -284,7 +284,7 @@ func (suite *HandlerTestSuite) TestMessenger() {
 
 }
 
-func (suite *HandlerTestSuite) TestSpread_UnconditionalIngestion() {
+func (suite *HandlerTestSuite) TestSpread_InvalidNoteSignatureRejectedFromStore() {
 	node := suite.n
 
 	testPeers := nonNeighbouringPeers(node, 2)
@@ -303,8 +303,8 @@ func (suite *HandlerTestSuite) TestSpread_UnconditionalIngestion() {
 
 	rawNote := discovery.NoteFromPb(badSigPb)
 	stored, found := node.view.NoteStore().Contains(rawNote)
-	require.True(suite.T(), found, "Spread must unconditionally ingest caller's note into NoteStore")
-	require.Equal(suite.T(), rawNote.Epoch(), stored.Epoch())
+	require.False(suite.T(), found, "Spread must reject notes with invalid signatures from entering NoteStore")
+	require.Nil(suite.T(), stored)
 }
 
 func peerContext(p *discovery.Peer) context.Context {

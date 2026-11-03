@@ -30,43 +30,46 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 	fpAfterValid := node.view.NoteStore().Fingerprint()
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
-	// 2. Note with invalid signature: MUST be stored in NoteStore, but peer active note MUST NOT update
+	// 2. Note with invalid signature: MUST NOT be stored in NoteStore, and peer active note MUST NOT update
 	badSigPb := discovery.NewNote(p.Id, 3, math.MaxUint32, priv)
 	badSigPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
 	node.mergeNotes([]*proto.Note{badSigPb})
 
 	rawBadSig := discovery.NoteFromPb(badSigPb)
 	_, found = node.view.NoteStore().Contains(rawBadSig)
-	require.True(suite.T(), found, "Note with invalid signature MUST be ingested into NoteStore")
+	require.False(suite.T(), found, "Note with invalid signature MUST NOT be ingested into NoteStore")
 	activeNote, found = node.view.ActiveNote(p.Id)
 	require.True(suite.T(), found)
 	require.Equal(suite.T(), uint64(2), activeNote.Epoch(), "Invalid signature note must NOT update active peer note")
 
-	// 3. Note from completely unknown peer: MUST be stored in NoteStore
+	// 3. Note from completely unknown peer: MUST NOT be stored in NoteStore
 	unknownPb := discovery.NewNote("unknown-peer-id-999", 5, math.MaxUint32, priv)
 	node.mergeNotes([]*proto.Note{unknownPb})
 
 	rawUnknown := discovery.NoteFromPb(unknownPb)
 	_, found = node.view.NoteStore().Contains(rawUnknown)
-	require.True(suite.T(), found, "Note from unknown peer MUST be ingested into NoteStore")
+	require.False(suite.T(), found, "Note from unknown peer MUST NOT be ingested into NoteStore")
 
-	// 4. Note with invalid mask (violates Byzantine threshold): MUST be stored in NoteStore
+	// 4. Note with invalid mask (violates Byzantine threshold): MUST NOT be stored in NoteStore
 	badMaskPb := discovery.NewNote(p.Id, 4, 0, priv)
 	node.mergeNotes([]*proto.Note{badMaskPb})
 
 	rawBadMask := discovery.NoteFromPb(badMaskPb)
 	_, found = node.view.NoteStore().Contains(rawBadMask)
-	require.True(suite.T(), found, "Note with invalid mask MUST be ingested into NoteStore")
+	require.False(suite.T(), found, "Note with invalid mask MUST NOT be ingested into NoteStore")
 
-	// 5. Stale / Older epoch note: MUST be stored in NoteStore
+	// 5. Stale / Older epoch note with VALID signature: MUST be stored in NoteStore, but peer active note stays at epoch 2
 	stalePb := discovery.NewNote(p.Id, 1, math.MaxUint32, priv)
 	node.mergeNotes([]*proto.Note{stalePb})
 
 	rawStale := discovery.NoteFromPb(stalePb)
 	_, found = node.view.NoteStore().Contains(rawStale)
-	require.True(suite.T(), found, "Stale epoch note MUST be ingested into NoteStore")
+	require.True(suite.T(), found, "Stale epoch note with valid signature MUST be ingested into NoteStore")
+	activeNote, found = node.view.ActiveNote(p.Id)
+	require.True(suite.T(), found)
+	require.Equal(suite.T(), uint64(2), activeNote.Epoch(), "Stale note must not downgrade active note epoch")
 
-	// 6. Malformed note without signature: MUST be stored in NoteStore
+	// 6. Malformed note without signature: MUST NOT be stored in NoteStore
 	unsignedPb := &proto.Note{
 		Id:    []byte("malformed-node"),
 		Epoch: 100,
@@ -76,11 +79,11 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	rawUnsigned := discovery.NoteFromPb(unsignedPb)
 	_, found = node.view.NoteStore().Contains(rawUnsigned)
-	require.True(suite.T(), found, "Unsigned/corrupt note MUST be ingested into NoteStore")
+	require.False(suite.T(), found, "Unsigned/corrupt note MUST NOT be ingested into NoteStore")
 
 	// 7. Idempotence: Duplicate note insertion preserves NoteStore fingerprint
 	fpBeforeDup := node.view.NoteStore().Fingerprint()
-	node.mergeNotes([]*proto.Note{unsignedPb})
+	node.mergeNotes([]*proto.Note{validPb})
 	require.Equal(suite.T(), fpBeforeDup, node.view.NoteStore().Fingerprint(), "Duplicate note must preserve XOR fingerprint")
 }
 
@@ -108,32 +111,32 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	fpAfterValid := node.view.AccusationStore().Fingerprint()
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
-	// 2. Accusation with invalid signature: MUST be ingested into AccusationStore
-	badSigAccPb := discovery.NewAccusation(succNote.Epoch(), succ.Id, prev.Id, 1, priv)
+	// 2. Accusation with invalid signature: MUST NOT be ingested into AccusationStore
+	badSigAccPb := discovery.NewAccusation(succNote.Epoch()+1, succ.Id, prev.Id, 1, priv)
 	badSigAccPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
 	node.mergeAccusations([]*proto.Accusation{badSigAccPb})
 
 	rawBadSig := discovery.AccusationFromPb(badSigAccPb)
 	_, found = node.view.AccusationStore().Contains(rawBadSig)
-	require.True(suite.T(), found, "Accusation with invalid signature MUST be ingested into AccusationStore")
+	require.False(suite.T(), found, "Accusation with invalid signature MUST NOT be ingested into AccusationStore")
 
-	// 3. Accusation targeting unknown peer: MUST be ingested into AccusationStore
+	// 3. Accusation targeting unknown peer (from valid accuser): MUST be ingested into AccusationStore as orphaned
 	unknownAccPb := discovery.NewAccusation(1, "unknown-accused", prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{unknownAccPb})
 
 	rawUnknown := discovery.AccusationFromPb(unknownAccPb)
 	_, found = node.view.AccusationStore().Contains(rawUnknown)
-	require.True(suite.T(), found, "Accusation targeting unknown peer MUST be ingested into AccusationStore")
+	require.True(suite.T(), found, "Accusation targeting unknown peer from valid accuser MUST be ingested into AccusationStore")
 
-	// 4. Accusation from unknown accuser: MUST be ingested into AccusationStore
+	// 4. Accusation from unknown accuser: MUST NOT be ingested into AccusationStore
 	unknownAccuserPb := discovery.NewAccusation(pNote.Epoch(), p.Id, "unknown-accuser", 1, priv)
 	node.mergeAccusations([]*proto.Accusation{unknownAccuserPb})
 
 	rawUnknownAccuser := discovery.AccusationFromPb(unknownAccuserPb)
 	_, found = node.view.AccusationStore().Contains(rawUnknownAccuser)
-	require.True(suite.T(), found, "Accusation from unknown accuser MUST be ingested into AccusationStore")
+	require.False(suite.T(), found, "Accusation from unknown accuser MUST NOT be ingested into AccusationStore")
 
-	// 5. Accusation targeting mismatched epoch: MUST be ingested into AccusationStore
+	// 5. Accusation targeting mismatched epoch: MUST be ingested into AccusationStore (valid accuser)
 	mismatchedEpochPb := discovery.NewAccusation(9999, succ.Id, prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{mismatchedEpochPb})
 
@@ -141,7 +144,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	_, found = node.view.AccusationStore().Contains(rawMismatched)
 	require.True(suite.T(), found, "Accusation targeting mismatched epoch MUST be ingested into AccusationStore")
 
-	// 6. Malformed accusation without signature: MUST be ingested into AccusationStore
+	// 6. Malformed accusation without signature: MUST NOT be ingested into AccusationStore
 	unsignedAccPb := &proto.Accusation{
 		Accused: []byte("malformed-accused"),
 		Accuser: []byte("malformed-accuser"),
@@ -152,11 +155,11 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 
 	rawUnsigned := discovery.AccusationFromPb(unsignedAccPb)
 	_, found = node.view.AccusationStore().Contains(rawUnsigned)
-	require.True(suite.T(), found, "Unsigned/corrupt accusation MUST be ingested into AccusationStore")
+	require.False(suite.T(), found, "Unsigned/corrupt accusation MUST NOT be ingested into AccusationStore")
 
 	// 7. Idempotence: Duplicate accusation preserves AccusationStore fingerprint
 	fpBeforeDup := node.view.AccusationStore().Fingerprint()
-	node.mergeAccusations([]*proto.Accusation{unsignedAccPb})
+	node.mergeAccusations([]*proto.Accusation{validAccPb})
 	require.Equal(suite.T(), fpBeforeDup, node.view.AccusationStore().Fingerprint(), "Duplicate accusation must preserve XOR fingerprint")
 }
 
@@ -489,7 +492,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 	}
 }
 
-func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
+func (suite *HandlerTestSuite) TestSpread_NotesRequireCertificate() {
 	node := suite.n
 
 	// Generate key and certificate for an unknown peer
@@ -502,21 +505,24 @@ func (suite *HandlerTestSuite) TestSpread_OrphanedNotePromotedOnCertArrival() {
 
 	note := discovery.NewNote(peerId, 1, math.MaxUint32, priv)
 
-	// Step 1: Ingest note before certificate into Tier 1 raw noteStore
-	node.view.NoteStore().Insert(discovery.NoteFromPb(note))
-
-	// Verify note was ingested in Tier 1 NoteStore, but peer is not in full view or alive
-	require.False(suite.T(), node.view.Exists(peerId), "Peer must still not exist in full view")
+	// Step 1: Attempt to merge note before certificate is known: must be rejected because peer cert is missing
+	node.mergeNotes([]*proto.Note{note})
+	rawNote := discovery.NoteFromPb(note)
+	_, found := node.view.NoteStore().Contains(rawNote)
+	require.False(suite.T(), found, "Note for unknown peer must not enter NoteStore without certificate")
 	_, hasActiveNote := node.view.ActiveNote(peerId)
 	require.False(suite.T(), hasActiveNote, "Peer must not have an active note before cert is known")
 
 	// Step 2: Certificate arrives via mergeCertificates
 	node.mergeCertificates([]*proto.Certificate{{Raw: cert.Raw}})
-
-	// Verify certificate admitted peer, and orphaned note was automatically promoted!
 	require.True(suite.T(), node.view.Exists(peerId), "Peer must now exist in full view")
+
+	// Step 3: Now note arrives with peer certificate known
+	node.mergeNotes([]*proto.Note{note})
+	_, found = node.view.NoteStore().Contains(rawNote)
+	require.True(suite.T(), found, "Note must enter NoteStore now that certificate is known")
 	promotedNote, hasActiveNote := node.view.ActiveNote(peerId)
-	require.True(suite.T(), hasActiveNote, "Orphaned note must be promoted to active note upon cert arrival")
+	require.True(suite.T(), hasActiveNote, "Note must be promoted to active note")
 	require.Equal(suite.T(), note.GetEpoch(), promotedNote.Epoch())
 
 	peer := node.view.Peer(peerId)
@@ -587,6 +593,9 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerCertificateArrives
 
 	// Step 3: Now accused peer's certificate arrives via mergeCertificates
 	node.mergeCertificates([]*proto.Certificate{{Raw: succCertBytes}})
+	// Since note arrival requires the peer's certificate to verify signature,
+	// notes for a peer arrive with or after the peer's certificate:
+	node.mergeNotes([]*proto.Note{succNote.ToPbMsg()})
 
 	// Verify succ peer is back in full view AND orphaned accusation was promoted
 	require.True(suite.T(), node.view.Exists(succId), "Succ must now be in full view")

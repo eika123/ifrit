@@ -14,23 +14,13 @@ func (n *Node) mergeNotes(notes []*pb.Note) {
 		return
 	}
 
-	// TIER 1: Unconditional ingestion into grow-only raw NoteStore.
-	// Every incoming note — valid, invalid, corrupt, or carrying a bomb — is persisted
-	// so set reconciliation fingerprints converge deterministically across all peers.
-	for _, newNote := range notes {
-		if rawNote := discovery.NoteFromPb(newNote); rawNote != nil && n.view.NoteStore() != nil {
-			n.view.NoteStore().Insert(rawNote)
-		}
-	}
-
-	// TIER 2: Semantic evaluation for active view and redirection layer.
 	for _, newNote := range notes {
 		if n.self.Id == string(newNote.GetId()) {
 			continue
 		}
 
 		err := n.evalNote(newNote)
-		if err != nil {
+		if err != nil && err != errOldNote {
 			log.Debug(err.Error())
 		}
 	}
@@ -41,16 +31,6 @@ func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 		return
 	}
 
-	// TIER 1: Unconditional ingestion into grow-only raw AccusationStore.
-	// Every incoming accusation — valid, invalid, corrupt, or carrying a bomb — is persisted
-	// so set reconciliation fingerprints converge deterministically across all peers.
-	for _, acc := range accusations {
-		if rawAcc := discovery.AccusationFromPb(acc); rawAcc != nil && n.view.AccusationStore() != nil {
-			n.view.AccusationStore().Insert(rawAcc)
-		}
-	}
-
-	// TIER 2: Semantic evaluation for active view and redirection layer.
 	for _, acc := range accusations {
 		accId := string(acc.GetAccused())
 		accuserId := string(acc.GetAccuser())
@@ -60,6 +40,24 @@ func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 			accuser = n.self
 		} else if accuser == nil {
 			continue
+		}
+
+		// Cryptographic check: accuser signature must verify
+		if err := n.verifySignedMessage(acc, acc.GetSignature(), accuser); err != nil {
+			log.Debug("mergeAccusations: rejected accusation with invalid signature", "accuser", accuserId, "err", err)
+			continue
+		}
+
+		// Ring check
+		if acc.GetRingNum() == 0 || acc.GetRingNum() > n.view.NumRings() {
+			log.Debug("mergeAccusations: rejected accusation with invalid ring", "ring", acc.GetRingNum())
+			continue
+		}
+
+		// Verified accusation enters AccusationStore
+		rawAcc := discovery.AccusationFromPb(acc)
+		if rawAcc != nil && n.view.AccusationStore() != nil {
+			n.view.AccusationStore().Insert(rawAcc)
 		}
 
 		accused := n.view.Peer(accId)
@@ -88,11 +86,6 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 			continue
 		}
 
-		// Tier 1: Raw ingestion into certStore for deterministic set reconciliation
-		if n.view.CertStore() != nil {
-			n.view.CertStore().Insert(pki.CertificateFromPb(b))
-		}
-
 		cert, err := x509.ParseCertificate(b.GetRaw())
 		if err != nil {
 			log.Error(err.Error())
@@ -103,13 +96,23 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 			continue
 		}
 
+		if err := n.validateCertificate(cert); err != nil {
+			log.Debug("mergeCertificates: rejected invalid certificate", "err", err)
+			continue
+		}
+
+		// Valid certificate enters certStore
+		if n.view.CertStore() != nil {
+			n.view.CertStore().Insert(pki.CertificateFromPb(b))
+		}
+
 		// Skip expensive evalCertificate if peer already exists in full view
 		if n.view.Exists(string(cert.SubjectKeyId)) {
 			continue
 		}
 
-		// Adds a valid certificate to the full view if valid and not already present.
-		err = n.evalCertificate(cert)
+		// Adds a valid certificate to the full view if not already present.
+		err = n.evalValidCertificate(cert)
 		if err != nil {
 			log.Debug(err.Error())
 		}
@@ -187,16 +190,21 @@ func (node *Node) evalNote(newNote *pb.Note) error {
 		return errNoPeer
 	}
 
-	if node.view.HasNote(peer.Id, epoch) {
-		return errOldNote
-	}
-
 	if valid := node.view.ValidMask(mask); !valid {
 		return errInvalidMask
 	}
 
 	if err := node.verifySignedMessage(newNote, sign, peer); err != nil {
 		return err
+	}
+
+	rawNote := discovery.NoteFromPb(newNote)
+	if node.view.NoteStore() != nil {
+		node.view.NoteStore().Insert(rawNote)
+	}
+
+	if node.view.HasNote(peer.Id, epoch) {
+		return errOldNote
 	}
 
 	node.applyValidNote(newNote, peer)
@@ -231,13 +239,11 @@ func (node *Node) applyValidNote(newNote *pb.Note, peer *discovery.Peer) {
 	node.promotePendingAccusationsForPeer(peer.Id)
 }
 
-// evalCertificate validates a certificate and adds it to the full view if valid and not already present,
+// evalValidCertificate adds a pre-validated certificate to the full view if not already present,
 // promoting any previously unpromoted notes and accusations for this newly admitted peer.
-func (n *Node) evalCertificate(cert *x509.Certificate) error {
-	if err := n.validateCertificate(cert); err != nil {
-		return err
-	}
-
+//
+// it is the responsibility of the caller to assure that the certificate is valid.
+func (n *Node) evalValidCertificate(cert *x509.Certificate) error {
 	id := string(cert.SubjectKeyId)
 	if !n.view.Exists(id) {
 		if err := n.view.AddFull(id, cert); err != nil {
@@ -247,7 +253,6 @@ func (n *Node) evalCertificate(cert *x509.Certificate) error {
 		n.promotePendingNotesForPeer(id)
 		n.promotePendingAccusationsForPeer(id)
 	}
-
 	return nil
 }
 
@@ -293,24 +298,13 @@ func (n *Node) promotePendingAccusationsForPeer(id string) {
 	}
 }
 
-// promotePendingNotesForPeer scans NoteStore for any unpromoted notes belonging to id and evaluates the newest one.
+// promotePendingNotesForPeer is a hook/stub for future work.
+// Since notes require the peer's certificate for signature verification before entering NoteStore,
+// no notes for unknown peers exist in NoteStore. If an unverified ingress note ring-buffer / cache
+// is introduced in the future (e.g. a bounded FIFO buffer holding notes pending certificate arrival),
+// this function would drain and evaluate matching notes when the certificate arrives.
 func (n *Node) promotePendingNotesForPeer(id string) {
-	if n.view.NoteStore() == nil {
-		return
-	}
-	var newestNote *discovery.Note
-	for _, note := range n.view.NoteStore().Elements() {
-		if note.Id() == id {
-			if newestNote == nil || note.Epoch() > newestNote.Epoch() {
-				newestNote = note
-			}
-		}
-	}
-	if newestNote != nil {
-		if err := n.evalNote(newestNote.ToPbMsg()); err != nil && err != errOldNote {
-			log.Debug("Failed to promote pending note on certificate arrival", "err", err)
-		}
-	}
+	// TODO: Drain bounded unverified note ingress cache when implemented.
 }
 
 // handleSelfAccusation validates and responds to an incoming accusation against the local node.
