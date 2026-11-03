@@ -13,7 +13,7 @@ To start a network, simply deploy it.
 
 Firstly, import the certificate authority package:
 ```go
-"github.com/joonnna/ifrit/cauth"
+"github.com/joonnna/ifrit/crypto/cauth"
 ```
 Then create and start a CA instance:
 ```go

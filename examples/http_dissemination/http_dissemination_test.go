@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit/cauth"
+	"github.com/joonnna/ifrit/crypto/cauth"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

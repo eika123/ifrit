@@ -22,7 +22,7 @@ func (suite *CryptoUnitTestSuite) SetupTest() {
 }
 
 func (suite *CryptoUnitTestSuite) TestNewCu() {
-	ca, err := cauth.NewCa()
+	ca, err := ca.NewCa()
 	require.NoError(suite.T(), err, "Failed to create ca")
 
 	tests := []struct {
