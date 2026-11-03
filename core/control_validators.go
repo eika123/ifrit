@@ -22,7 +22,7 @@ func (n *Node) validateCertificate(cert *x509.Certificate) error {
 
 	id := string(cert.SubjectKeyId)
 
-	if n.self.Id == id {
+	if id == n.Id() {
 		return errSelfCert
 	}
 
