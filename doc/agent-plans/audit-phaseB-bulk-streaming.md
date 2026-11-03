@@ -36,7 +36,11 @@ Your instinct to pause and harden **B3 (Unsolicited Digest Injection)** and **B4
 > 1. If Phase 1 negotiated `0` data items for this direction (e.g., control-only sync or one-way $A \to B$ data sync), the remote peer can push **unlimited unrequested data items** directly into the victim's `ReverseIndexStore`.
 > 2. Even when Phase 1 negotiated $K > 0$ data items, line 541 executes `delete(expectedData, curDataDigest)` after each item. Once the $K$-th legitimate item is ingested, `len(expectedData)` reaches `0`, and items $K+1, K+2, \dots$ **bypass the allowlist check completely**!
 >
-> **Fix**: Remove the outer `if len(expectedData) > 0` wrapper unconditionally: if `_, ok := expectedData[curDataDigest]; !ok`, always reject with `ErrUnexpectedDigest` (which also automatically catches duplicate digests because `delete(expectedData, d)` removes each digest upon first receipt).
+> **Fix**: Differentiate `ErrUnexpectedSyncFrame` when `len(expectedData) == 0` (structural fault: peer sent unsolicited frame when no data negotiated or transfer quota already fulfilled) vs `ErrUnexpectedDigest` when `len(expectedData) > 0` but digest is unrequested.
+> 
+> > [!NOTE]
+> > **Backlog Item — Peer Misbehavior & Corrupt/Buggy Node Reporting Data Structure**:
+> > While a false digest could conceivably stem from bit-level network corruption, receiving an unnegotiated `DataHeader` or structural framing violation is very likely not network corruption — the fault almost certainly lies with the remote peer (it is either malicious or buggy). We need a dedicated misbehavior accounting data structure on `Node`/`Peer` to record, report, and penalize corrupt/buggy peers upon structural violations (e.g., triggering suspicion timers, session bans, or reputation penalties).
 
 > [!CAUTION]
 > **Critical Vulnerability B3.2 — Zero Allowlists on Control Batches & Lax Stream Framing ([sync.go](file:///home/eikj/repos/ifrit/core/sync.go#L498-L550))**
