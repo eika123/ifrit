@@ -226,7 +226,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintDataProvider(n.FingerprintData)
 	} else if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
-		fpSetter.SetFingerprintProvider(n.self.Fingerprint)
+		fpSetter.SetFingerprintProvider(n.self.FingerprintData)
 	}
 
 	if fpAccSetter, ok := ps.(interface{ SetFingerprintAccusationsProvider(func() []byte) }); ok {
@@ -287,11 +287,11 @@ func (n *Node) Verify(r, s, content []byte, id string) bool {
 }
 
 func (n *Node) SetFingerprint(fp []byte) {
-	n.self.SetFingerprint(fp)
+	n.self.SetFingerprintData(fp)
 }
 
 func (n *Node) Fingerprint() []byte {
-	return n.self.Fingerprint()
+	return n.self.FingerprintData()
 }
 
 func (n *Node) SetFingerprintData(fp []byte) {

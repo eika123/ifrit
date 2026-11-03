@@ -36,6 +36,7 @@ type Peer struct {
 	// Debuging and experiments only.
 	HttpAddr string
 
+	// id is the hash (sha256) of the certificate
 	Id        string
 	cert      *x509.Certificate
 	publicKey *ecdsa.PublicKey
@@ -179,13 +180,4 @@ func (p *Peer) SetFingerprintView(fp []byte) {
 	defer p.fingerprintMutex.Unlock()
 
 	p.fingerprintView = fp
-}
-
-// Backwards-compatible aliases:
-func (p *Peer) Fingerprint() []byte {
-	return p.FingerprintData()
-}
-
-func (p *Peer) SetFingerprint(fp []byte) {
-	p.SetFingerprintData(fp)
 }
