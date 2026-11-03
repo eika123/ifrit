@@ -22,7 +22,7 @@ type testPayload struct {
 }
 
 func (p testPayload) CryptographicIdentity() []byte {
-	return []byte(fmt.Sprintf("%s:%d", p.Name, p.Count))
+	return fmt.Appendf(nil, "%s:%d", p.Name, p.Count)
 }
 
 func TestDefaultItemCodec_ByteSlice(t *testing.T) {
