@@ -16,6 +16,35 @@
 	- Provide a mock crypto service mimicking a malicious node; forge certificates, sings stale notes
 	  Should enable deterministic testing of these behaviours.
 
+
+
+	  Bounded Ingress Note Cache (Stubbed in promotePendingNotesForPeer):
+	  Since notes arriving before peer certificates are rejected, an out-of-order delivery over different gossip paths could drop notes.
+	  In a future phase, a small FIFO/ring-buffer (e.g. max 16 items) can hold unverified notes for a few seconds pending certificate arrival.
+	  Maybe hashicorps LRU cache is a good solution! (https://github.com/hashicorp/golang-lru)
+
+    Misbehavior Attribution & Periodic CA Eviction Loop (Soft version of Pace / BAR-B referenced in fireflies paper):
+
+	  When a peer commits an unmistakable structural protocol violation
+	  e.g. unsolicited frames when 0 negotiated, or framing violations like chunks without headers, 
+	  this very likely is an unambiguous software bug or malicious attack, not transient network corruption.
+	  We need an in-memory or persisted tracker (e.g., MisbehaviorTracker or score on discovery.Peer) to flag
+	  this connection. While sending accusations may help, we have not thought about what to do with
+	  nodes that have a "mountain of evidence" against their malicious deeds, but that keep sending rebuttals.
+    The fireflies paper relies on accusations alone, which should be enough for safe operation.
+    However, like in real life certain protocol violations are more severe or incriminating than others:
+
+	  Instead of an immediate hard blacklist, we aim for a soft version of the BAR-B approach:
+	  - Local Evidence Accumulator: Nodes locally record and gather signed, non-repudiable evidence
+	    of structural violations (e.g. unsolicited sync frames, bad signatures, repeated false accusations)
+	    over a rolling window (e.g. 5-10 minutes).
+	  - Periodic CA Reporting: Nodes periodically forward their accumulated evidence bundles to the CA.
+	  - Global Quorum Revocation: The CA gathers global information across the overlay. When evidence
+	    from more than t honest nodes indicate that a node is actively misbehaving/buggy,
+	    the CA revokes its certificate (or issues a CRL update), evicting the node from the network for good
+	    or for a sustained cooldown period.
+
+
 - Code overhaul
     - Detach visualizer component from rest of system
     - Cleanup errors
