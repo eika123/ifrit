@@ -11,6 +11,7 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core"
+	"github.com/joonnna/ifrit/crypto/identity"
 	"github.com/joonnna/ifrit/netutil"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
@@ -46,7 +47,7 @@ var (
 
 // Creates and returns a new ifrit client instance.
 func NewClient(config *Config) (*Client, error) {
-	var cu *comm.CryptoUnit
+	var id *identity.Identity
 
 	if config == nil {
 		return nil, errNoConfig
@@ -115,7 +116,7 @@ func NewClient(config *Config) (*Client, error) {
 	caAddr := viper.GetString("ca_addr")
 
 	if config.New {
-		cu, err = comm.NewCu(&comm.CryptoUnitConfig{
+		id, err = identity.New(&identity.Config{
 			Identity: pk,
 			CaAddr:   caAddr,
 			DNSNames: []string{config.Hostname},
@@ -125,24 +126,24 @@ func NewClient(config *Config) (*Client, error) {
 			return nil, err
 		}
 	} else {
-		cu, err = comm.LoadCu(config.CryptoUnitPath, pk, caAddr)
+		id, err = identity.Load(config.CryptoUnitPath, pk, caAddr)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	commService, err := comm.NewComm(cu.Certificate(), cu.CaCertificate(), cu.Priv(), l, tcpAddr)
+	commService, err := comm.NewComm(id.Certificate(), id.CaCertificate(), id.Priv(), l, tcpAddr)
 	if err != nil {
 		return nil, err
 	}
 
 	pingTimeout := time.Second * time.Duration(viper.GetInt32("ping_timeout"))
-	udpServer, err := comm.NewUdpServer(cu, udpConn, pingTimeout)
+	udpServer, err := comm.NewUdpServer(id, udpConn, pingTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	n, err := core.NewNode(commService, udpServer, cu, cu)
+	n, err := core.NewNode(commService, udpServer, id, id)
 	if err != nil {
 		return nil, err
 	}

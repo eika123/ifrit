@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/crypto/identity"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -67,19 +68,16 @@ func (suite *ClientTestSuite) TestNewClient() {
 }
 
 func validClientConfig() (*tls.Config, error) {
-	priv, err := genKeys()
-	if err != nil {
-		return nil, err
-	}
-
 	pk := pkix.Name{
 		Locality: []string{"127.0.0.1:8000", "pingAddr"},
 	}
 
-	certs, err := selfSignedCert(priv, pk)
+	id, err := identity.New(&identity.Config{
+		Identity: pk,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	return clientConfig(certs.ownCert, certs.caCert, priv), nil
+	return clientConfig(id.Certificate(), id.CaCertificate(), id.Priv()), nil
 }

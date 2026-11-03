@@ -1,14 +1,12 @@
-package comm
+package identity
 
 import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/asn1"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -23,41 +21,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joonnna/ifrit/netutil"
-
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/crypto"
+	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/joonnna/ifrit/netutil"
 )
 
 var (
-	errNoRingNum    = errors.New("No ringnumber present in received certificate")
-	errNoHostIp     = errors.New("No ip or hostname present in received identity")
-	errNoAddrs      = errors.New("Not enough addresses present in identity")
-	errInvlPath     = errors.New("Argument path to load empty")
-	errPemDecode    = errors.New("Unable to decode content in given file")
-	errNoCryptoPath = errors.New("Path for crypto resources is empty")
-	errNoCa         = errors.New("No address for Certificate Authority")
-	errNoConfig     = errors.New("Crypto unit configuration is nil")
+	ErrNoRingNum    = errors.New("no ring number present in received certificate")
+	ErrNoHostIp     = errors.New("no ip or hostname present in received identity")
+	ErrNoAddrs      = errors.New("not enough addresses present in identity")
+	ErrInvlPath     = errors.New("argument path to load empty")
+	ErrPemDecode    = errors.New("unable to decode content in given file")
+	ErrNoCryptoPath = errors.New("path for crypto resources is empty")
+	ErrNoCa         = errors.New("no address for Certificate Authority")
+	ErrNoConfig     = errors.New("crypto unit configuration is nil")
 )
-
-type CryptoUnit struct {
-	priv   *ecdsa.PrivateKey
-	pk     pkix.Name
-	caAddr string
-
-	path       string
-	self       *x509.Certificate
-	ca         *x509.Certificate
-	numRings   uint32
-	knownCerts []*x509.Certificate
-	trusted    bool
-}
-
-type CryptoUnitConfig struct {
-	Identity pkix.Name
-	CaAddr   string
-	DNSNames []string
-	Path     string
-}
 
 type certResponse struct {
 	OwnCert    []byte
@@ -73,17 +52,42 @@ type certSet struct {
 	trusted    bool
 }
 
-// func NewCu(identity pkix.Name, workingDir string, caAddr string, dnsLabel string) (*CryptoUnit, error) {
-func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
+// Identity encapsulates the node's local cryptographic identity,
+// including its private key, certificate, CA certificate, trusted peer contacts,
+// and ring metadata.
+type Identity struct {
+	priv   *ecdsa.PrivateKey
+	pk     pkix.Name
+	caAddr string
+
+	path       string
+	self       *x509.Certificate
+	ca         *x509.Certificate
+	numRings   uint32
+	knownCerts []*x509.Certificate
+	trusted    bool
+}
+
+// Config defines the configuration parameters for initializing an Identity.
+type Config struct {
+	Identity pkix.Name
+	CaAddr   string
+	DNSNames []string
+	Path     string
+}
+
+// New creates and initializes a new node Identity, requesting certificates
+// from a CA if caAddr is specified, or generating self-signed certificates.
+func New(config *Config) (*Identity, error) {
 	var certs *certSet
 	var extValue []byte
 
 	if config == nil {
-		return nil, errNoConfig
+		return nil, ErrNoConfig
 	}
 
 	if addrs := len(config.Identity.Locality); addrs < 2 {
-		return nil, errNoAddrs
+		return nil, ErrNoAddrs
 	}
 
 	priv, err := genKeys()
@@ -98,9 +102,7 @@ func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
 		if err != nil {
 			return nil, err
 		}
-
 	} else {
-		// TODO only have numrings in notes and not certificate?
 		certs, err = selfSignedCert(priv, config.Identity)
 		if err != nil {
 			return nil, err
@@ -108,18 +110,18 @@ func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
 	}
 
 	for _, e := range certs.ownCert.Extensions {
-		if e.Id.Equal(asn1.ObjectIdentifier{2, 5, 13, 37}) {
+		if e.Id.Equal(pki.RingNumberOid) {
 			extValue = e.Value
 		}
 	}
 
 	if extValue == nil {
-		return nil, errNoRingNum
+		return nil, ErrNoRingNum
 	}
 
 	numRings := binary.LittleEndian.Uint32(extValue[0:])
 
-	return &CryptoUnit{
+	return &Identity{
 		ca:         certs.caCert,
 		self:       certs.ownCert,
 		numRings:   numRings,
@@ -132,7 +134,8 @@ func NewCu(config *CryptoUnitConfig) (*CryptoUnit, error) {
 	}, nil
 }
 
-func LoadCu(cryptoPath string, identity pkix.Name, caAddr string) (*CryptoUnit, error) {
+// Load loads an existing Identity from PEM files stored on disk.
+func Load(cryptoPath string, identity pkix.Name, caAddr string) (*Identity, error) {
 	var extValue []byte
 
 	certs, err := loadCertSet(cryptoPath)
@@ -146,18 +149,18 @@ func LoadCu(cryptoPath string, identity pkix.Name, caAddr string) (*CryptoUnit, 
 	}
 
 	for _, e := range certs.ownCert.Extensions {
-		if e.Id.Equal(asn1.ObjectIdentifier{2, 5, 13, 37}) {
+		if e.Id.Equal(pki.RingNumberOid) {
 			extValue = e.Value
 		}
 	}
 
 	if extValue == nil {
-		return nil, errNoRingNum
+		return nil, ErrNoRingNum
 	}
 
 	numRings := binary.LittleEndian.Uint32(extValue[0:])
 
-	return &CryptoUnit{
+	return &Identity{
 		ca:         certs.caCert,
 		path:       cryptoPath,
 		self:       certs.ownCert,
@@ -170,45 +173,43 @@ func LoadCu(cryptoPath string, identity pkix.Name, caAddr string) (*CryptoUnit, 
 	}, nil
 }
 
-func (cu *CryptoUnit) Trusted() bool {
-	return cu.trusted
+func (id *Identity) Trusted() bool {
+	return id.trusted
 }
 
-func (cu *CryptoUnit) Certificate() *x509.Certificate {
-	return cu.self
+func (id *Identity) Certificate() *x509.Certificate {
+	return id.self
 }
 
-func (cu *CryptoUnit) CaCertificate() *x509.Certificate {
-	return cu.ca
+func (id *Identity) CaCertificate() *x509.Certificate {
+	return id.ca
 }
 
-func (cu *CryptoUnit) NumRings() uint32 {
-	return cu.numRings
+func (id *Identity) NumRings() uint32 {
+	return id.numRings
 }
 
-func (cu *CryptoUnit) Priv() *ecdsa.PrivateKey {
-	return cu.priv
+func (id *Identity) Priv() *ecdsa.PrivateKey {
+	return id.priv
 }
 
-func (cu *CryptoUnit) ContactList() []*x509.Certificate {
-	ret := make([]*x509.Certificate, 0, len(cu.knownCerts))
-
-	for _, c := range cu.knownCerts {
+func (id *Identity) ContactList() []*x509.Certificate {
+	ret := make([]*x509.Certificate, 0, len(id.knownCerts))
+	for _, c := range id.knownCerts {
 		ret = append(ret, c)
 	}
-
 	return ret
 }
 
-func (cu *CryptoUnit) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
+// Verify validates an ECDSA signature over data using pub.
+func (id *Identity) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 	if pub == nil {
 		log.Error("Peer had no publicKey")
 		return false
 	}
 
 	var rInt, sInt big.Int
-
-	b := HashContent(data)
+	b := crypto.HashContent(data)
 
 	rInt.SetBytes(r)
 	sInt.SetBytes(s)
@@ -216,10 +217,11 @@ func (cu *CryptoUnit) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 	return ecdsa.Verify(pub, b, &rInt, &sInt)
 }
 
-func (cu *CryptoUnit) Sign(data []byte) ([]byte, []byte, error) {
-	hash := HashContent(data)
+// Sign computes the SHA-256 digest and ECDSA signs data using the Identity private key.
+func (id *Identity) Sign(data []byte) ([]byte, []byte, error) {
+	hash := crypto.HashContent(data)
 
-	r, s, err := ecdsa.Sign(rand.Reader, cu.priv, hash)
+	r, s, err := ecdsa.Sign(rand.Reader, id.priv, hash)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -227,10 +229,11 @@ func (cu *CryptoUnit) Sign(data []byte) ([]byte, []byte, error) {
 	return r.Bytes(), s.Bytes(), nil
 }
 
-func (cu *CryptoUnit) SavePrivateKey() error {
-	if _, err := os.Stat(cu.path); err != nil {
+// SavePrivateKey writes the identity's EC private key to key.pem in id.path.
+func (id *Identity) SavePrivateKey() error {
+	if _, err := os.Stat(id.path); err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(cu.path, 0755); err != nil {
+			if err := os.MkdirAll(id.path, 0755); err != nil {
 				return err
 			}
 		} else {
@@ -238,13 +241,13 @@ func (cu *CryptoUnit) SavePrivateKey() error {
 		}
 	}
 
-	path := filepath.Join(cu.path, "key.pem")
+	path := filepath.Join(id.path, "key.pem")
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 
-	keyBytes, err := x509.MarshalECPrivateKey(cu.priv)
+	keyBytes, err := x509.MarshalECPrivateKey(id.priv)
 	if err != nil {
 		return err
 	}
@@ -260,14 +263,14 @@ func (cu *CryptoUnit) SavePrivateKey() error {
 	}
 
 	log.Info("private-key stored", "path", path)
-
 	return f.Close()
 }
 
-func (cu *CryptoUnit) SaveCertificate() error {
-	if _, err := os.Stat(cu.path); err != nil {
+// SaveCertificate writes known peer certificates, CA certificate, and own certificate to id.path.
+func (id *Identity) SaveCertificate() error {
+	if _, err := os.Stat(id.path); err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(cu.path, 0755); err != nil {
+			if err := os.MkdirAll(id.path, 0755); err != nil {
 				return err
 			}
 		} else {
@@ -275,31 +278,32 @@ func (cu *CryptoUnit) SaveCertificate() error {
 		}
 	}
 
-	// Peers certificates
-	for i, knownCert := range cu.knownCerts {
-		fname := filepath.Join(cu.path, fmt.Sprintf("g-%s.pem", knownCert.SerialNumber))
+	// Peer certificates
+	for i, knownCert := range id.knownCerts {
+		fname := filepath.Join(id.path, fmt.Sprintf("g-%s.pem", knownCert.SerialNumber))
 		if err := saveCert(knownCert, fname); err != nil {
 			log.Error(err.Error())
 		}
-
 		log.Info(fmt.Sprintf("known-certificate #%v stored", i+1), "path", fname)
 	}
 
 	// CA's certificate
-	fname := filepath.Join(cu.path, fmt.Sprintf("ca-%s.pem", cu.ca.SerialNumber))
-	if err := saveCert(cu.ca, fname); err != nil {
-		log.Error(err.Error())
+	if id.ca != nil {
+		fname := filepath.Join(id.path, fmt.Sprintf("ca-%s.pem", id.ca.SerialNumber))
+		if err := saveCert(id.ca, fname); err != nil {
+			log.Error(err.Error())
+		}
+		log.Info("CA-certificate stored", "path", fname)
 	}
 
-	log.Info("CA-certificate stored", "path", fname)
-
-	// My own certificate
-	fname = filepath.Join(cu.path, fmt.Sprintf("self-%s.pem", cu.self.SerialNumber))
-	if err := saveCert(cu.self, fname); err != nil {
-		log.Error(err.Error())
+	// Own certificate
+	if id.self != nil {
+		fname := filepath.Join(id.path, fmt.Sprintf("self-%s.pem", id.self.SerialNumber))
+		if err := saveCert(id.self, fname); err != nil {
+			log.Error(err.Error())
+		}
+		log.Info("own-certificate stored", "path", fname)
 	}
-
-	log.Info("own-certificate stored", "path", fname)
 
 	return nil
 }
@@ -324,44 +328,38 @@ func saveCert(cert *x509.Certificate, filename string) error {
 
 func loadCertSet(certPath string) (*certSet, error) {
 	if certPath == "" {
-		return nil, errInvlPath
+		return nil, ErrInvlPath
 	}
 
-	// My own certificates
+	// Own certificate
 	matches, err := filepath.Glob(filepath.Join(certPath, "self-*.pem"))
 	if err != nil {
 		return nil, err
 	} else if matches == nil {
-		return nil, errors.New(fmt.Sprintf("Storage path '%s' gave no hits on certificates", certPath))
+		return nil, fmt.Errorf("storage path '%s' gave no hits on certificates", certPath)
 	} else if len(matches) > 1 {
-		return nil, errors.New(fmt.Sprintf("Argument path: \"%s\" contains more than one private-key", certPath))
+		return nil, fmt.Errorf("argument path: \"%s\" contains more than one own certificate", certPath)
 	}
 
 	selfCert, err := loadCert(matches[0])
 	if err != nil {
 		return nil, err
 	}
-
 	log.Info("own-certificate loaded", "path", matches[0])
 
 	// Peer certificates
 	matches, err = filepath.Glob(filepath.Join(certPath, "g-*.pem"))
 	if err != nil {
 		return nil, err
-	} else if matches == nil {
-		return nil, errors.New(fmt.Sprintf("Storage path '%s' gave no hits on certificates", certPath))
 	}
 
 	knownCerts := make([]*x509.Certificate, 0, len(matches))
-
 	for i, path := range matches {
 		gCert, err := loadCert(path)
 		if err != nil {
 			return nil, err
 		}
-
 		knownCerts = append(knownCerts, gCert)
-
 		log.Info(fmt.Sprintf("known certificate #%d loaded", i+1), "path", path)
 	}
 
@@ -370,15 +368,17 @@ func loadCertSet(certPath string) (*certSet, error) {
 	if err != nil {
 		return nil, err
 	} else if len(matches) > 1 {
-		return nil, errors.New(fmt.Sprintf("Argument path: \"%s\" contains more than CA", certPath))
+		return nil, fmt.Errorf("argument path: \"%s\" contains more than one CA certificate", certPath)
 	}
 
-	caCert, err := loadCert(matches[0])
-	if err != nil {
-		return nil, err
+	var caCert *x509.Certificate
+	if len(matches) == 1 {
+		caCert, err = loadCert(matches[0])
+		if err != nil {
+			return nil, err
+		}
+		log.Info("ca-certificate loaded", "path", matches[0])
 	}
-
-	log.Info("ca-certificate loaded", "path", matches[0])
 
 	return &certSet{
 		ownCert:    selfCert,
@@ -396,24 +396,18 @@ func loadCert(path string) (*x509.Certificate, error) {
 
 	certBlock, _ := pem.Decode(certPem)
 	if certBlock == nil {
-		return nil, errPemDecode
+		return nil, ErrPemDecode
 	}
 
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return cert, nil
+	return x509.ParseCertificate(certBlock.Bytes)
 }
 
 func loadPrivKey(certPath string) (*ecdsa.PrivateKey, error) {
 	if certPath == "" {
-		return nil, errInvlPath
+		return nil, ErrInvlPath
 	}
 
 	path := filepath.Join(certPath, "key.pem")
-
 	keyPem, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -421,7 +415,7 @@ func loadPrivKey(certPath string) (*ecdsa.PrivateKey, error) {
 
 	keyBlock, _ := pem.Decode(keyPem)
 	if keyBlock == nil {
-		return nil, errPemDecode
+		return nil, ErrPemDecode
 	}
 
 	privKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
@@ -430,7 +424,6 @@ func loadPrivKey(certPath string) (*ecdsa.PrivateKey, error) {
 	}
 
 	log.Info("private-key loaded", "path", path)
-
 	return privKey, nil
 }
 
@@ -501,7 +494,7 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 	binary.LittleEndian.PutUint32(ringBytes[0:], uint32(32))
 
 	ext := pkix.Extension{
-		Id:       []int{2, 5, 13, 37},
+		Id:       pki.RingNumberOid,
 		Critical: false,
 		Value:    ringBytes,
 	}
@@ -513,7 +506,7 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 
 	serviceAddr := strings.Split(pk.Locality[0], ":")
 	if len(serviceAddr) <= 0 {
-		return nil, errNoHostIp
+		return nil, ErrNoHostIp
 	}
 
 	serviceIP, err := net.LookupIP(serviceAddr[0])
@@ -523,10 +516,9 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 
 	ip := net.ParseIP(serviceIP[0].String())
 	if ip == nil {
-		return nil, errNoHostIp
+		return nil, ErrNoHostIp
 	}
 
-	// TODO generate ids and serial numbers differently
 	newCert := &x509.Certificate{
 		SerialNumber:          serial,
 		SubjectKeyId:          genId(),
@@ -565,24 +557,9 @@ func genId() []byte {
 
 func genSerialNumber() (*big.Int, error) {
 	sLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	s, err := rand.Int(rand.Reader, sLimit)
-	if err != nil {
-		return nil, err
-	}
-
-	return s, nil
+	return rand.Int(rand.Reader, sLimit)
 }
 
 func genKeys() (*ecdsa.PrivateKey, error) {
-	privKey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-
-	return privKey, nil
-}
-
-func HashContent(data []byte) []byte {
-	h := sha256.Sum256(data)
-	return h[:]
+	return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 }
