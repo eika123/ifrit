@@ -1,12 +1,19 @@
-package discovery
+package pki
 
 import (
 	"bytes"
 	"crypto/x509"
+	"errors"
 
 	pb "github.com/joonnna/ifrit/protobuf"
 )
 
+var (
+	ErrNoCert = errors.New("certificate raw bytes are empty")
+)
+
+// Certificate is a lightweight DER-encoded certificate wrapper
+// implementing revIdxStore.CryptographicIdentifier for set reconciliation and membership tracking.
 type Certificate struct {
 	raw []byte
 }
@@ -17,6 +24,7 @@ func (c Certificate) CryptographicIdentity() []byte {
 	return c.raw
 }
 
+// Raw returns the underlying raw DER bytes of the certificate.
 func (c *Certificate) Raw() []byte {
 	if c == nil {
 		return nil
@@ -24,6 +32,7 @@ func (c *Certificate) Raw() []byte {
 	return c.raw
 }
 
+// Equal returns whether two Certificates have identical raw bytes.
 func (c *Certificate) Equal(other *Certificate) bool {
 	if c == nil || other == nil {
 		return c == other
@@ -31,9 +40,10 @@ func (c *Certificate) Equal(other *Certificate) bool {
 	return bytes.Equal(c.raw, other.raw)
 }
 
+// Parse deserializes the raw DER bytes into a Go standard library *x509.Certificate.
 func (c *Certificate) Parse() (*x509.Certificate, error) {
 	if c == nil || len(c.raw) == 0 {
-		return nil, errNoCert
+		return nil, ErrNoCert
 	}
 	return x509.ParseCertificate(c.raw)
 }
@@ -78,3 +88,4 @@ func NewCertificate(raw []byte) *Certificate {
 		raw: raw,
 	}
 }
+

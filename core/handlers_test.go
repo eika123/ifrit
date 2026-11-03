@@ -19,6 +19,7 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/crypto/pki"
 	proto "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/require"
@@ -1190,7 +1191,7 @@ func (suite *HandlerTestSuite) TestSpread_ProtocolAgnosticCertReconciliation() {
 	invoked := false
 	origProto := node.ReconciliationProtocol()
 	customProto := origProto
-	customProto.NewCertSession = func(store ReverseIndexStore[*discovery.Certificate, DigestSymbol]) (ReconcilerSession[*discovery.Certificate, DigestSymbol], error) {
+	customProto.NewCertSession = func(store ReverseIndexStore[*pki.Certificate, DigestSymbol]) (ReconcilerSession[*pki.Certificate, DigestSymbol], error) {
 		invoked = true
 		return NewNaiveSession(store)
 	}

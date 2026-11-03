@@ -5,6 +5,7 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/crypto/pki"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
 
@@ -89,7 +90,7 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 
 		// Tier 1: Raw ingestion into certStore for deterministic set reconciliation
 		if n.view.CertStore() != nil {
-			n.view.CertStore().Insert(discovery.CertificateFromPb(b))
+			n.view.CertStore().Insert(pki.CertificateFromPb(b))
 		}
 
 		cert, err := x509.ParseCertificate(b.GetRaw())

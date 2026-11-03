@@ -16,6 +16,7 @@ import (
 	pb "github.com/joonnna/ifrit/protobuf"
 	proto "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/crypto/pki"
 	"github.com/joonnna/ifrit/versionvector"
 	"github.com/spf13/viper"
 )
@@ -49,7 +50,7 @@ type View struct {
 	noteStore   revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol]
 	activeNotes versionvector.VersionVectorMutable[string, *Note, revIdxStore.DigestSymbol]
 
-	certStore revIdxStore.ReverseIndexStore[*Certificate, revIdxStore.DigestSymbol]
+	certStore revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol]
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -157,13 +158,13 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	certStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Certificate]())
+	certStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*pki.Certificate]())
 	if err != nil {
 		return nil, err
 	}
 
 	if cert != nil && len(cert.Raw) > 0 {
-		certStore.Insert(&Certificate{raw: cert.Raw})
+		certStore.Insert(pki.CertificateFromX509(cert))
 	}
 
 	activeNotes := versionvector.NewVersionVectorMutable[string, *Note, revIdxStore.DigestSymbol](
@@ -320,7 +321,7 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 
 	v.viewStore.AddElement(p)
 	if v.certStore != nil && cert != nil && len(cert.Raw) > 0 {
-		v.certStore.Insert(&Certificate{raw: cert.Raw})
+		v.certStore.Insert(pki.CertificateFromX509(cert))
 	}
 
 	return nil
@@ -349,7 +350,7 @@ func (v *View) NoteFingerprint() (revIdxStore.DigestSymbol, error) {
 }
 
 // CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (v *View) CertStore() revIdxStore.ReverseIndexStore[*Certificate, revIdxStore.DigestSymbol] {
+func (v *View) CertStore() revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol] {
 	return v.certStore
 }
 
@@ -373,7 +374,7 @@ func (v *View) CertDigests() ([]revIdxStore.DigestSymbol, error) {
 
 // CertByDigest retrieves a Certificate by its digest symbol from the cert store.
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*Certificate, bool, error) {
+func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*pki.Certificate, bool, error) {
 	if v.certStore == nil {
 		return nil, false, ErrCertsNotInitialized
 	}
@@ -383,7 +384,7 @@ func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*Certificate, bool, err
 
 // CertsByDigests retrieves multiple Certificates by their digests from the cert store in a single operation.
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertsByDigests(digests []revIdxStore.DigestSymbol) ([]*Certificate, bool, error) {
+func (v *View) CertsByDigests(digests []revIdxStore.DigestSymbol) ([]*pki.Certificate, bool, error) {
 	if v.certStore == nil {
 		return nil, false, ErrCertsNotInitialized
 	}
@@ -1300,7 +1301,7 @@ func (v *View) RemoveTestFull(id string) error {
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		v.viewStore.Remove(p)
 		if p.cert != nil && len(p.cert.Raw) > 0 {
-			v.certStore.Remove(&Certificate{raw: p.cert.Raw})
+			v.certStore.Remove(pki.CertificateFromX509(p.cert))
 		}
 		if v.activeNotes != nil {
 			v.activeNotes.Remove(id)
@@ -1318,7 +1319,7 @@ func (v *View) RemoveTestFull(id string) error {
 func (v *View) AddTestPeer(p *Peer) {
 	v.viewStore.AddElement(p)
 	if v.certStore != nil && p.cert != nil && len(p.cert.Raw) > 0 {
-		v.certStore.Insert(&Certificate{raw: p.cert.Raw})
+		v.certStore.Insert(pki.CertificateFromX509(p.cert))
 	}
 }
 

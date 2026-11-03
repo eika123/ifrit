@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/crypto/pki"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/yangl1996/riblt"
 )
@@ -113,7 +114,7 @@ func init() {
 	RegisterProtocol(ProtocolDefinition{
 		Name:           "riblt",
 		Description:    "Rateless Invertible Bloom Lookup Table set reconciliation",
-		NewCertSession: RIBLTSessionConstructor[*discovery.Certificate](),
+		NewCertSession: RIBLTSessionConstructor[*pki.Certificate](),
 		NewNoteSession: RIBLTSessionConstructor[*discovery.Note](),
 		NewAccSession:  RIBLTSessionConstructor[*discovery.Accusation](),
 	})

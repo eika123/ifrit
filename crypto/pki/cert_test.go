@@ -1,4 +1,4 @@
-package discovery
+package pki
 
 import (
 	"crypto/ecdsa"
@@ -142,3 +142,4 @@ func (suite *CertificateTestSuite) TestDefaultHasherIntegration() {
 	store.Insert(c2)
 	assert.Equal(suite.T(), d1^d2, store.Fingerprint())
 }
+

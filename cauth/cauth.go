@@ -27,6 +27,7 @@ import (
 
 	"github.com/gorilla/mux"
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/crypto/pki"
 )
 
 var (
@@ -38,7 +39,7 @@ var (
 	errInvalidNumRings  = errors.New("Number of rings needs to be greater than zero.")
 	errPortNotSet       = errors.New("Port number is not set")
 
-	RingNumberOid asn1.ObjectIdentifier = []int{2, 5, 13, 37}
+	RingNumberOid asn1.ObjectIdentifier = pki.RingNumberOid
 )
 
 type Ca struct {

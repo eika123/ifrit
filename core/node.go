@@ -13,6 +13,7 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/crypto/pki"
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/joonnna/workerpool"
@@ -386,7 +387,7 @@ func (n *Node) NoteDigestsUint64() []uint64 {
 }
 
 // CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (n *Node) CertStore() revIdxStore.ReverseIndexStore[*discovery.Certificate, revIdxStore.DigestSymbol] {
+func (n *Node) CertStore() revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol] {
 	return n.view.CertStore()
 }
 

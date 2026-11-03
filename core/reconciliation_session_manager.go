@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/crypto/pki"
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
@@ -43,7 +44,7 @@ type SessionConstructor[T any, S Symbol[S]] func(store ReverseIndexStore[T, S]) 
 type ProtocolDefinition struct {
 	Name           string
 	Description    string
-	NewCertSession SessionConstructor[*discovery.Certificate, revIdxStore.DigestSymbol]
+	NewCertSession SessionConstructor[*pki.Certificate, revIdxStore.DigestSymbol]
 	NewNoteSession SessionConstructor[*discovery.Note, revIdxStore.DigestSymbol]
 	NewAccSession  SessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol]
 }
@@ -112,7 +113,7 @@ func ResolveProtocol(name string) ProtocolDefinition {
 	return ProtocolDefinition{
 		Name:           "naive",
 		Description:    "Naive full set exchange",
-		NewCertSession: NaiveSessionConstructor[*discovery.Certificate, revIdxStore.DigestSymbol](),
+		NewCertSession: NaiveSessionConstructor[*pki.Certificate, revIdxStore.DigestSymbol](),
 		NewNoteSession: NaiveSessionConstructor[*discovery.Note, revIdxStore.DigestSymbol](),
 		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol](),
 	}
