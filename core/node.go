@@ -90,7 +90,7 @@ type Node struct {
 
 	comm commService
 	cs   cryptoService
-	cm   certManager
+	idCatalog NodeIdentityCatalog
 
 	useViz bool
 	viz    *viz
@@ -109,15 +109,12 @@ type commService interface {
 	OpenSyncStream(context.Context, string) (pb.Gossip_SyncClient, error)
 }
 
-type certManager interface {
+type NodeIdentityCatalog interface {
 	Certificate() *x509.Certificate
 	CaCertificate() *x509.Certificate
-	Priv() *ecdsa.PrivateKey // Added for Saving private-key.
-	ContactList() []*x509.Certificate
 	NumRings() uint32
+	ContactList() []*x509.Certificate
 	Trusted() bool
-	SavePrivateKey() error
-	SaveCertificate() error
 }
 
 type cryptoService interface {
@@ -156,10 +153,10 @@ func (n *Node) monitorLoop() {
 	}
 }
 
-func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService) (*Node, error) {
+func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs cryptoService) (*Node, error) {
 	var perInterval int
 
-	v, err := discovery.NewView(cm.NumRings(), cm.Certificate(), comm, cs)
+	v, err := discovery.NewView(idCatalog.NumRings(), idCatalog.Certificate(), comm, cs)
 	if err != nil {
 		log.Error(err.Error())
 		return nil, err
@@ -195,7 +192,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		ringsPingedPerInterval: perInterval,
 
 		fd:   newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),
-		cm:   cm,
+		idCatalog: idCatalog,
 		cs:   cs,
 		comm: comm,
 		self: v.Self(),
@@ -215,7 +212,7 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 
 	if n.useViz {
 		interval := time.Second * time.Duration(viper.GetInt32("viz_update_interval"))
-		viz, err := newViz(n, viper.GetString("viz_addr"), interval, cm.Trusted())
+		viz, err := newViz(n, viper.GetString("viz_addr"), interval, idCatalog.Trusted())
 		if err != nil {
 			return nil, err
 		}
@@ -238,8 +235,8 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		fpViewSetter.SetFingerprintViewProvider(n.ViewFingerprintBytes)
 	}
 
-	if n.cm.CaCertificate() != nil {
-		for _, c := range n.cm.ContactList() {
+	if n.idCatalog.CaCertificate() != nil {
+		for _, c := range n.idCatalog.ContactList() {
 			if n.self.Id == string(c.SubjectKeyId) {
 				continue
 			}
@@ -666,7 +663,7 @@ func (n *Node) Start() {
 
 	// With no ca we need to contact existing hosts.
 	// TODO retry if we fail to contact them?
-	if n.cm.CaCertificate() == nil {
+	if n.idCatalog.CaCertificate() == nil {
 		msg := &pb.State{}
 		if selfNote := n.view.SelfNote(); selfNote != nil {
 			msg.OwnNote = selfNote.ToPbMsg()
@@ -704,12 +701,4 @@ func (n *Node) Start() {
 	// closed by n.Stop(). Calling n.Stop() here would race with the caller's ongoing teardown.
 	<-n.exitChan
 	log.Info("Exiting node")
-}
-
-func (n *Node) SavePrivateKey() error {
-	return n.cm.SavePrivateKey()
-}
-
-func (n *Node) SaveCertificate() error {
-	return n.cm.SaveCertificate()
 }

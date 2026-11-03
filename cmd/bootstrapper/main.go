@@ -17,11 +17,11 @@ import (
 )
 
 type EnvConfig struct {
-	Hostname       string
-	CaAddr         string
-	CryptoUnitPath string
-	TCPPort        int
-	UDPPort        int
+	Hostname string
+	CaAddr   string
+	CertPath string
+	TCPPort  int
+	UDPPort  int
 }
 
 func mustGetEnv(key string) string {
@@ -63,11 +63,11 @@ func getEnvIntOr(key string, fallback int) int {
 
 func LoadEnvConfig() *EnvConfig {
 	return &EnvConfig{
-		Hostname:       getEnvOr("IFRIT_HOSTNAME", "localhost"),
-		CaAddr:         getEnvOr("IFRIT_CA_ADDR", ""),
-		CryptoUnitPath: getEnvOr("IFRIT_CRYPTO_PATH", "/tmp/ifrit_crypto"),
-		TCPPort:        getEnvIntOr("IFRIT_TCP_PORT", 0),
-		UDPPort:        getEnvIntOr("IFRIT_UDP_PORT", 0),
+		Hostname: getEnvOr("IFRIT_HOSTNAME", "localhost"),
+		CaAddr:   getEnvOr("IFRIT_CA_ADDR", ""),
+		CertPath: getEnvOr("IFRIT_CERT_PATH", getEnvOr("IFRIT_CRYPTO_PATH", "/tmp/ifrit_certs")),
+		TCPPort:  getEnvIntOr("IFRIT_TCP_PORT", 0),
+		UDPPort:  getEnvIntOr("IFRIT_UDP_PORT", 0),
 	}
 }
 
@@ -78,11 +78,11 @@ func NewEnvClientFactory(env *EnvConfig) bootstrap.ClientFactory {
 		id := atomic.AddUint64(&count, 1)
 
 		cfg := &ifrit.Config{
-			New:            true,
-			Hostname:       env.Hostname,
-			CryptoUnitPath: fmt.Sprintf("%s_%d", env.CryptoUnitPath, id),
-			TCPPort:        env.TCPPort,
-			UDPPort:        env.UDPPort,
+			New:      true,
+			Hostname: env.Hostname,
+			CertPath: fmt.Sprintf("%s_%d", env.CertPath, id),
+			TCPPort:  env.TCPPort,
+			UDPPort:  env.UDPPort,
 		}
 
 		client, err := ifrit.NewClient(cfg)

@@ -58,7 +58,7 @@ func main() {
 		UDPPort:        *udpPort,
 		Hostname:       *hostname,
 		CaAddr:         *caAddr,
-		CryptoUnitPath: *cryptoDir,
+		CertPath:       *cryptoDir,
 		GossipInterval: *gossipInterval,
 		NewCrypto:      true,
 	})

@@ -813,7 +813,7 @@ func (suite *HandlerTestSuite) TestEvalCertificate() {
 		},
 
 		{
-			cert:        node.cm.Certificate(),
+			cert:        node.idCatalog.Certificate(),
 			out:         errSelfCert,
 			exists:      false,
 			nonNilError: false,

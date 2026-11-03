@@ -27,7 +27,7 @@ type AppConfig struct {
 	UDPPort        int
 	Hostname       string
 	CaAddr         string
-	CryptoUnitPath string
+	CertPath       string
 	GossipInterval int
 	NewCrypto      bool
 }
@@ -110,12 +110,12 @@ func NewApp(cfg *AppConfig) (*App, error) {
 		return nil, fmt.Errorf("set IFRIT_CONFIG: %w", err)
 	}
 
-	if cfg.CryptoUnitPath == "" {
+	if cfg.CertPath == "" {
 		cryptoDir, err := os.MkdirTemp("", "ifrit-http-crypto-*")
 		if err != nil {
 			return nil, fmt.Errorf("create temp crypto dir: %w", err)
 		}
-		cfg.CryptoUnitPath = cryptoDir
+		cfg.CertPath = cryptoDir
 		cleanupDirs = append(cleanupDirs, cryptoDir)
 	}
 
@@ -135,11 +135,11 @@ func NewApp(cfg *AppConfig) (*App, error) {
 	}
 
 	client, err := ifrit.NewClient(&ifrit.Config{
-		New:            cfg.NewCrypto,
-		Hostname:       hostname,
-		TCPPort:        cfg.TCPPort,
-		UDPPort:        cfg.UDPPort,
-		CryptoUnitPath: cfg.CryptoUnitPath,
+		New:      cfg.NewCrypto,
+		Hostname: hostname,
+		TCPPort:  cfg.TCPPort,
+		UDPPort:  cfg.UDPPort,
+		CertPath: cfg.CertPath,
 	})
 	if err != nil {
 		if closeErr := httpListener.Close(); closeErr != nil {

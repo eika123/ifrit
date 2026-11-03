@@ -138,7 +138,7 @@ func TestHTTPDissemination_PythonDriver(t *testing.T) {
 			UDPPort:        0,
 			Hostname:       "localhost",
 			CaAddr:         caAddr,
-			CryptoUnitPath: cryptoDir,
+			CertPath:       cryptoDir,
 			GossipInterval: 1,
 			NewCrypto:      true,
 		})
@@ -207,7 +207,7 @@ func TestHTTPDissemination_GoClient(t *testing.T) {
 			UDPPort:        0,
 			Hostname:       "localhost",
 			CaAddr:         caAddr,
-			CryptoUnitPath: cryptoDir,
+			CertPath:       cryptoDir,
 			GossipInterval: 1,
 			NewCrypto:      true,
 		})

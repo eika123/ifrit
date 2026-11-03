@@ -30,7 +30,7 @@ func (n *Node) validateCertificate(cert *x509.Certificate) error {
 		return errInvalidId
 	}
 
-	if caCert := n.cm.CaCertificate(); caCert != nil {
+	if caCert := n.idCatalog.CaCertificate(); caCert != nil {
 		// our chain of trust is currently just CA -> nodes, no intermediaries
 		return cert.CheckSignatureFrom(caCert)
 	}

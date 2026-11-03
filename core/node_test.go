@@ -245,21 +245,6 @@ type cmStub struct {
 	caCert *x509.Certificate
 }
 
-// Priv implements [certManager].
-func (cm *cmStub) Priv() *ecdsa.PrivateKey {
-	panic("unimplemented")
-}
-
-// SaveCertificate implements [certManager].
-func (cm *cmStub) SaveCertificate() error {
-	panic("unimplemented")
-}
-
-// SavePrivateKey implements [certManager].
-func (cm *cmStub) SavePrivateKey() error {
-	panic("unimplemented")
-}
-
 func (cm *cmStub) Certificate() *x509.Certificate {
 	return cm.cert
 }

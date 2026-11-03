@@ -24,7 +24,7 @@ const (
 type Config struct {
 	CaAddr string
 
-	CertPath     string `default:"./certs"`
+	CertPath     string `default:"./ifrit_certs"`
 	Host         string `default:"localhost"`
 	Port         string `default:"8321"`
 	NumRings     uint32 `default:"3"`

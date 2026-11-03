@@ -91,9 +91,9 @@ func TestStreamingExample(t *testing.T) {
 
 func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (*App, error) {
 	client, err := ifrit.NewClient(&ifrit.Config{
-		New:            true,
-		Hostname:       "localhost",
-		CryptoUnitPath: clientCryptoPath,
+		New:      true,
+		Hostname: "localhost",
+		CertPath: clientCryptoPath,
 	})
 	if err != nil {
 		return nil, err
@@ -106,9 +106,9 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	}(client)
 
 	master, err := ifrit.NewClient(&ifrit.Config{
-		New:            true,
-		Hostname:       "localhost",
-		CryptoUnitPath: masterCryptoPath,
+		New:      true,
+		Hostname: "localhost",
+		CertPath: masterCryptoPath,
 	})
 	if err != nil {
 		client.Stop()

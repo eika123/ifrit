@@ -18,12 +18,13 @@ import (
 )
 
 type Client struct {
-	node *core.Node
+	node     *core.Node
+	identity *identity.Identity
 }
 
 type Config struct {
 	// If set to true, the client will create new cryptographic resources and store it in
-	// CryptoUnitPath. Otherwise, it will use the existing resources.
+	// CertPath. Otherwise, it will use the existing resources.
 	New bool
 
 	// TCP port of the Ifrit client.
@@ -36,7 +37,7 @@ type Config struct {
 	Hostname string
 
 	// The directory of the cryptographic resources.
-	CryptoUnitPath string
+	CertPath string
 }
 
 var (
@@ -120,13 +121,13 @@ func NewClient(config *Config) (*Client, error) {
 			Identity: pk,
 			CaAddr:   caAddr,
 			DNSNames: []string{config.Hostname},
-			Path:     config.CryptoUnitPath,
+			Path:     config.CertPath,
 		})
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		id, err = identity.Load(config.CryptoUnitPath, pk, caAddr)
+		id, err = identity.Load(config.CertPath, pk, caAddr)
 		if err != nil {
 			return nil, err
 		}
@@ -149,7 +150,8 @@ func NewClient(config *Config) (*Client, error) {
 	}
 
 	return &Client{
-		node: n,
+		node:     n,
+		identity: id,
 	}, nil
 }
 
@@ -335,11 +337,17 @@ func RegisterDataStoreWithCodec[T any](c *Client, store ReverseIndexStore[T], co
 }
 
 func (c *Client) SavePrivateKey() error {
-	return c.node.SavePrivateKey()
+	if c.identity != nil {
+		return c.identity.SavePrivateKey()
+	}
+	return nil
 }
 
 func (c *Client) SaveCertificate() error {
-	return c.node.SaveCertificate()
+	if c.identity != nil {
+		return c.identity.SaveCertificate()
+	}
+	return nil
 }
 
 func readConfig() error {

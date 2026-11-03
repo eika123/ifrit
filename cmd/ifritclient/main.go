@@ -43,11 +43,11 @@ func main() {
 	rootLogger.SetHandler(logHandler)
 
 	clientIfrit, err := ifrit.NewClient(&ifrit.Config{
-		New:            true,
-		Hostname:       "127.0.1.1",
-		TCPPort:        2000,
-		UDPPort:        3000,
-		CryptoUnitPath: "crypto",
+		New:      true,
+		Hostname: "127.0.1.1",
+		TCPPort:  2000,
+		UDPPort:  3000,
+		CertPath: "ifrit_certs",
 	})
 	if err != nil {
 		panic(err)
