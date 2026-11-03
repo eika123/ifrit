@@ -784,6 +784,22 @@ func (suite *ViewTestSuite) TestValidMaskInternal() {
 	assert.Error(suite.T(), validMask(0, numRings, maxByz),
 		"Should always fail with mask set to zero.")
 
+	// Test upper-bit bypass: setting bits at or above numRings must fail with errInvalidMaskLength
+	upperBitMask := mask | (uint32(1) << numRings)
+	assert.EqualError(suite.T(), validMask(upperBitMask, numRings, maxByz), errInvalidMaskLength.Error(),
+		"Should reject mask with bit set at numRings.")
+
+	// 0xFFFFFFF8 attack: all rings 0..numRings-1 deactivated, upper bits set to 1
+	allDisabledUpperSet := (^uint32(0) << numRings)
+	assert.EqualError(suite.T(), validMask(allDisabledUpperSet, numRings, maxByz), errInvalidMaskLength.Error(),
+		"Should reject mask with upper bits set attempting to bypass disabled ring check.")
+
+	// Bounds checks on numRings
+	assert.EqualError(suite.T(), validMask(mask, 0, maxByz), errInvalidMaskLength.Error(),
+		"Should reject numRings == 0.")
+	assert.EqualError(suite.T(), validMask(mask, 33, maxByz), errInvalidMaskLength.Error(),
+		"Should reject numRings > 32.")
+
 	for i = 0; i < numRings; i++ {
 		mask = clearBit(mask, i)
 		if i >= maxByz {

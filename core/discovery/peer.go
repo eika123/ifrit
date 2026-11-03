@@ -24,6 +24,7 @@ var (
 	errNoCert                  = errors.New("Passed certificate was nil")
 	errInvalidRing             = errors.New("Tried to set an accusation on a non-existing ring")
 	errTooManyDeactivatedRings = errors.New("Mask contains too many deactivated rings")
+	errInvalidMaskLength       = errors.New("mask contains set bits beyond numRings or invalid ring count")
 	errNonExistingRing         = errors.New("Accusation specifies non exisiting ring")
 	errDeactivatedRing         = errors.New("Accusation on deactivated ring")
 	ErrAccAlreadyExists        = errors.New("Accusation already exists")

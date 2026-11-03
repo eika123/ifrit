@@ -140,3 +140,43 @@ func TestAdversarialPolicy_EndToEndRebuttalDispatch(t *testing.T) {
 	assert.Len(t, comm.sentMsgs, 1)
 	assert.NotNil(t, comm.sentMsgs[0].GetOwnNote())
 }
+
+func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
+	priv, err := genKeys()
+	require.NoError(t, err)
+	selfCert := genCert(priv, 3)
+	cs := &cryptoStub{priv: priv}
+	comm := &mockTrackingComm{commStub: &commStub{}}
+
+	// Cluster configured with numRings = 3 (maxByz = 1)
+	v, err := discovery.NewView(3, selfCert, comm, cs)
+	require.NoError(t, err)
+
+	node := &Node{
+		view: v,
+		comm: comm,
+		cs:   cs,
+	}
+
+	peerPriv, err := genKeys()
+	require.NoError(t, err)
+	peerCert := genCert(peerPriv, 3)
+	peerID := string(peerCert.SubjectKeyId)
+
+	err = v.AddFull(peerID, peerCert)
+	require.NoError(t, err)
+
+	p := v.Peer(peerID)
+	require.NotNil(t, p)
+	v.AddLive(p)
+
+	// Byzantine node sets unused upper bits (3..31) to 1 to deceptively deactivate all 3 rings
+	// (mask = 0xFFFFFFF8). Bits 0..2 are 0 (all 3 rings disabled), bits 3..31 are 1.
+	byzMask := uint32(0xFFFFFFF8)
+	byzNote := discovery.NewNote(peerID, 2, byzMask, peerPriv)
+
+	// evalNote must reject this note
+	err = node.evalNote(byzNote)
+	require.Error(t, err, "evalNote must reject note with upper bits set beyond numRings")
+	require.Equal(t, errInvalidMask, err)
+}

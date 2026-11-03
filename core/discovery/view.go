@@ -104,6 +104,10 @@ type signer interface {
 //   - Requires a connectionManager / commService to manage connection lifecycles.
 //   - Viper configuration must be loaded (keys: "removal_timeout", "view_update_interval").
 func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer) (*View, error) {
+	if numRings == 0 || numRings > 32 {
+		return nil, errInvalidRingNum
+	}
+
 	var i, mask uint32
 
 	// max tolerable corrupt nodes, i.e t in k=2t+1, where t is the max number of corrupt nodes.
@@ -1033,6 +1037,10 @@ func (v *View) signLocalNote(n *Note) error {
 }
 
 func validMask(mask, numRings, maxByz uint32) error {
+	if numRings == 0 || numRings > 32 || (numRings < 32 && (mask>>numRings) != 0) {
+		return errInvalidMaskLength
+	}
+
 	active := bits.OnesCount32(mask)
 	disabled := int(numRings) - active
 
