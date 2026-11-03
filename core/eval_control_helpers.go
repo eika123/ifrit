@@ -328,7 +328,7 @@ func (n *Node) handleSelfAccusation(a *pb.Accusation, accuserPeer *discovery.Pee
 	}
 
 	if n.view.ShouldRebuttal(epoch, ringNum) {
-		n.protocol().Rebuttal(n)
+		n.rebuttal()
 		return nil
 	}
 	return errInvalidSelfAccusation

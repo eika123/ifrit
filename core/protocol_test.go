@@ -284,7 +284,7 @@ func TestProtocol_GossipSkipsNonDivergentPeers(t *testing.T) {
 	n.view.AddLive(p2)
 
 	// Run gossip
-	n.p.Gossip(n)
+	n.gossip()
 
 	// Only p2 (divergent) should have been gossiped with; p1 was skipped
 	assert.NotContains(t, comm.gossipedAddrs, "peer-1-addr")
@@ -362,7 +362,7 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 		AvailableCertificateDigests: []uint64{0x12345},
 		RequestedDataDigests:        []uint64{0x99999},
 	}
-	n.p.Gossip(n)
+	n.gossip()
 
 	sess := n.SessionManager().Get(p.Id)
 	require.NotNil(t, sess)
@@ -377,7 +377,7 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 	comm.mu.Lock()
 	comm.gossipedAddrs = nil
 	comm.mu.Unlock()
-	n.p.Gossip(n)
+	n.gossip()
 	comm.mu.Lock()
 	assert.Empty(t, comm.gossipedAddrs, "Peer must be skipped while session is busy transferring")
 	comm.mu.Unlock()
@@ -390,7 +390,7 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 	comm.response = &pb.StateResponse{
 		FingerprintData: newFpData,
 	}
-	n.p.Gossip(n)
+	n.gossip()
 	assert.Equal(t, SessionIdle, sess.State())
 	assert.False(t, sess.HasDeltas())
 	assert.Equal(t, newFpData, p.FingerprintData())
@@ -398,6 +398,6 @@ func TestProtocol_CallerPeerSessionStateTransitions(t *testing.T) {
 	// Case 4: RPC error -> session resets to SessionIdle
 	p.SetFingerprintData([]byte("diverged-again"))
 	comm.err = errors.New("network dial failure")
-	n.p.Gossip(n)
+	n.gossip()
 	assert.Equal(t, SessionIdle, sess.State())
 }

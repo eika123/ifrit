@@ -10,18 +10,18 @@ var (
 	errPeerNotFound = errors.New("No peer info found")
 )
 
-func (n *Node) setProtocol(pr protocol) {
-	n.protocolMutex.Lock()
-	defer n.protocolMutex.Unlock()
+func (n *Node) SetAdversarialPolicy(p *AdversarialPolicy) {
+	n.adversaryMutex.Lock()
+	defer n.adversaryMutex.Unlock()
 
-	n.p = pr
+	n.adversary = p
 }
 
-func (n *Node) protocol() protocol {
-	n.protocolMutex.RLock()
-	defer n.protocolMutex.RUnlock()
+func (n *Node) AdversarialPolicy() *AdversarialPolicy {
+	n.adversaryMutex.RLock()
+	defer n.adversaryMutex.RUnlock()
 
-	return n.p
+	return n.adversary
 }
 
 // fireflies describes a way to estimate round-trip-times, packet loss etc.

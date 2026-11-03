@@ -8,10 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type correct struct {
-}
-
-func (c correct) Rebuttal(n *Node) {
+func (n *Node) rebuttal() {
 	neighbours := n.view.GossipPartners()
 
 	selfNote := n.view.SelfNote()
@@ -20,11 +17,19 @@ func (c correct) Rebuttal(n *Node) {
 	}
 	noteMsg := selfNote.ToPbMsg()
 
-	msg := &pb.State{
+	baseMsg := &pb.State{
 		OwnNote: noteMsg,
 	}
 
+	adv := n.AdversarialPolicy()
+
 	for _, p := range neighbours {
+		msg, suppress := adv.shouldSuppressRebuttal(p, baseMsg)
+		if suppress || msg == nil {
+			log.Debug("Adversary: suppressed rebuttal to peer", "addr", p.Addr)
+			continue
+		}
+
 		_, err := n.comm.Gossip(p.Addr, msg)
 		if err != nil {
 			log.Error(err.Error(), "addr", p.Addr)
@@ -33,8 +38,9 @@ func (c correct) Rebuttal(n *Node) {
 	}
 }
 
-func (c correct) Gossip(n *Node) {
+func (n *Node) gossip() {
 	neighbours := n.view.GossipPartners()
+	adv := n.AdversarialPolicy()
 
 	for _, p := range neighbours {
 		if !n.IsDivergent(p) {
@@ -53,6 +59,10 @@ func (c correct) Gossip(n *Node) {
 		}
 
 		msg := n.collectDigestDiffsForPeer(p)
+
+		if adv != nil && adv.OnGossipOut != nil {
+			adv.OnGossipOut(p, msg)
+		}
 
 		// the comm.Gossip actually does the RPC
 		reply, err := n.comm.Gossip(p.Addr, msg)
@@ -102,7 +112,8 @@ func (c correct) Gossip(n *Node) {
 	}
 }
 
-func (c correct) Monitor(n *Node) {
+func (n *Node) monitor() {
+	adv := n.AdversarialPolicy()
 
 	// Fireflies protocol: ping one successor per ring,
 	// up to ringsPingedPerInterval in total.
@@ -125,6 +136,11 @@ func (c correct) Monitor(n *Node) {
 				n.view.RemoveLive(p)
 				log.Debug("Monitor -- Removing live peer due to not having note and being accused",
 					"addr", p.Addr)
+				continue
+			}
+
+			if adv.shouldSuppressAccusation(p, ringNum) {
+				log.Debug("Adversary: suppressed accusation against peer", "addr", p.Addr, "ringNum", ringNum)
 				continue
 			}
 

@@ -38,8 +38,8 @@ type Node struct {
 	view *discovery.View
 	self *discovery.Peer
 
-	p             protocol
-	protocolMutex sync.RWMutex
+	adversary      *AdversarialPolicy
+	adversaryMutex sync.RWMutex
 
 	wg       *sync.WaitGroup
 	exitChan chan bool
@@ -124,12 +124,6 @@ type cryptoService interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
-type protocol interface {
-	Monitor(n *Node)
-	Gossip(n *Node)
-	Rebuttal(n *Node)
-}
-
 func (n *Node) gossipLoop() {
 	defer n.wg.Done()
 
@@ -142,7 +136,7 @@ func (n *Node) gossipLoop() {
 			if n.sessionManager != nil {
 				n.sessionManager.SweepStaleSessions()
 			}
-			n.protocol().Gossip(n)
+			n.gossip()
 		}
 	}
 }
@@ -156,7 +150,7 @@ func (n *Node) monitorLoop() {
 			log.Info("Stopping monitoring")
 			return
 		case <-time.After(n.monitorTimeout):
-			n.protocol().Monitor(n)
+			n.monitor()
 		}
 	}
 }
@@ -197,7 +191,6 @@ func NewNode(comm commService, ps pingService, cm certManager, cs cryptoService)
 		dispatcher: workerpool.NewDispatcher(uint32(viper.
 			GetInt32("max_concurrent_messages"))),
 		entryAddrs:             viper.GetStringSlice("entry_addrs"),
-		p:                      correct{},
 		ringsPingedPerInterval: perInterval,
 
 		fd:   newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),

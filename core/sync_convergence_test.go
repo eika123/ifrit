@@ -179,7 +179,7 @@ func TestSync_TwoNodeDataConvergence(t *testing.T) {
 
 	// 2. Trigger reconciliation: Node A gossips to Node B
 	t.Log("Triggering Gossip from Node A to Node B")
-	nodeA.p.Gossip(nodeA)
+	nodeA.gossip()
 	t.Log("Gossip call finished, waiting for storeB convergence")
 
 	// 3. Wait for Node B to receive and ingest items via Sync stream
@@ -200,7 +200,7 @@ func TestSync_TwoNodeDataConvergence(t *testing.T) {
 	assert.Equal(t, nodeA.FingerprintData(), nodeB.FingerprintData(), "Fingerprints must match exactly after sync")
 
 	// 6. Verify single-round quiescence: subsequent gossip detects in-sync and skips transfer
-	nodeA.p.Gossip(nodeA)
+	nodeA.gossip()
 	assert.False(t, nodeA.IsDivergent(peerBOnA), "Node A must recognize Node B is in sync")
 }
 
@@ -238,7 +238,7 @@ func TestSync_BidirectionalMutualConvergence(t *testing.T) {
 	assert.Equal(t, 1, storeB.Size())
 
 	// Node A initiates reconciliation with Node B
-	nodeA.p.Gossip(nodeA)
+	nodeA.gossip()
 
 	// Wait for mutual convergence: both nodes must possess both items (size 2)
 	require.Eventually(t, func() bool {
@@ -257,8 +257,8 @@ func TestSync_BidirectionalMutualConvergence(t *testing.T) {
 	assert.Equal(t, nodeA.FingerprintData(), nodeB.FingerprintData())
 
 	// Both sides in sync
-	nodeA.p.Gossip(nodeA)
-	nodeB.p.Gossip(nodeB)
+	nodeA.gossip()
+	nodeB.gossip()
 	assert.False(t, nodeA.IsDivergent(peerBOnA))
 	assert.False(t, nodeB.IsDivergent(peerAOnB))
 }
@@ -298,7 +298,7 @@ func TestSync_TelemetryAccountingDuringConvergence(t *testing.T) {
 	require.True(t, added2)
 	require.NotZero(t, d2)
 
-	nodeA.p.Gossip(nodeA)
+	nodeA.gossip()
 
 	require.Eventually(t, func() bool {
 		return storeB.Size() == 2

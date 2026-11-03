@@ -8,16 +8,13 @@
     - Remove recording feature (?)
     - Add support for periodic membership update
 
-
 - Architecture
-    - Provide a pluggable set reconciliation servce
-        - move set reconciliation standins (merge_XYZ) in handlers.go
-          to an own implementation of this service (for comparisons)
-        - Avoids transferring all accusations
-    - Refactor external gossip to delta updates / append-and-drain buffer
-        - Replace single overwriting byte slice (SetExternalGossipContent) with a thread-safe append queue or buffered channel
-        - collectGossipContent drains accumulated deltas on gossip rounds to avoid message drops and races between ticks
-        - Support delta-based updates rather than full database snapshots to integrate cleanly with set reconciliation
+	- Finalize streaming rateless IBLT set reconciliation.
+	  Also extend it to e.g MTZ and others for comparison.
+	- move from the protocol interface to AdversarialPolicy interface defining behaviours
+	  OnRebuttal, OnMonitorPing, OnGossipDigest, etc.
+	- Provide a mock crypto service mimicking a malicious node; forge certificates, sings stale notes
+	  Should enable deterministic testing of these behaviours.
 
 - Code overhaul
     - Detach visualizer component from rest of system
