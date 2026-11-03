@@ -1,7 +1,6 @@
 package core
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -196,10 +195,4 @@ func (n *Node) replyStream(reply chan []byte, srv pb.Gossip_StreamServer) {
 
 func (n *Node) runStreamHandler(handler streamMsg, input, reply chan []byte) {
 	handler(input, reply)
-}
-
-func hashContent(data []byte) []byte {
-	h := sha256.New()
-	h.Write(data)
-	return h.Sum(nil)
 }

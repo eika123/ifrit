@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"crypto/ecdsa"
-	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -1041,12 +1040,6 @@ func validMask(mask, numRings, maxByz uint32) error {
 	}
 
 	return nil
-}
-
-func hashContent(data []byte) []byte {
-	h := sha256.New()
-	h.Write(data)
-	return h.Sum(nil)
 }
 
 func setBit(n uint32, pos uint32) uint32 {

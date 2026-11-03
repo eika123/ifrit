@@ -14,7 +14,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/joonnna/ifrit/netutil"
 	"io/ioutil"
 	"math/big"
 	"net"
@@ -23,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joonnna/ifrit/netutil"
 
 	log "github.com/inconshreveable/log15"
 )
@@ -207,7 +208,7 @@ func (cu *CryptoUnit) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 
 	var rInt, sInt big.Int
 
-	b := hashContent(data)
+	b := HashContent(data)
 
 	rInt.SetBytes(r)
 	sInt.SetBytes(s)
@@ -216,7 +217,7 @@ func (cu *CryptoUnit) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 }
 
 func (cu *CryptoUnit) Sign(data []byte) ([]byte, []byte, error) {
-	hash := hashContent(data)
+	hash := HashContent(data)
 
 	r, s, err := ecdsa.Sign(rand.Reader, cu.priv, hash)
 	if err != nil {
@@ -581,8 +582,7 @@ func genKeys() (*ecdsa.PrivateKey, error) {
 	return privKey, nil
 }
 
-func hashContent(data []byte) []byte {
-	h := sha256.New()
-	h.Write(data)
-	return h.Sum(nil)
+func HashContent(data []byte) []byte {
+	h := sha256.Sum256(data)
+	return h[:]
 }

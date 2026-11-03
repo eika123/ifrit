@@ -13,6 +13,7 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/comm"
 	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
@@ -220,7 +221,7 @@ func (cs *cryptoStub) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 
 	var rInt, sInt big.Int
 
-	b := hashContent(data)
+	b := comm.HashContent(data)
 
 	rInt.SetBytes(r)
 	sInt.SetBytes(s)
@@ -229,7 +230,7 @@ func (cs *cryptoStub) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 }
 
 func (cs *cryptoStub) Sign(data []byte) ([]byte, []byte, error) {
-	hash := hashContent(data)
+	hash := comm.HashContent(data)
 
 	r, s, err := ecdsa.Sign(rand.Reader, cs.priv, hash)
 	if err != nil {

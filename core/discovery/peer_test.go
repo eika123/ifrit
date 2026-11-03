@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/comm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -247,7 +248,7 @@ func (suite *PeerTestSuite) TestNumPing() {
 func (suite *PeerTestSuite) TestHashContent() {
 	data := []byte("testbyteslice")
 
-	assert.NotNil(suite.T(), hashContent(data), "Returned hash is nil.")
+	assert.NotNil(suite.T(), comm.HashContent(data), "Returned hash is nil.")
 }
 
 type signerMock struct {
@@ -262,7 +263,7 @@ func (sm *signerMock) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 
 	var rInt, sInt big.Int
 
-	b := hashContent(data)
+	b := comm.HashContent(data)
 
 	rInt.SetBytes(r)
 	sInt.SetBytes(s)
@@ -271,7 +272,7 @@ func (sm *signerMock) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
 }
 
 func (sm *signerMock) Sign(data []byte) ([]byte, []byte, error) {
-	hash := hashContent(data)
+	hash := comm.HashContent(data)
 
 	r, s, err := ecdsa.Sign(rand.Reader, sm.priv, hash)
 	if err != nil {

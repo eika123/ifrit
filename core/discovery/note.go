@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/joonnna/ifrit/comm"
 	pb "github.com/joonnna/ifrit/protobuf"
 )
 
@@ -139,7 +140,7 @@ func signNote(n *Note, privKey *ecdsa.PrivateKey) error {
 		return err
 	}
 
-	hash := hashContent(b)
+	hash := comm.HashContent(b)
 
 	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash)
 	if err != nil {
