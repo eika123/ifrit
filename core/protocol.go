@@ -52,7 +52,7 @@ func (c correct) Gossip(n *Node) {
 			}
 		}
 
-		msg := n.collectGossipContentForPeer(p)
+		msg := n.collectDigestDiffsForPeer(p)
 
 		// the comm.Gossip actually does the RPC
 		reply, err := n.comm.Gossip(p.Addr, msg)

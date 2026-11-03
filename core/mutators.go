@@ -3,45 +3,12 @@ package core
 import (
 	"errors"
 	"time"
-
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/protobuf"
 )
 
 var (
 	errNotFound     = errors.New("No node info found")
 	errPeerNotFound = errors.New("No peer info found")
 )
-
-func (n *Node) collectGossipContentForPeer(p *discovery.Peer) *proto.State {
-	msg := &proto.State{
-		FingerprintData:         n.FingerprintData(),
-		FingerprintAccusations:  n.AccusationFingerprintBytes(),
-		FingerprintView:         n.ViewFingerprintBytes(),
-		FingerprintCertificates: n.CertFingerprintBytes(),
-	}
-
-	if selfNote := n.view.SelfNote(); selfNote != nil {
-		msg.OwnNote = selfNote.ToPbMsg()
-	}
-
-	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
-
-	if accDiff {
-		msg.AccusationDigests = n.AccusationDigestsUint64()
-	}
-
-	if viewDiff {
-		msg.CertificateDigests = n.CertDigestsUint64()
-		msg.NoteDigests = n.NoteDigestsUint64()
-	}
-
-	if dataDiff {
-		msg.DataDigests = n.DataDigestsUint64()
-	}
-
-	return msg
-}
 
 func (n *Node) setProtocol(pr protocol) {
 	n.protocolMutex.Lock()
@@ -57,6 +24,8 @@ func (n *Node) protocol() protocol {
 	return n.p
 }
 
+// fireflies describes a way to estimate round-trip-times, packet loss etc.
+// This can be used for that
 func (n *Node) setGossipTimeout(timeout int) {
 	n.gossipTimeoutMutex.Lock()
 	defer n.gossipTimeoutMutex.Unlock()

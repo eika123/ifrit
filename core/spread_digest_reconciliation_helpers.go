@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
 	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"google.golang.org/grpc/codes"
@@ -43,7 +44,6 @@ func (n *Node) startReconSession(remoteId string, args *pb.State, reply *pb.Stat
 		return peerSess, seq, nil
 	}
 	return nil, 0, nil
-
 }
 
 func (n *Node) computeControlAndDataDeltas(remoteId string, args *pb.State, reply *pb.StateResponse) error {
@@ -208,4 +208,35 @@ func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
 		return len(localDiff) > 0 || len(remoteDiff) > 0
 	}
 	return false
+}
+
+// Used by caller gossiper
+func (n *Node) collectDigestDiffsForPeer(p *discovery.Peer) *pb.State {
+	msg := &pb.State{
+		FingerprintData:         n.FingerprintData(),
+		FingerprintAccusations:  n.AccusationFingerprintBytes(),
+		FingerprintView:         n.ViewFingerprintBytes(),
+		FingerprintCertificates: n.CertFingerprintBytes(),
+	}
+
+	if selfNote := n.view.SelfNote(); selfNote != nil {
+		msg.OwnNote = selfNote.ToPbMsg()
+	}
+
+	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
+
+	if accDiff {
+		msg.AccusationDigests = n.AccusationDigestsUint64()
+	}
+
+	if viewDiff {
+		msg.CertificateDigests = n.CertDigestsUint64()
+		msg.NoteDigests = n.NoteDigestsUint64()
+	}
+
+	if dataDiff {
+		msg.DataDigests = n.DataDigestsUint64()
+	}
+
+	return msg
 }
