@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -106,7 +106,7 @@ func TestDefaultItemCodec_JSON(t *testing.T) {
 }
 
 func TestTypedDataReconciler_OpenItemReader_And_IngestItem(t *testing.T) {
-	store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[[]byte]())
+	store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[[]byte]())
 	require.NoError(t, err)
 
 	reconciler := NewTypedDataReconciler(store)
@@ -165,7 +165,7 @@ func TestTypedDataReconciler_OpenItemReader_And_IngestItem(t *testing.T) {
 
 func TestTypedDataReconciler_StringAndJSONStores(t *testing.T) {
 	t.Run("string store", func(t *testing.T) {
-		store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+		store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 		require.NoError(t, err)
 
 		reconciler := NewTypedDataReconciler(store)
@@ -184,7 +184,7 @@ func TestTypedDataReconciler_StringAndJSONStores(t *testing.T) {
 	})
 
 	t.Run("json struct store", func(t *testing.T) {
-		store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[testPayload]())
+		store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[testPayload]())
 		require.NoError(t, err)
 
 		reconciler := NewTypedDataReconciler(store)
@@ -234,7 +234,7 @@ func (c *prefixCodec) Decode(r io.Reader) (string, error) {
 }
 
 func TestTypedDataReconciler_CustomCodec(t *testing.T) {
-	store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 
 	codec := &prefixCodec{}
@@ -268,7 +268,7 @@ func TestTypedDataReconciler_NilGuards(t *testing.T) {
 	}
 
 	assert.Nil(t, nilStoreReconciler.Digests())
-	assert.Equal(t, revIdxStore.DigestSymbol(0), nilStoreReconciler.Fingerprint())
+	assert.Equal(t, digestmaps.DigestSymbol(0), nilStoreReconciler.Fingerprint())
 
 	_, _, err := nilStoreReconciler.Reconcile(nil)
 	assert.True(t, errors.Is(err, ErrNilStore))
@@ -280,7 +280,7 @@ func TestTypedDataReconciler_NilGuards(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrNilStore))
 
 	// Nil codec
-	store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	nilCodecReconciler := &typedDataReconciler[string]{
 		store: store,

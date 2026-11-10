@@ -11,8 +11,8 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
 
 var (
@@ -271,7 +271,7 @@ func (n *Node) sendEgress(
 		}
 		var batch []*pb.Certificate
 		for _, d := range egressCerts {
-			if c, found := n.CertStore().GetByDigest(revIdxStore.DigestSymbol(d)); found && c != nil {
+			if c, found := n.CertStore().GetByDigest(digestmaps.DigestSymbol(d)); found && c != nil {
 				batch = append(batch, c.ToPbMsg())
 				if len(batch) >= batchSize {
 					err := stream.Send(&pb.SyncFrame{Payload: &pb.SyncFrame_Certificates{Certificates: &pb.CertificateBatch{Items: batch}}})
@@ -299,7 +299,7 @@ func (n *Node) sendEgress(
 		}
 		var batch []*pb.Note
 		for _, d := range egressNotes {
-			if note, found := n.view.NoteStore().GetByDigest(revIdxStore.DigestSymbol(d)); found && note != nil {
+			if note, found := n.view.NoteStore().GetByDigest(digestmaps.DigestSymbol(d)); found && note != nil {
 				batch = append(batch, note.ToPbMsg())
 				if len(batch) >= batchSize {
 					err := stream.Send(&pb.SyncFrame{Payload: &pb.SyncFrame_Notes{Notes: &pb.NoteBatch{Items: batch}}})
@@ -327,7 +327,7 @@ func (n *Node) sendEgress(
 		}
 		var batch []*pb.Accusation
 		for _, d := range egressAccs {
-			if acc, found := n.view.AccusationStore().GetByDigest(revIdxStore.DigestSymbol(d)); found && acc != nil {
+			if acc, found := n.view.AccusationStore().GetByDigest(digestmaps.DigestSymbol(d)); found && acc != nil {
 				batch = append(batch, acc.ToPbMsg())
 				if len(batch) >= batchSize {
 					err := stream.Send(&pb.SyncFrame{Payload: &pb.SyncFrame_Accusations{Accusations: &pb.AccusationBatch{Items: batch}}})
@@ -356,7 +356,7 @@ func (n *Node) sendEgress(
 		}
 		buf := make([]byte, chunkBytes)
 		for _, d := range egressData {
-			rc, sizeHint, ok, err := reconciler.OpenItemReader(revIdxStore.DigestSymbol(d))
+			rc, sizeHint, ok, err := reconciler.OpenItemReader(digestmaps.DigestSymbol(d))
 			if err != nil || !ok || rc == nil {
 				continue
 			}
@@ -571,7 +571,7 @@ func (n *Node) recvIngress(
 				}
 				reconciler := n.GetDataReconciler()
 				if reconciler != nil {
-					if err := reconciler.IngestItem(revIdxStore.DigestSymbol(curDataDigest), &curDataBuf); err != nil {
+					if err := reconciler.IngestItem(digestmaps.DigestSymbol(curDataDigest), &curDataBuf); err != nil {
 						return nil, fmt.Errorf("failed to ingest item %016x: %w", curDataDigest, err)
 					}
 				}

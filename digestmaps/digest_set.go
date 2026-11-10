@@ -1,4 +1,4 @@
-package reverseindexstore
+package digestmaps
 
 import (
 	"crypto/sha256"

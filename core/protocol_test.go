@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,7 +101,7 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	assert.Nil(t, ps.fpDataProvider(), "unregistered data store must produce nil data fingerprint")
 
 	// Register an application data store with an element
-	store, err := revIdxStore.NewDigestSet[string, revIdxStore.DigestSymbol](revIdxStore.MustDefaultHasher[string]())
+	store, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	store.AddElement("app-data-element-1")
 
@@ -165,7 +165,7 @@ func TestAccusationStore_AuditabilityAndGrowOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	fp1 := n.AccusationFingerprint()
-	assert.NotEqual(t, revIdxStore.DigestSymbol(0), fp1)
+	assert.NotEqual(t, digestmaps.DigestSymbol(0), fp1)
 	assert.Len(t, n.view.AccusationsForPeer(p1), 1)
 
 	// Epoch 2 accusation arrives later
@@ -303,7 +303,7 @@ func TestNode_CertificateStoreAndFingerprinting(t *testing.T) {
 	// Initial certificate store contains self certificate
 	require.NotNil(t, n.CertStore())
 	assert.Equal(t, 1, n.CertStore().Size())
-	assert.NotEqual(t, revIdxStore.DigestSymbol(0), n.CertFingerprint())
+	assert.NotEqual(t, digestmaps.DigestSymbol(0), n.CertFingerprint())
 	assert.Len(t, n.CertFingerprintBytes(), 8)
 
 	digests := n.CertDigests()

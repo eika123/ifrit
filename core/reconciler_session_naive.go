@@ -5,7 +5,7 @@ import (
 
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/digestmaps"
 )
 
 type NaiveSessionFactory[T any, S Symbol[S]] struct{}
@@ -25,9 +25,9 @@ func init() {
 	RegisterProtocol(ProtocolDefinition{
 		Name:           "naive",
 		Description:    "Naive full set digest exchange",
-		NewCertSession: NaiveSessionConstructor[*pki.Certificate, revIdxStore.DigestSymbol](),
-		NewNoteSession: NaiveSessionConstructor[*discovery.Note, revIdxStore.DigestSymbol](),
-		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol](),
+		NewCertSession: NaiveSessionConstructor[*pki.Certificate, digestmaps.DigestSymbol](),
+		NewNoteSession: NaiveSessionConstructor[*discovery.Note, digestmaps.DigestSymbol](),
+		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, digestmaps.DigestSymbol](),
 	})
 }
 

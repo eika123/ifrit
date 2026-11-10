@@ -1,4 +1,4 @@
-package versionvector
+package digestmaps
 
 import (
 	"sync"

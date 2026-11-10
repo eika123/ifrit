@@ -12,8 +12,8 @@ import (
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core"
 	"github.com/joonnna/ifrit/crypto/identity"
+	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/joonnna/ifrit/netutil"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 )
 
@@ -258,34 +258,34 @@ func (c *Client) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) {
 }
 
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
-type ReverseIndexStore[T any] = revIdxStore.ReverseIndexStore[T, revIdxStore.DigestSymbol]
+type ReverseIndexStore[T any] = digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol]
 
 var (
-	ErrNilHasher      = revIdxStore.ErrNilHasher
-	ErrUnhashableType = revIdxStore.ErrUnhashableType
+	ErrNilHasher      = digestmaps.ErrNilHasher
+	ErrUnhashableType = digestmaps.ErrUnhashableType
 )
 
 // DefaultHasher returns a deterministic 64-bit hasher for type T after validating at factory time
 // that T is deterministically hashable, or returns an error wrapping ErrUnhashableType.
-func DefaultHasher[T any]() (revIdxStore.Hasher[T, revIdxStore.DigestSymbol], error) {
-	return revIdxStore.DefaultHasher[T]()
+func DefaultHasher[T any]() (digestmaps.Hasher[T, digestmaps.DigestSymbol], error) {
+	return digestmaps.DefaultHasher[T]()
 }
 
 // MustDefaultHasher returns DefaultHasher[T]() or panics if T is not deterministically hashable.
-func MustDefaultHasher[T any]() revIdxStore.Hasher[T, revIdxStore.DigestSymbol] {
-	return revIdxStore.MustDefaultHasher[T]()
+func MustDefaultHasher[T any]() digestmaps.Hasher[T, digestmaps.DigestSymbol] {
+	return digestmaps.MustDefaultHasher[T]()
 }
 
 // NewCustomDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // Returns (nil, ErrNilHasher) if hasher is nil.
-func NewCustomDigestSet[T any, S revIdxStore.Symbol[S]](hasher revIdxStore.Hasher[T, S]) (revIdxStore.ReverseIndexStore[T, S], error) {
-	return revIdxStore.NewDigestSet(hasher)
+func NewCustomDigestSet[T any, S digestmaps.Symbol[S]](hasher digestmaps.Hasher[T, S]) (digestmaps.ReverseIndexStore[T, S], error) {
+	return digestmaps.NewDigestSet(hasher)
 }
 
 // NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // Returns (nil, ErrNilHasher) if hasher is nil.
-func NewDigestSet[T any](hasher revIdxStore.Hasher[T, revIdxStore.DigestSymbol]) (ReverseIndexStore[T], error) {
-	return revIdxStore.NewDigestSet(hasher)
+func NewDigestSet[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol]) (ReverseIndexStore[T], error) {
+	return digestmaps.NewDigestSet(hasher)
 }
 
 // ItemCodec defines the serialization and deserialization contract for data items.

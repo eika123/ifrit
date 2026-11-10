@@ -5,16 +5,16 @@ import (
 	"sync"
 	"testing"
 
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDigestSymbol_Reconciliation(t *testing.T) {
-	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
-	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	hasher := digestmaps.MustDefaultHasher[DigestSymbol]()
+	aliceStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
-	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	bobStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 
 	// Alice has elements 1, 2, 3, 4
@@ -63,10 +63,10 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 }
 
 func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
-	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
-	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	hasher := digestmaps.MustDefaultHasher[DigestSymbol]()
+	aliceStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
-	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	bobStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30} {
@@ -110,10 +110,10 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 }
 
 func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
-	hasher := revIdxStore.MustDefaultHasher[DigestSymbol]()
-	aliceStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	hasher := digestmaps.MustDefaultHasher[DigestSymbol]()
+	aliceStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
-	bobStore, err := revIdxStore.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
+	bobStore, err := digestmaps.NewDigestSet[DigestSymbol, DigestSymbol](hasher)
 	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30, 40, 50} {

@@ -1,4 +1,4 @@
-package versionvector
+package digestmaps
 
 import (
 	"encoding/binary"
@@ -27,7 +27,7 @@ func testHasher(item VersionedItem[testEntity]) DigestSymbol {
 }
 
 func TestVersionVector_BasicOperations(t *testing.T) {
-	vv := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vv := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	assert.True(t, vv.Empty())
 	assert.Equal(t, 0, vv.Size())
 	assert.Equal(t, DigestSymbol(0), vv.Fingerprint())
@@ -82,7 +82,7 @@ func TestVersionVector_BasicOperations(t *testing.T) {
 }
 
 func TestVersionVector_ImmutabilityAndBranching(t *testing.T) {
-	root := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	root := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 
 	itemA := VersionedItem[testEntity]{Item: testEntity{ID: "node-A", Payload: "A"}, Version: 1}
 	itemB := VersionedItem[testEntity]{Item: testEntity{ID: "node-B", Payload: "B"}, Version: 1}
@@ -128,7 +128,7 @@ func TestVersionVector_ImmutabilityAndBranching(t *testing.T) {
 }
 
 func TestVersionVector_AddIdempotency(t *testing.T) {
-	vv := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vv := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	item := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 
 	vv1 := vv.AddItem(item)
@@ -142,18 +142,18 @@ func TestVersionVector_AddIdempotency(t *testing.T) {
 func TestVersionVector_DifferentVersionsProduceDistinctFingerprints(t *testing.T) {
 	// Vector A with node-1 at version 1
 	itemV1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "state"}, Version: 1}
-	vvA := NewVersionVector[testEntity, DigestSymbol](testHasher).AddItem(itemV1)
+	vvA := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher).AddItem(itemV1)
 
 	// Vector B with node-1 at version 2 (rebuttal / update)
 	itemV2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "state"}, Version: 2}
-	vvB := NewVersionVector[testEntity, DigestSymbol](testHasher).AddItem(itemV2)
+	vvB := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher).AddItem(itemV2)
 
 	assert.NotEqual(t, vvA.Fingerprint(), vvB.Fingerprint(),
 		"Vectors with identical item payloads but different versions MUST have different fingerprints")
 }
 
 func TestVersionVector_VersionUpgradePattern(t *testing.T) {
-	vv := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vv := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	e1v1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	digV1 := testHasher(e1v1)
 
@@ -183,7 +183,7 @@ func TestVersionVector_VersionUpgradePattern(t *testing.T) {
 }
 
 func TestVersionVector_Removal(t *testing.T) {
-	vv0 := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vv0 := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	e1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	e2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "v1"}, Version: 1}
 
@@ -227,13 +227,13 @@ func TestVersionVector_Commutativity(t *testing.T) {
 	}
 
 	// Insert in forward order
-	vvForward := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vvForward := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	for _, item := range items {
 		vvForward = vvForward.AddItem(item)
 	}
 
 	// Insert in reverse order
-	vvReverse := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vvReverse := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	for i := len(items) - 1; i >= 0; i-- {
 		vvReverse = vvReverse.AddItem(items[i])
 	}
@@ -245,7 +245,7 @@ func TestVersionVector_Commutativity(t *testing.T) {
 }
 
 func TestVersionVector_Elements(t *testing.T) {
-	vv := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	vv := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 	item1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "p1"}, Version: 10}
 	item2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "p2"}, Version: 20}
 
@@ -257,7 +257,7 @@ func TestVersionVector_Elements(t *testing.T) {
 }
 
 func TestVersionVector_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	baseVV := NewVersionVector[testEntity, DigestSymbol](testHasher)
+	baseVV := NewVersionVectorImmutable[testEntity, DigestSymbol](testHasher)
 
 	// Pre-populate with base items
 	numBaseItems := 10

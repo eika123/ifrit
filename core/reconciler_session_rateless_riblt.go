@@ -6,7 +6,7 @@ import (
 
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/yangl1996/riblt"
 )
 
@@ -24,8 +24,8 @@ import (
 
 // 						-- network[msgA1,...,msgAk] -->  DecodeB(msgA1,...,msgAk) --> setB: Bob
 
-// DigestSymbol is aliased from revIdxStore.DigestSymbol.
-type DigestSymbol = revIdxStore.DigestSymbol
+// DigestSymbol is aliased from digestmaps.DigestSymbol.
+type DigestSymbol = digestmaps.DigestSymbol
 
 // -----------------------------------------------------------------------------
 type RIBLTSession[T any, S Symbol[S]] struct {
@@ -89,23 +89,23 @@ func NewCustomRIBLTSessionFactory[T any, S Symbol[S]](
 }
 
 // NewRIBLTSessionFactory constructs a SessionFactory backed by rateless IBLT using standard 64-bit digest symbols.
-func NewRIBLTSessionFactory[T any]() *RIBLTSessionFactory[T, revIdxStore.DigestSymbol] {
-	return NewCustomRIBLTSessionFactory[T, revIdxStore.DigestSymbol](
+func NewRIBLTSessionFactory[T any]() *RIBLTSessionFactory[T, digestmaps.DigestSymbol] {
+	return NewCustomRIBLTSessionFactory[T, digestmaps.DigestSymbol](
 		8,
-		func(s revIdxStore.DigestSymbol) []byte {
+		func(s digestmaps.DigestSymbol) []byte {
 			buf := make([]byte, 8)
 			binary.LittleEndian.PutUint64(buf, uint64(s))
 			return buf
 		},
-		func(b []byte) revIdxStore.DigestSymbol {
-			return revIdxStore.DigestSymbol(binary.LittleEndian.Uint64(b))
+		func(b []byte) digestmaps.DigestSymbol {
+			return digestmaps.DigestSymbol(binary.LittleEndian.Uint64(b))
 		},
 	)
 }
 
 // RIBLTSessionConstructor returns a higher-order SessionConstructor closure for RIBLTSession with 64-bit digest symbols.
-func RIBLTSessionConstructor[T any]() SessionConstructor[T, revIdxStore.DigestSymbol] {
-	return func(store ReverseIndexStore[T, revIdxStore.DigestSymbol]) (ReconcilerSession[T, revIdxStore.DigestSymbol], error) {
+func RIBLTSessionConstructor[T any]() SessionConstructor[T, digestmaps.DigestSymbol] {
+	return func(store ReverseIndexStore[T, digestmaps.DigestSymbol]) (ReconcilerSession[T, digestmaps.DigestSymbol], error) {
 		return NewRIBLTSessionFactory[T]().NewSession(store)
 	}
 }

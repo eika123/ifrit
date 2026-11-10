@@ -11,8 +11,8 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -106,19 +106,19 @@ func (suite *CertificateTestSuite) TestDefaultHasherIntegration() {
 	c1 := NewCertificate(raw1)
 	c2 := NewCertificate(raw2)
 
-	hasher := revIdxStore.MustDefaultHasher[*Certificate]()
+	hasher := digestmaps.MustDefaultHasher[*Certificate]()
 	d1 := hasher(c1)
 	d2 := hasher(c2)
 
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), d1)
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), d2)
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), d1)
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), d2)
 	assert.NotEqual(suite.T(), d1, d2)
 
 	// Idempotent hashing
 	assert.Equal(suite.T(), d1, hasher(NewCertificate(raw1)))
 
 	// DigestSet integration
-	store, err := revIdxStore.NewDigestSet[*Certificate, revIdxStore.DigestSymbol](hasher)
+	store, err := digestmaps.NewDigestSet[*Certificate, digestmaps.DigestSymbol](hasher)
 	require.NoError(suite.T(), err)
 
 	d, added := store.Insert(c1)
@@ -142,4 +142,3 @@ func (suite *CertificateTestSuite) TestDefaultHasherIntegration() {
 	store.Insert(c2)
 	assert.Equal(suite.T(), d1^d2, store.Fingerprint())
 }
-

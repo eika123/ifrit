@@ -13,11 +13,10 @@ import (
 
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
 	proto "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/versionvector"
 	"github.com/spf13/viper"
 )
 
@@ -39,18 +38,18 @@ func accusationRingKey(accused string, ringNum uint32) string {
 }
 
 type View struct {
-	viewStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
+	viewStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
 	viewMutex sync.RWMutex
 
-	liveStore revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol]
+	liveStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
 
-	accusationStore   revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol]
-	activeAccusations versionvector.VersionVectorMutable[string, *Accusation, revIdxStore.DigestSymbol]
+	accusationStore   digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
+	activeAccusations digestmaps.VersionVectorMutable[string, *Accusation, digestmaps.DigestSymbol]
 
-	noteStore   revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol]
-	activeNotes versionvector.VersionVectorMutable[string, *Note, revIdxStore.DigestSymbol]
+	noteStore   digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
+	activeNotes digestmaps.VersionVectorMutable[string, *Note, digestmaps.DigestSymbol]
 
-	certStore revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol]
+	certStore digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
 
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
@@ -136,33 +135,33 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		updateInterval = 10
 	}
 
-	peerHasher := func(p *Peer) revIdxStore.DigestSymbol {
+	peerHasher := func(p *Peer) digestmaps.DigestSymbol {
 		h := fnv.New64a()
 		h.Write([]byte(p.Id))
-		return revIdxStore.DigestSymbol(h.Sum64())
+		return digestmaps.DigestSymbol(h.Sum64())
 	}
 
-	viewStore, err := revIdxStore.NewDigestSet(peerHasher)
+	viewStore, err := digestmaps.NewDigestSet(peerHasher)
 	if err != nil {
 		return nil, err
 	}
 
-	liveStore, err := revIdxStore.NewDigestSet(peerHasher)
+	liveStore, err := digestmaps.NewDigestSet(peerHasher)
 	if err != nil {
 		return nil, err
 	}
 
-	accusationStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Accusation]())
+	accusationStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Accusation]())
 	if err != nil {
 		return nil, err
 	}
 
-	noteStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*Note]())
+	noteStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Note]())
 	if err != nil {
 		return nil, err
 	}
 
-	certStore, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[*pki.Certificate]())
+	certStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
 	if err != nil {
 		return nil, err
 	}
@@ -171,17 +170,17 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		certStore.Insert(pki.CertificateFromX509(cert))
 	}
 
-	activeNotes := versionvector.NewVersionVectorMutable[string, *Note, revIdxStore.DigestSymbol](
+	activeNotes := digestmaps.NewVersionVectorMutable[string, *Note, digestmaps.DigestSymbol](
 		func(n *Note) string { return n.id },
-		func(item versionvector.VersionedItem[*Note]) revIdxStore.DigestSymbol {
-			return revIdxStore.MustDefaultHasher[*Note]()(item.Item)
+		func(item digestmaps.VersionedItem[*Note]) digestmaps.DigestSymbol {
+			return digestmaps.MustDefaultHasher[*Note]()(item.Item)
 		},
 	)
 
-	activeAccusations := versionvector.NewVersionVectorMutable[string, *Accusation, revIdxStore.DigestSymbol](
+	activeAccusations := digestmaps.NewVersionVectorMutable[string, *Accusation, digestmaps.DigestSymbol](
 		func(a *Accusation) string { return accusationRingKey(a.accused, a.ringNum) },
-		func(item versionvector.VersionedItem[*Accusation]) revIdxStore.DigestSymbol {
-			return revIdxStore.MustDefaultHasher[*Accusation]()(item.Item)
+		func(item digestmaps.VersionedItem[*Accusation]) digestmaps.DigestSymbol {
+			return digestmaps.MustDefaultHasher[*Accusation]()(item.Item)
 		},
 	)
 
@@ -269,10 +268,10 @@ func (v *View) Self() *Peer {
 }
 
 // hashId computes the deterministic 64-bit digest for a peer ID string.
-func (v *View) hashId(id string) revIdxStore.DigestSymbol {
+func (v *View) hashId(id string) digestmaps.DigestSymbol {
 	h := fnv.New64a()
 	h.Write([]byte(id))
-	return revIdxStore.DigestSymbol(h.Sum64())
+	return digestmaps.DigestSymbol(h.Sum64())
 }
 
 // Peer returns the Peer with the given ID from the full view, or nil if not present.
@@ -334,7 +333,7 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 // Fingerprint returns the commutative XOR fingerprint of the view,
 // combining the note store fingerprint and certificate store fingerprint (XOR).
 // Returns ErrNotesNotInitialized if noteStore is uninitialized, or ErrCertsNotInitialized if certStore is uninitialized.
-func (v *View) Fingerprint() (revIdxStore.DigestSymbol, error) {
+func (v *View) Fingerprint() (digestmaps.DigestSymbol, error) {
 	if v.noteStore == nil {
 		return 0, ErrNotesNotInitialized
 	}
@@ -346,7 +345,7 @@ func (v *View) Fingerprint() (revIdxStore.DigestSymbol, error) {
 
 // NoteFingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
 // Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteFingerprint() (revIdxStore.DigestSymbol, error) {
+func (v *View) NoteFingerprint() (digestmaps.DigestSymbol, error) {
 	if v.noteStore == nil {
 		return 0, ErrNotesNotInitialized
 	}
@@ -354,13 +353,13 @@ func (v *View) NoteFingerprint() (revIdxStore.DigestSymbol, error) {
 }
 
 // CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (v *View) CertStore() revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol] {
+func (v *View) CertStore() digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol] {
 	return v.certStore
 }
 
 // CertFingerprint returns the commutative XOR fingerprint of all peer certificates in the view (including self).
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertFingerprint() (revIdxStore.DigestSymbol, error) {
+func (v *View) CertFingerprint() (digestmaps.DigestSymbol, error) {
 	if v.certStore == nil {
 		return 0, ErrCertsNotInitialized
 	}
@@ -369,7 +368,7 @@ func (v *View) CertFingerprint() (revIdxStore.DigestSymbol, error) {
 
 // CertDigests returns the digests of all certificates currently in the cert store.
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertDigests() ([]revIdxStore.DigestSymbol, error) {
+func (v *View) CertDigests() ([]digestmaps.DigestSymbol, error) {
 	if v.certStore == nil {
 		return nil, ErrCertsNotInitialized
 	}
@@ -378,7 +377,7 @@ func (v *View) CertDigests() ([]revIdxStore.DigestSymbol, error) {
 
 // CertByDigest retrieves a Certificate by its digest symbol from the cert store.
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*pki.Certificate, bool, error) {
+func (v *View) CertByDigest(d digestmaps.DigestSymbol) (*pki.Certificate, bool, error) {
 	if v.certStore == nil {
 		return nil, false, ErrCertsNotInitialized
 	}
@@ -388,7 +387,7 @@ func (v *View) CertByDigest(d revIdxStore.DigestSymbol) (*pki.Certificate, bool,
 
 // CertsByDigests retrieves multiple Certificates by their digests from the cert store in a single operation.
 // Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertsByDigests(digests []revIdxStore.DigestSymbol) ([]*pki.Certificate, bool, error) {
+func (v *View) CertsByDigests(digests []digestmaps.DigestSymbol) ([]*pki.Certificate, bool, error) {
 	if v.certStore == nil {
 		return nil, false, ErrCertsNotInitialized
 	}
@@ -397,13 +396,13 @@ func (v *View) CertsByDigests(digests []revIdxStore.DigestSymbol) ([]*pki.Certif
 }
 
 // NoteStore returns the underlying ReverseIndexStore backing peer notes.
-func (v *View) NoteStore() revIdxStore.ReverseIndexStore[*Note, revIdxStore.DigestSymbol] {
+func (v *View) NoteStore() digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol] {
 	return v.noteStore
 }
 
 // NoteDigests returns the digests of all notes currently contributing to the view fingerprint.
 // Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteDigests() ([]revIdxStore.DigestSymbol, error) {
+func (v *View) NoteDigests() ([]digestmaps.DigestSymbol, error) {
 	if v.noteStore == nil {
 		return nil, ErrNotesNotInitialized
 	}
@@ -412,7 +411,7 @@ func (v *View) NoteDigests() ([]revIdxStore.DigestSymbol, error) {
 
 // NoteByDigest retrieves a Note by its digest symbol from the note store.
 // Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteByDigest(d revIdxStore.DigestSymbol) (*Note, bool, error) {
+func (v *View) NoteByDigest(d digestmaps.DigestSymbol) (*Note, bool, error) {
 	if v.noteStore == nil {
 		return nil, false, ErrNotesNotInitialized
 	}
@@ -422,7 +421,7 @@ func (v *View) NoteByDigest(d revIdxStore.DigestSymbol) (*Note, bool, error) {
 
 // NotesByDigests retrieves multiple Notes by their digests from the note store in a single operation.
 // Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NotesByDigests(digests []revIdxStore.DigestSymbol) ([]*Note, bool, error) {
+func (v *View) NotesByDigests(digests []digestmaps.DigestSymbol) ([]*Note, bool, error) {
 	if v.noteStore == nil {
 		return nil, false, ErrNotesNotInitialized
 	}
@@ -493,7 +492,7 @@ func (v *View) PromoteNote(n *Note) bool {
 	if n == nil || v.activeNotes == nil {
 		return false
 	}
-	_, advanced := v.activeNotes.AddItem(versionvector.VersionedItem[*Note]{
+	_, advanced := v.activeNotes.AddItem(digestmaps.VersionedItem[*Note]{
 		Item:    n,
 		Version: n.epoch,
 	})
@@ -512,7 +511,7 @@ func (v *View) PromoteAccusation(a *Accusation) bool {
 	if activeNote, ok := v.ActiveNote(a.accused); ok && a.epoch < activeNote.epoch {
 		return false
 	}
-	_, advanced := v.activeAccusations.AddItem(versionvector.VersionedItem[*Accusation]{
+	_, advanced := v.activeAccusations.AddItem(digestmaps.VersionedItem[*Accusation]{
 		Item:    a,
 		Version: a.epoch,
 	})
@@ -520,21 +519,21 @@ func (v *View) PromoteAccusation(a *Accusation) bool {
 }
 
 // ActiveNoteFingerprint returns the XOR fingerprint of the active notes version vector.
-func (v *View) ActiveNoteFingerprint() revIdxStore.DigestSymbol {
+func (v *View) ActiveNoteFingerprint() digestmaps.DigestSymbol {
 	if v.activeNotes == nil {
 		return 0
 	}
 	return v.activeNotes.Fingerprint()
 }
 
-func (v *View) recordNote(n *Note) (revIdxStore.DigestSymbol, bool) {
+func (v *View) recordNote(n *Note) (digestmaps.DigestSymbol, bool) {
 	if n == nil {
 		return 0, false
 	}
 	d, inserted := v.noteStore.Insert(n)
 
 	if v.activeNotes != nil {
-		v.activeNotes.AddItem(versionvector.VersionedItem[*Note]{
+		v.activeNotes.AddItem(digestmaps.VersionedItem[*Note]{
 			Item:    n,
 			Version: n.epoch,
 		})
@@ -593,12 +592,12 @@ func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, e
 }
 
 // ViewStore returns the underlying ReverseIndexStore backing the full view.
-func (v *View) ViewStore() revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol] {
+func (v *View) ViewStore() digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol] {
 	return v.viewStore
 }
 
 // LiveStore returns the underlying ReverseIndexStore backing the live view.
-func (v *View) LiveStore() revIdxStore.ReverseIndexStore[*Peer, revIdxStore.DigestSymbol] {
+func (v *View) LiveStore() digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol] {
 	return v.liveStore
 }
 
@@ -1068,12 +1067,12 @@ func hasBit(n uint32, pos uint32) bool {
 }
 
 // AccusationStore returns the underlying ReverseIndexStore for accusations.
-func (v *View) AccusationStore() revIdxStore.ReverseIndexStore[*Accusation, revIdxStore.DigestSymbol] {
+func (v *View) AccusationStore() digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol] {
 	return v.accusationStore
 }
 
 // AccusationFingerprint returns the XOR fingerprint representing the entire accusation set.
-func (v *View) AccusationFingerprint() revIdxStore.DigestSymbol {
+func (v *View) AccusationFingerprint() digestmaps.DigestSymbol {
 	return v.accusationStore.Fingerprint()
 }
 
@@ -1202,7 +1201,7 @@ func (v *View) RingAccusation(accusedId string, ringNum uint32) *Accusation {
 }
 
 // ActiveAccusationFingerprint returns the XOR fingerprint of the active accusations version vector.
-func (v *View) ActiveAccusationFingerprint() revIdxStore.DigestSymbol {
+func (v *View) ActiveAccusationFingerprint() digestmaps.DigestSymbol {
 	if v.activeAccusations == nil {
 		return 0
 	}

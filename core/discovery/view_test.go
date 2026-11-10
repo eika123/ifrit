@@ -14,7 +14,7 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1133,14 +1133,14 @@ func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
 	require.NoError(suite.T(), err)
 
 	// Both start with empty accusation stores -> fingerprint 0
-	assert.Equal(suite.T(), revIdxStore.DigestSymbol(0), v1.AccusationFingerprint())
-	assert.Equal(suite.T(), revIdxStore.DigestSymbol(0), v2.AccusationFingerprint())
+	assert.Equal(suite.T(), digestmaps.DigestSymbol(0), v1.AccusationFingerprint())
+	assert.Equal(suite.T(), digestmaps.DigestSymbol(0), v2.AccusationFingerprint())
 
 	// Add accusation to v1
 	err = v1.AddAccusation("peerX", "peerY", 1, 1, []byte("r"), []byte("s"))
 	require.NoError(suite.T(), err)
 	fp1 := v1.AccusationFingerprint()
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), fp1)
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), fp1)
 
 	// Add same accusation to v2
 	err = v2.AddAccusation("peerX", "peerY", 1, 1, []byte("r"), []byte("s"))
@@ -1152,7 +1152,7 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	v := suite.v
 	initialFP, err := v.Fingerprint()
 	require.NoError(suite.T(), err)
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), initialFP, "Initial fingerprint must include self note")
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), initialFP, "Initial fingerprint must include self note")
 
 	// Create a test peer
 	p := &Peer{Id: "test-peer-1"}
@@ -1201,7 +1201,7 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	assert.True(suite.T(), foundSingle)
 	assert.NotNil(suite.T(), singleNote)
 
-	batchNotes, allFound, err := v.NotesByDigests([]revIdxStore.DigestSymbol{d1, d2})
+	batchNotes, allFound, err := v.NotesByDigests([]digestmaps.DigestSymbol{d1, d2})
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), allFound)
 	assert.Len(suite.T(), batchNotes, 2)
@@ -1232,7 +1232,7 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	_, _, err = uninitV.NoteByDigest(123)
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
-	_, _, err = uninitV.NotesByDigests([]revIdxStore.DigestSymbol{123})
+	_, _, err = uninitV.NotesByDigests([]digestmaps.DigestSymbol{123})
 	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 
 	_, err = uninitV.AddNote(p, 1, 1, []byte("r"), []byte("s"))
@@ -1251,11 +1251,11 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 
 	certFP, err := v.CertFingerprint()
 	require.NoError(suite.T(), err)
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), certFP)
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), certFP)
 
 	noteFP, err := v.NoteFingerprint()
 	require.NoError(suite.T(), err)
-	assert.NotEqual(suite.T(), revIdxStore.DigestSymbol(0), noteFP)
+	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), noteFP)
 
 	// Combined view fingerprint equals NoteFP ^ CertFP
 	combinedFP, err := v.Fingerprint()
@@ -1315,6 +1315,6 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 	_, _, err = uninitV.CertByDigest(123)
 	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
 
-	_, _, err = uninitV.CertsByDigests([]revIdxStore.DigestSymbol{123})
+	_, _, err = uninitV.CertsByDigests([]digestmaps.DigestSymbol{123})
 	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
 }

@@ -7,8 +7,8 @@ import (
 
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/joonnna/ifrit/digestmaps"
 	proto "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
 
 func (suite *HandlerTestSuite) TestSpread_InSyncAccusationsReturnsZeroAccusations() {
@@ -156,7 +156,7 @@ func (suite *HandlerTestSuite) TestSpread_DataDigestReconciliationOmitsBulkBytes
 	succ, _ := node.view.MyRingNeighbours(1)
 	ctx := peerContext(succ)
 
-	store, err := revIdxStore.NewDigestSet[uint64, DigestSymbol](func(elem uint64) DigestSymbol {
+	store, err := digestmaps.NewDigestSet[uint64, DigestSymbol](func(elem uint64) DigestSymbol {
 		return DigestSymbol(elem)
 	})
 	require.NoError(suite.T(), err)
@@ -198,7 +198,7 @@ func (suite *HandlerTestSuite) TestSpread_DataReconciliationWithTypedDataStore()
 		return DigestSymbol(len(item.ID)*1000 + len(item.Data))
 	}
 
-	store, err := revIdxStore.NewDigestSet[testItem, DigestSymbol](hasher)
+	store, err := digestmaps.NewDigestSet[testItem, DigestSymbol](hasher)
 	require.NoError(suite.T(), err)
 
 	store.AddElement(testItem{ID: "item1", Data: "alpha"})
@@ -387,4 +387,3 @@ func (suite *HandlerTestSuite) TestSpread_CrossedWiresTieBreaker() {
 	require.Equal(suite.T(), SessionAwaitingStream, sess.State())
 	require.Greater(suite.T(), sess.Seq(), seqOut)
 }
-

@@ -17,8 +17,8 @@ import (
 
 	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,11 +158,11 @@ func TestSync_TwoNodeDataConvergence(t *testing.T) {
 
 	// 1. Set up data store on Node A and Node B
 	t.Log("Setting up data stores")
-	storeA, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 
@@ -218,11 +218,11 @@ func TestSync_BidirectionalMutualConvergence(t *testing.T) {
 	peerAOnB, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
 
 	// Set up stores
-	storeA, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 
@@ -281,11 +281,11 @@ func TestSync_TelemetryAccountingDuringConvergence(t *testing.T) {
 	require.NotNil(t, peerAOnB)
 	require.NotNil(t, peerBOnA)
 
-	storeA, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 

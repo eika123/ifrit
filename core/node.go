@@ -14,8 +14,8 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/joonnna/workerpool"
 	"github.com/spf13/viper"
 )
@@ -88,8 +88,8 @@ type Node struct {
 
 	fd *failureDetector
 
-	comm commService
-	cs   cryptoService
+	comm      commService
+	cs        cryptoService
 	idCatalog NodeIdentityCatalog
 
 	useViz bool
@@ -191,12 +191,12 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		entryAddrs:             viper.GetStringSlice("entry_addrs"),
 		ringsPingedPerInterval: perInterval,
 
-		fd:   newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),
+		fd:        newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),
 		idCatalog: idCatalog,
-		cs:   cs,
-		comm: comm,
-		self: v.Self(),
-		view: v,
+		cs:        cs,
+		comm:      comm,
+		self:      v.Self(),
+		view:      v,
 
 		sessionManager: NewPeerSessionManager(staleTimeout),
 		reconProtocol:  protoDef,
@@ -314,7 +314,7 @@ func (n *Node) FingerprintData() []byte {
 	return nil
 }
 
-func (n *Node) AccusationFingerprint() revIdxStore.DigestSymbol {
+func (n *Node) AccusationFingerprint() digestmaps.DigestSymbol {
 	return n.view.AccusationFingerprint()
 }
 
@@ -325,7 +325,7 @@ func (n *Node) AccusationFingerprintBytes() []byte {
 	return buf[:]
 }
 
-func (n *Node) ViewFingerprint() revIdxStore.DigestSymbol {
+func (n *Node) ViewFingerprint() digestmaps.DigestSymbol {
 	fp, err := n.view.Fingerprint()
 	if err != nil {
 		log.Error("Failed to get view fingerprint", "err", err)
@@ -363,17 +363,17 @@ func (n *Node) DivergentSets(p *discovery.Peer) (dataDiff, accDiff, viewDiff boo
 }
 
 // AccusationDigests returns the digest symbols of all local accusations.
-func (n *Node) AccusationDigests() []revIdxStore.DigestSymbol {
+func (n *Node) AccusationDigests() []digestmaps.DigestSymbol {
 	return n.view.AccusationStore().DigestsCopy()
 }
 
 // AccusationDigestsUint64 returns the 64-bit uint64 digests of all local accusations for wire serialization.
 func (n *Node) AccusationDigestsUint64() []uint64 {
-	return revIdxStore.AsUint64Slice(n.AccusationDigests())
+	return digestmaps.AsUint64Slice(n.AccusationDigests())
 }
 
 // NoteDigests returns the digest symbols of all local notes in the version vector.
-func (n *Node) NoteDigests() []revIdxStore.DigestSymbol {
+func (n *Node) NoteDigests() []digestmaps.DigestSymbol {
 	digests, err := n.view.NoteDigests()
 	if err != nil {
 		log.Error("Failed to get note digests", "err", err)
@@ -384,16 +384,16 @@ func (n *Node) NoteDigests() []revIdxStore.DigestSymbol {
 
 // NoteDigestsUint64 returns the 64-bit uint64 digests of all local notes in the version vector for wire serialization.
 func (n *Node) NoteDigestsUint64() []uint64 {
-	return revIdxStore.AsUint64Slice(n.NoteDigests())
+	return digestmaps.AsUint64Slice(n.NoteDigests())
 }
 
 // CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (n *Node) CertStore() revIdxStore.ReverseIndexStore[*pki.Certificate, revIdxStore.DigestSymbol] {
+func (n *Node) CertStore() digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol] {
 	return n.view.CertStore()
 }
 
 // CertFingerprint returns the commutative XOR fingerprint of all certificates in the view.
-func (n *Node) CertFingerprint() revIdxStore.DigestSymbol {
+func (n *Node) CertFingerprint() digestmaps.DigestSymbol {
 	fp, err := n.view.CertFingerprint()
 	if err != nil {
 		log.Error("Failed to get cert fingerprint", "err", err)
@@ -415,7 +415,7 @@ func (n *Node) CertFingerprintBytes() []byte {
 }
 
 // CertDigests returns the digest symbols of all local certificates.
-func (n *Node) CertDigests() []revIdxStore.DigestSymbol {
+func (n *Node) CertDigests() []digestmaps.DigestSymbol {
 	digests, err := n.view.CertDigests()
 	if err != nil {
 		log.Error("Failed to get cert digests", "err", err)
@@ -426,11 +426,11 @@ func (n *Node) CertDigests() []revIdxStore.DigestSymbol {
 
 // CertDigestsUint64 returns the 64-bit uint64 digests of all local certificates for wire serialization.
 func (n *Node) CertDigestsUint64() []uint64 {
-	return revIdxStore.AsUint64Slice(n.CertDigests())
+	return digestmaps.AsUint64Slice(n.CertDigests())
 }
 
 // DataDigests returns the local digest symbols, or nil if no reconciler is registered.
-func (n *Node) DataDigests() []revIdxStore.DigestSymbol {
+func (n *Node) DataDigests() []digestmaps.DigestSymbol {
 	n.dataReconcilerMutex.RLock()
 	defer n.dataReconcilerMutex.RUnlock()
 	if n.dataReconciler != nil {
@@ -441,7 +441,7 @@ func (n *Node) DataDigests() []revIdxStore.DigestSymbol {
 
 // DataDigestsUint64 returns the local 64-bit uint64 data digests, or nil if no provider is registered.
 func (n *Node) DataDigestsUint64() []uint64 {
-	return revIdxStore.AsUint64Slice(n.DataDigests())
+	return digestmaps.AsUint64Slice(n.DataDigests())
 }
 
 // SessionManager returns the peer reconciliation session manager.
@@ -465,12 +465,12 @@ func (n *Node) GetDataReconciler() DataReconciler {
 
 // RegisterDataStore registers an application's typed data store on the node,
 // wrapping it into a DataReconciler using the default item codec and default session factory.
-func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, revIdxStore.DigestSymbol]) {
+func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, digestmaps.DigestSymbol]) {
 	RegisterDataStoreWithCodec(n, store, DefaultItemCodec[T]())
 }
 
 // RegisterDataStoreWithCodec registers an application's typed data store on the node with a custom ItemCodec.
-func RegisterDataStoreWithCodec[T any](n *Node, store ReverseIndexStore[T, revIdxStore.DigestSymbol], codec ItemCodec[T]) {
+func RegisterDataStoreWithCodec[T any](n *Node, store ReverseIndexStore[T, digestmaps.DigestSymbol], codec ItemCodec[T]) {
 	if n == nil {
 		return
 	}

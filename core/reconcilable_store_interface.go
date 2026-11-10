@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/proto"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
+	"github.com/joonnna/ifrit/digestmaps"
 )
 
 var (
@@ -172,41 +172,41 @@ func DefaultItemCodec[T any]() ItemCodec[T] {
 
 // DataReconciler provides a type-erased reconciliation interface for arbitrary application data stores.
 type DataReconciler interface {
-	Digests() []revIdxStore.DigestSymbol
-	Fingerprint() revIdxStore.DigestSymbol
-	Reconcile(incomingDigests []revIdxStore.DigestSymbol) (localMissingOnCaller, remoteMissingLocally []revIdxStore.DigestSymbol, err error)
+	Digests() []digestmaps.DigestSymbol
+	Fingerprint() digestmaps.DigestSymbol
+	Reconcile(incomingDigests []digestmaps.DigestSymbol) (localMissingOnCaller, remoteMissingLocally []digestmaps.DigestSymbol, err error)
 
 	// OpenItemReader retrieves an item by digest and returns an io.ReadCloser for its encoded stream and total size hint.
 	// If the item does not exist, it returns (nil, 0, false, nil).
-	OpenItemReader(d revIdxStore.DigestSymbol) (rc io.ReadCloser, sizeHint int64, ok bool, err error)
+	OpenItemReader(d digestmaps.DigestSymbol) (rc io.ReadCloser, sizeHint int64, ok bool, err error)
 
 	// IngestItem decodes an item from r, validates that its computed digest equals expected,
 	// and inserts it into the underlying store. If the digest mismatches or decoding fails,
 	// the store is not modified and an error is returned.
-	IngestItem(expected revIdxStore.DigestSymbol, r io.Reader) error
+	IngestItem(expected digestmaps.DigestSymbol, r io.Reader) error
 }
 
 type typedDataReconciler[T any] struct {
-	store       ReverseIndexStore[T, revIdxStore.DigestSymbol]
+	store       ReverseIndexStore[T, digestmaps.DigestSymbol]
 	codec       ItemCodec[T]
-	constructor SessionConstructor[T, revIdxStore.DigestSymbol]
+	constructor SessionConstructor[T, digestmaps.DigestSymbol]
 }
 
-func (r *typedDataReconciler[T]) Digests() []revIdxStore.DigestSymbol {
+func (r *typedDataReconciler[T]) Digests() []digestmaps.DigestSymbol {
 	if r.store == nil {
 		return nil
 	}
 	return r.store.DigestsCopy()
 }
 
-func (r *typedDataReconciler[T]) Fingerprint() revIdxStore.DigestSymbol {
+func (r *typedDataReconciler[T]) Fingerprint() digestmaps.DigestSymbol {
 	if r.store == nil {
 		return 0
 	}
 	return r.store.Fingerprint()
 }
 
-func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestSymbol) ([]revIdxStore.DigestSymbol, []revIdxStore.DigestSymbol, error) {
+func (r *typedDataReconciler[T]) Reconcile(incomingDigests []digestmaps.DigestSymbol) ([]digestmaps.DigestSymbol, []digestmaps.DigestSymbol, error) {
 	if r.store == nil {
 		return nil, nil, ErrNilStore
 	}
@@ -218,7 +218,7 @@ func (r *typedDataReconciler[T]) Reconcile(incomingDigests []revIdxStore.DigestS
 	return session.LocalDigests(), session.RemoteDigests(), nil
 }
 
-func (r *typedDataReconciler[T]) OpenItemReader(d revIdxStore.DigestSymbol) (io.ReadCloser, int64, bool, error) {
+func (r *typedDataReconciler[T]) OpenItemReader(d digestmaps.DigestSymbol) (io.ReadCloser, int64, bool, error) {
 	if r.store == nil {
 		return nil, 0, false, ErrNilStore
 	}
@@ -246,7 +246,7 @@ func (r *typedDataReconciler[T]) OpenItemReader(d revIdxStore.DigestSymbol) (io.
 	return io.NopCloser(bytes.NewReader(buf.Bytes())), int64(buf.Len()), true, nil
 }
 
-func (r *typedDataReconciler[T]) IngestItem(expected revIdxStore.DigestSymbol, reader io.Reader) error {
+func (r *typedDataReconciler[T]) IngestItem(expected digestmaps.DigestSymbol, reader io.Reader) error {
 	if r.store == nil {
 		return ErrNilStore
 	}
@@ -268,8 +268,8 @@ func (r *typedDataReconciler[T]) IngestItem(expected revIdxStore.DigestSymbol, r
 // NewTypedDataReconciler wraps an application's typed store into a DataReconciler
 // using DefaultItemCodec[T]() and the configured or default session constructor.
 func NewTypedDataReconciler[T any](
-	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
-	constructor ...SessionConstructor[T, revIdxStore.DigestSymbol],
+	store ReverseIndexStore[T, digestmaps.DigestSymbol],
+	constructor ...SessionConstructor[T, digestmaps.DigestSymbol],
 ) DataReconciler {
 	return NewTypedDataReconcilerWithCodec(store, DefaultItemCodec[T](), constructor...)
 }
@@ -279,14 +279,14 @@ func NewTypedDataReconciler[T any](
 // If codec is nil, DefaultItemCodec[T]() is used.
 // If constructor is omitted or nil, it defaults to the configured default session constructor.
 func NewTypedDataReconcilerWithCodec[T any](
-	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
+	store ReverseIndexStore[T, digestmaps.DigestSymbol],
 	codec ItemCodec[T],
-	constructor ...SessionConstructor[T, revIdxStore.DigestSymbol],
+	constructor ...SessionConstructor[T, digestmaps.DigestSymbol],
 ) DataReconciler {
 	if codec == nil {
 		codec = DefaultItemCodec[T]()
 	}
-	var c SessionConstructor[T, revIdxStore.DigestSymbol]
+	var c SessionConstructor[T, digestmaps.DigestSymbol]
 	if len(constructor) > 0 && constructor[0] != nil {
 		c = constructor[0]
 	} else {

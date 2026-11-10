@@ -1,4 +1,4 @@
-package versionvector
+package digestmaps
 
 import (
 	"maps"
@@ -12,8 +12,8 @@ type versionVectorImmutable[T any, S Symbol[S]] struct {
 	fingerprint S
 }
 
-// NewVersionVector creates a thread-safe VersionVector initialized with an item hasher function.
-func NewVersionVector[T any, S Symbol[S]](hasher ItemHasher[T, S]) VersionVectorImmutable[T, S] {
+// NewVersionVectorImmutable creates a thread-safe VersionVectorImmutable initialized with an item hasher function.
+func NewVersionVectorImmutable[T any, S Symbol[S]](hasher ItemHasher[T, S]) VersionVectorImmutable[T, S] {
 	return &versionVectorImmutable[T, S]{
 		hasher: hasher,
 		items:  make(map[S]VersionedItem[T]),
@@ -52,8 +52,8 @@ func (vv *versionVectorImmutable[T, S]) GetByDigests(digests []S) ([]VersionedIt
 }
 
 func (vv *versionVectorImmutable[T, S]) AddItem(item VersionedItem[T]) VersionVectorImmutable[T, S] {
-	vv.mu.Lock()
-	defer vv.mu.Unlock()
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
 
 	digest := vv.hasher(item)
 	if _, exists := vv.items[digest]; exists {
@@ -80,8 +80,8 @@ func (vv *versionVectorImmutable[T, S]) ContainsDigest(digest S) bool {
 }
 
 func (vv *versionVectorImmutable[T, S]) Remove(digest S) (VersionVectorImmutable[T, S], bool) {
-	vv.mu.Lock()
-	defer vv.mu.Unlock()
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
 
 	_, found := vv.items[digest]
 	if !found {

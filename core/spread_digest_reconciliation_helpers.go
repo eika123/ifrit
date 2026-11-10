@@ -6,8 +6,8 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -87,11 +87,11 @@ func (n *Node) computeControlDeltas(remoteId string, args *pb.State, reply *pb.S
 
 // computeStoreDeltas runs a generic set difference computation against store using the provided constructor closure.
 func computeStoreDeltas[T any](
-	store ReverseIndexStore[T, revIdxStore.DigestSymbol],
+	store ReverseIndexStore[T, digestmaps.DigestSymbol],
 	callerFingerprint []byte,
 	localFingerprint []byte,
 	incomingDigests []uint64,
-	constructor SessionConstructor[T, revIdxStore.DigestSymbol],
+	constructor SessionConstructor[T, digestmaps.DigestSymbol],
 ) (localDelta []T, localDigests, requestedDigests []uint64, err error) {
 	if callerFingerprint == nil || bytes.Equal(callerFingerprint, localFingerprint) || store == nil {
 		return nil, nil, nil, nil
@@ -105,10 +105,10 @@ func computeStoreDeltas[T any](
 		return nil, nil, nil, err
 	}
 
-	incomingSymbols := revIdxStore.AsDigestSymbols(incomingDigests)
+	incomingSymbols := digestmaps.AsDigestSymbols(incomingDigests)
 	delta, locDigs, reqDigs := ReconcileStoreWithSession(session, incomingSymbols)
 
-	return delta, revIdxStore.AsUint64Slice(locDigs), revIdxStore.AsUint64Slice(reqDigs), nil
+	return delta, digestmaps.AsUint64Slice(locDigs), digestmaps.AsUint64Slice(reqDigs), nil
 }
 
 func (n *Node) computeCertificateDeltas(args *pb.State, reply *pb.StateResponse) bool {
@@ -198,13 +198,13 @@ func (n *Node) computeDataDeltas(args *pb.State, reply *pb.StateResponse) bool {
 			return false
 		}
 
-		localDiff, remoteDiff, err := reconciler.Reconcile(revIdxStore.AsDigestSymbols(args.GetDataDigests()))
+		localDiff, remoteDiff, err := reconciler.Reconcile(digestmaps.AsDigestSymbols(args.GetDataDigests()))
 		if err != nil {
 			log.Error("Failed to compute data deltas", "err", err)
 			return false
 		}
-		reply.RequestedDataDigests = revIdxStore.AsUint64Slice(remoteDiff)
-		reply.AvailableDataDigests = revIdxStore.AsUint64Slice(localDiff)
+		reply.RequestedDataDigests = digestmaps.AsUint64Slice(remoteDiff)
+		reply.AvailableDataDigests = digestmaps.AsUint64Slice(localDiff)
 		return len(localDiff) > 0 || len(remoteDiff) > 0
 	}
 	return false

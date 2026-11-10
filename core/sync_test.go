@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 )
 
 type mockSyncStream struct {
@@ -281,12 +281,12 @@ func TestSync_QuotaCompleted_SubsequentHeaderRejected(t *testing.T) {
 	node := &Node{}
 	cfg := DefaultSyncConfig()
 
-	store, err := revIdxStore.NewDigestSet(revIdxStore.MustDefaultHasher[string]())
+	store, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(node, store)
 
 	item := "record-for-sync-1"
-	hasher := revIdxStore.MustDefaultHasher[string]()
+	hasher := digestmaps.MustDefaultHasher[string]()
 	expectedDigest := uint64(hasher(item))
 
 	deltas := ReconcileDeltas{
@@ -324,8 +324,7 @@ func TestSync_QuotaCompleted_SubsequentHeaderRejected(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrUnexpectedSyncFrame), "must reject second item with ErrUnexpectedSyncFrame once quota fulfilled: %v", err)
 
 	// Verify first item was ingested before stream was rejected
-	val, ok := store.GetByDigest(revIdxStore.DigestSymbol(expectedDigest))
+	val, ok := store.GetByDigest(digestmaps.DigestSymbol(expectedDigest))
 	assert.True(t, ok)
 	assert.Equal(t, item, val)
 }
-

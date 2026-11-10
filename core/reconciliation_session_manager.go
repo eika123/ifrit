@@ -8,19 +8,19 @@ import (
 
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/joonnna/ifrit/digestmaps"
 	pb "github.com/joonnna/ifrit/protobuf"
-	revIdxStore "github.com/joonnna/ifrit/reverseindexstore"
 	"github.com/spf13/viper"
 )
 
 // ErrNilStore indicates that a nil store was provided where an active store is required.
 var ErrNilStore = errors.New("store cannot be nil")
 
-// Symbol is aliased from revIdxStore.Symbol.
-type Symbol[S any] = revIdxStore.Symbol[S]
+// Symbol is aliased from digestmaps.Symbol.
+type Symbol[S any] = digestmaps.Symbol[S]
 
-// ReverseIndexStore is aliased from revIdxStore.ReverseIndexStore.
-type ReverseIndexStore[T any, S Symbol[S]] = revIdxStore.ReverseIndexStore[T, S]
+// ReverseIndexStore is aliased from digestmaps.ReverseIndexStore.
+type ReverseIndexStore[T any, S Symbol[S]] = digestmaps.ReverseIndexStore[T, S]
 
 // ReconcilerSession represents an active set reconciliation session between two peers.
 type ReconcilerSession[T, S any] interface {
@@ -44,9 +44,9 @@ type SessionConstructor[T any, S Symbol[S]] func(store ReverseIndexStore[T, S]) 
 type ProtocolDefinition struct {
 	Name           string
 	Description    string
-	NewCertSession SessionConstructor[*pki.Certificate, revIdxStore.DigestSymbol]
-	NewNoteSession SessionConstructor[*discovery.Note, revIdxStore.DigestSymbol]
-	NewAccSession  SessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol]
+	NewCertSession SessionConstructor[*pki.Certificate, digestmaps.DigestSymbol]
+	NewNoteSession SessionConstructor[*discovery.Note, digestmaps.DigestSymbol]
+	NewAccSession  SessionConstructor[*discovery.Accusation, digestmaps.DigestSymbol]
 }
 
 var (
@@ -113,15 +113,15 @@ func ResolveProtocol(name string) ProtocolDefinition {
 	return ProtocolDefinition{
 		Name:           "naive",
 		Description:    "Naive full set exchange",
-		NewCertSession: NaiveSessionConstructor[*pki.Certificate, revIdxStore.DigestSymbol](),
-		NewNoteSession: NaiveSessionConstructor[*discovery.Note, revIdxStore.DigestSymbol](),
-		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, revIdxStore.DigestSymbol](),
+		NewCertSession: NaiveSessionConstructor[*pki.Certificate, digestmaps.DigestSymbol](),
+		NewNoteSession: NaiveSessionConstructor[*discovery.Note, digestmaps.DigestSymbol](),
+		NewAccSession:  NaiveSessionConstructor[*discovery.Accusation, digestmaps.DigestSymbol](),
 	}
 }
 
 // DefaultSessionConstructor returns the default session constructor for arbitrary store of T and DigestSymbol.
 // It resolves the constructor from the configured default protocol (e.g. from viper or package default).
-func DefaultSessionConstructor[T any]() SessionConstructor[T, revIdxStore.DigestSymbol] {
+func DefaultSessionConstructor[T any]() SessionConstructor[T, digestmaps.DigestSymbol] {
 	protoName := DefaultProtocolName()
 	switch protoName {
 	case "riblt", "rateless_iblt":
@@ -129,7 +129,7 @@ func DefaultSessionConstructor[T any]() SessionConstructor[T, revIdxStore.Digest
 	case "naive", "":
 		fallthrough
 	default:
-		return NaiveSessionConstructor[T, revIdxStore.DigestSymbol]()
+		return NaiveSessionConstructor[T, digestmaps.DigestSymbol]()
 	}
 }
 
