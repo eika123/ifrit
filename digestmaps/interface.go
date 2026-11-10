@@ -123,29 +123,34 @@ type ItemHasher[T any, S Symbol[S]] func(item VersionedItem[T]) S
 
 // VersionVectorImmutable defines the generic interface for an immutable version vector
 // with incremental 64-bit commutative XOR fingerprinting.
+// Key type K is decoupled from Symbol type S, allowing arbitrary comparable identity keys (e.g. string, struct).
 // Any mutation returns a completely new VersionVectorImmutable instance.
-type VersionVectorImmutable[T any, S Symbol[S]] interface {
-	// AddItem returns a new VersionVectorImmutable containing the added or updated versioned item.
-	AddItem(item VersionedItem[T]) VersionVectorImmutable[T, S]
+type VersionVectorImmutable[K comparable, T any, S Symbol[S]] interface {
+	// AddItem applies an item with a given version number.
+	// Returns a new VersionVectorImmutable and true if the item was added or upgraded (new version > current version).
+	// Returns the unmodified instance and false if an existing entry has an equal or newer version.
+	AddItem(item VersionedItem[T]) (VersionVectorImmutable[K, T, S], bool)
 
-	// GetByDigest retrieves an item by its digest in O(1) time.
-	GetByDigest(digest S) (item VersionedItem[T], found bool)
+	GetOne(key K) (item VersionedItem[T], found bool)
 
-	// GetByDigests retrieves multiple items by their digests in a single operation.
-	// Returns a slice of all found items and true if every requested digest was found,
-	// or false if one or more digests were missing.
-	GetByDigests(digests []S) (items []VersionedItem[T], found bool)
+	GetMany(keys []K) (items []VersionedItem[T])
 
-	// ContainsDigest reports whether an item with the given digest exists.
-	ContainsDigest(digest S) bool
+	// ContainsKey reports whether an entry for key exists.
+	ContainsKey(key K) bool
 
-	// Remove evicts an item by its digest, returning a new VersionVectorImmutable and true if present.
-	Remove(digest S) (VersionVectorImmutable[T, S], bool)
+	// ContainsKeyVersion reports whether an entry for key exists with the specified version.
+	ContainsKeyVersion(key K, version uint64) bool
+
+	// Remove evicts an item by key, subtracting its digest from the fingerprint.
+	// Returns a new VersionVectorImmutable and true if present; otherwise returns unmodified instance and false.
+	Remove(key K) (VersionVectorImmutable[K, T, S], bool)
+
+	RemoveVersion(key K, version uint64) (VersionVectorImmutable[K, T, S], bool)
 
 	// Fingerprint returns the current cumulative XOR fingerprint in O(1).
 	Fingerprint() S
 
-	// Size returns the count of active items.
+	// Size returns the count of active identity slots.
 	Size() int
 
 	// Empty reports whether the version vector contains no items.
@@ -153,6 +158,9 @@ type VersionVectorImmutable[T any, S Symbol[S]] interface {
 
 	// Elements returns all current items as a slice.
 	Elements() []VersionedItem[T]
+
+	// Versions returns a map of all keys and their latest version numbers.
+	Versions() map[K]uint64
 
 	// DigestsCopy returns a slice of all digests currently contributing to the fingerprint.
 	DigestsCopy() []S

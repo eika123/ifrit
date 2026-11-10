@@ -2,139 +2,163 @@ package digestmaps
 
 import (
 	"maps"
-	"sync"
 )
 
-type versionVectorImmutable[T any, S Symbol[S]] struct {
-	mu          sync.RWMutex
+type versionVectorImmutable[K comparable, T any, S Symbol[S]] struct {
+	keyFunc     KeyExtractor[T, K]
 	hasher      ItemHasher[T, S]
-	items       map[S]VersionedItem[T]
+	items       map[K]*VersionedItem[T]
 	fingerprint S
 }
 
-// NewVersionVectorImmutable creates a thread-safe VersionVectorImmutable initialized with an item hasher function.
-func NewVersionVectorImmutable[T any, S Symbol[S]](hasher ItemHasher[T, S]) VersionVectorImmutable[T, S] {
-	return &versionVectorImmutable[T, S]{
-		hasher: hasher,
-		items:  make(map[S]VersionedItem[T]),
+// NewVersionVectorImmutable creates a persistent VersionVectorImmutable initialized with key and digest hasher functions.
+func NewVersionVectorImmutable[K comparable, T any, S Symbol[S]](keyFunc KeyExtractor[T, K], hasher ItemHasher[T, S]) VersionVectorImmutable[K, T, S] {
+	return &versionVectorImmutable[K, T, S]{
+		keyFunc: keyFunc,
+		hasher:  hasher,
+		items:   make(map[K]*VersionedItem[T]),
 	}
 }
 
-// GetByDigest retrieves an item by its digest in O(1) time.
-func (vv *versionVectorImmutable[T, S]) GetByDigest(digest S) (VersionedItem[T], bool) {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-	entry, exists := vv.items[digest]
+func (vv *versionVectorImmutable[K, T, S]) AddItem(versionedItem VersionedItem[T]) (VersionVectorImmutable[K, T, S], bool) {
+	key := vv.keyFunc(versionedItem.Item)
+	versionNumber := versionedItem.Version
+
+	curr, exists := vv.items[key]
+	if exists && versionNumber <= curr.Version {
+		return vv, false
+	}
+
+	newItems := make(map[K]*VersionedItem[T], len(vv.items)+1)
+	maps.Copy(newItems, vv.items)
+
+	newFP := vv.fingerprint
 	if exists {
-		return entry, true
-	} else {
+		// XOR out previous version's digest
+		currDigest := vv.hasher(*curr)
+		newFP = newFP.XOR(currDigest)
+	}
+
+	digest := vv.hasher(versionedItem)
+	newFP = newFP.XOR(digest)
+
+	newItems[key] = &VersionedItem[T]{
+		Item:    versionedItem.Item,
+		Version: versionNumber,
+	}
+
+	return &versionVectorImmutable[K, T, S]{
+		keyFunc:     vv.keyFunc,
+		hasher:      vv.hasher,
+		items:       newItems,
+		fingerprint: newFP,
+	}, true
+}
+
+func (vv *versionVectorImmutable[K, T, S]) GetOne(key K) (VersionedItem[T], bool) {
+	entry, exists := vv.items[key]
+	if !exists {
 		var zero VersionedItem[T]
 		return zero, false
 	}
+	return *entry, true
 }
 
-// GetByDigests retrieves multiple items by their digests in a single operation under one read lock.
-func (vv *versionVectorImmutable[T, S]) GetByDigests(digests []S) ([]VersionedItem[T], bool) {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
-	elements := make([]VersionedItem[T], 0, len(digests))
-	foundAll := true
-	for _, key := range digests {
+func (vv *versionVectorImmutable[K, T, S]) GetMany(keys []K) []VersionedItem[T] {
+	elements := make([]VersionedItem[T], 0, len(keys))
+	for _, key := range keys {
 		entry, exists := vv.items[key]
 		if !exists {
-			foundAll = false
 			continue
 		}
-		elements = append(elements, entry)
+		elements = append(elements, *entry)
 	}
-	return elements, foundAll
+	return elements
 }
 
-func (vv *versionVectorImmutable[T, S]) AddItem(item VersionedItem[T]) VersionVectorImmutable[T, S] {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
-	digest := vv.hasher(item)
-	if _, exists := vv.items[digest]; exists {
-		return vv
-	}
-
-	newItems := make(map[S]VersionedItem[T], len(vv.items)+1)
-	maps.Copy(newItems, vv.items)
-	newItems[digest] = item
-
-	return &versionVectorImmutable[T, S]{
-		hasher:      vv.hasher,
-		items:       newItems,
-		fingerprint: vv.fingerprint.XOR(digest),
-	}
-}
-
-func (vv *versionVectorImmutable[T, S]) ContainsDigest(digest S) bool {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
-	_, found := vv.items[digest]
+func (vv *versionVectorImmutable[K, T, S]) ContainsKey(key K) bool {
+	_, found := vv.items[key]
 	return found
 }
 
-func (vv *versionVectorImmutable[T, S]) Remove(digest S) (VersionVectorImmutable[T, S], bool) {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
-	_, found := vv.items[digest]
+func (vv *versionVectorImmutable[K, T, S]) ContainsKeyVersion(key K, version uint64) bool {
+	entry, found := vv.items[key]
 	if !found {
-		return nil, false
+		return false
+	}
+	return entry.Version == version
+}
+
+func (vv *versionVectorImmutable[K, T, S]) Remove(key K) (VersionVectorImmutable[K, T, S], bool) {
+	entry, found := vv.items[key]
+	if !found {
+		return vv, false
 	}
 
-	newItems := make(map[S]VersionedItem[T], len(vv.items)-1)
+	digest := vv.hasher(*entry)
+	newItems := make(map[K]*VersionedItem[T], len(vv.items)-1)
 	maps.Copy(newItems, vv.items)
-	delete(newItems, digest)
+	delete(newItems, key)
 
-	return &versionVectorImmutable[T, S]{
+	return &versionVectorImmutable[K, T, S]{
+		keyFunc:     vv.keyFunc,
 		hasher:      vv.hasher,
 		items:       newItems,
 		fingerprint: vv.fingerprint.XOR(digest),
 	}, true
 }
 
-func (vv *versionVectorImmutable[T, S]) Fingerprint() S {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
+func (vv *versionVectorImmutable[K, T, S]) RemoveVersion(key K, version uint64) (VersionVectorImmutable[K, T, S], bool) {
+	entry, found := vv.items[key]
+	if !found || entry.Version != version {
+		return vv, false
+	}
+
+	digest := vv.hasher(*entry)
+	newItems := make(map[K]*VersionedItem[T], len(vv.items)-1)
+	maps.Copy(newItems, vv.items)
+	delete(newItems, key)
+
+	return &versionVectorImmutable[K, T, S]{
+		keyFunc:     vv.keyFunc,
+		hasher:      vv.hasher,
+		items:       newItems,
+		fingerprint: vv.fingerprint.XOR(digest),
+	}, true
+}
+
+func (vv *versionVectorImmutable[K, T, S]) Fingerprint() S {
 	return vv.fingerprint
 }
 
-func (vv *versionVectorImmutable[T, S]) Size() int {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
+func (vv *versionVectorImmutable[K, T, S]) Size() int {
 	return len(vv.items)
 }
 
-func (vv *versionVectorImmutable[T, S]) Empty() bool {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
+func (vv *versionVectorImmutable[K, T, S]) Empty() bool {
 	return len(vv.items) == 0
 }
 
-func (vv *versionVectorImmutable[T, S]) Elements() []VersionedItem[T] {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
-
+func (vv *versionVectorImmutable[K, T, S]) Elements() []VersionedItem[T] {
 	elems := make([]VersionedItem[T], 0, len(vv.items))
 	for _, entry := range vv.items {
-		elems = append(elems, entry)
+		elems = append(elems, *entry)
 	}
 	return elems
 }
 
-func (vv *versionVectorImmutable[T, S]) DigestsCopy() []S {
-	vv.mu.RLock()
-	defer vv.mu.RUnlock()
+func (vv *versionVectorImmutable[K, T, S]) Versions() map[K]uint64 {
+	vers := make(map[K]uint64, len(vv.items))
+	for k, entry := range vv.items {
+		vers[k] = entry.Version
+	}
+	return vers
+}
 
+func (vv *versionVectorImmutable[K, T, S]) DigestsCopy() []S {
 	digests := make([]S, 0, len(vv.items))
-	for digest := range vv.items {
-		digests = append(digests, digest)
+	for _, entry := range vv.items {
+		digests = append(digests, vv.hasher(*entry))
 	}
 	return digests
 }
