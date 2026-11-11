@@ -1,6 +1,8 @@
 package core
 
 import (
+	"time"
+
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/ifrit/core/discovery"
 	pb "github.com/joonnna/ifrit/protobuf"
@@ -163,4 +165,51 @@ func (n *Node) monitor() {
 			log.Error(err.Error(), "Monitor -- successor peer addr:", p.Addr)
 		}
 	}
+}
+
+func (n *Node) gossipLoop() {
+	defer n.wg.Done()
+
+	for {
+		select {
+		case <-n.exitChan:
+			log.Info("Exiting gossiping")
+			return
+		case <-time.After(n.getGossipTimeout()):
+			if n.sessionManager != nil {
+				n.sessionManager.SweepStaleSessions()
+			}
+			n.gossip()
+		}
+	}
+}
+
+func (n *Node) monitorLoop() {
+	defer n.wg.Done()
+
+	for {
+		select {
+		case <-n.exitChan:
+			log.Info("Stopping monitoring")
+			return
+		case <-time.After(n.monitorTimeout):
+			n.monitor()
+		}
+	}
+}
+
+// fireflies describes a way to estimate round-trip-times, packet loss etc.
+// This can be used for that
+func (n *Node) setGossipTimeout(timeout int) {
+	n.gossipTimeoutMutex.Lock()
+	defer n.gossipTimeoutMutex.Unlock()
+
+	n.gossipTimeout = (time.Duration(timeout) * time.Second)
+}
+
+func (n *Node) getGossipTimeout() time.Duration {
+	n.gossipTimeoutMutex.RLock()
+	defer n.gossipTimeoutMutex.RUnlock()
+
+	return n.gossipTimeout
 }

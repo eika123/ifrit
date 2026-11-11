@@ -34,6 +34,20 @@ type AdversarialPolicy struct {
 	OnGossipOut func(target *discovery.Peer, msg *pb.State)
 }
 
+func (n *Node) SetAdversarialPolicy(p *AdversarialPolicy) {
+	n.adversaryMutex.Lock()
+	defer n.adversaryMutex.Unlock()
+
+	n.adversary = p
+}
+
+func (n *Node) AdversarialPolicy() *AdversarialPolicy {
+	n.adversaryMutex.RLock()
+	defer n.adversaryMutex.RUnlock()
+
+	return n.adversary
+}
+
 func (a *AdversarialPolicy) shouldSuppressRebuttal(target *discovery.Peer, msg *pb.State) (*pb.State, bool) {
 	if a == nil {
 		return msg, false
@@ -60,4 +74,3 @@ func (a *AdversarialPolicy) shouldSuppressAccusation(target *discovery.Peer, rin
 	}
 	return false
 }
-
