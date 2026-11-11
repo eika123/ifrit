@@ -68,9 +68,9 @@ fi
 # Mode 2: 3-Pane TUI Dashboard (Standard Library Curses via UV / Python)
 if [ "$MODE" = "tui" ]; then
     if command -v uv >/dev/null 2>&1 && [ -d "${REPO_ROOT}/experiments" ]; then
-        exec uv run --directory "${REPO_ROOT}/experiments" python "${REPO_ROOT}/examples/scripts/local_cluster_tui.py"
+        exec uv run --directory "${REPO_ROOT}/experiments" python "${REPO_ROOT}/scripts/local_cluster_tui.py"
     else
-        exec python3 "${REPO_ROOT}/examples/scripts/local_cluster_tui.py"
+        exec python3 "${REPO_ROOT}/scripts/local_cluster_tui.py"
     fi
 fi
 
