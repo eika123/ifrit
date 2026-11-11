@@ -75,7 +75,7 @@ exp-help:
     ./run-experiments.sh --help
 
 [group('experiments')]
-clean:
+clean-results:
     @if [ -d experiments/results ]; then \
         find experiments/results -mindepth 1 -delete; \
         echo "Cleaned experiments/results/"; \
@@ -83,4 +83,16 @@ clean:
         echo "experiments/results/ does not exist."; \
     fi
 
-alias clean-results := clean
+[group('experiments')]
+clean-libpod:
+    rm -rf libpod
+
+[group('experiments')]
+clean-ca-data:
+    rm -rf ifrit-cad
+
+[group('experiments')]
+clean: clean-results clean-libpod
+
+[group('experiments')]
+clean-all: clean clean-ca-data

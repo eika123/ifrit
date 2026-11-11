@@ -39,11 +39,12 @@ vis_backup
 build.sh
 plot.py
 planetlab/cmd_results
-experiment_results
+experiments/results
+libpod
 cmd/_plexperiments
 ifritlog
 *.pem
-ifrit_cad
+ifrit-cad
 ifrit_certs
 ifrit_config.yaml
 logfile
