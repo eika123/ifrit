@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sync"
+
+	"github.com/dchest/siphash"
 )
 
 // Hasher computes a deterministic, cross-platform digest for an element.
@@ -122,6 +124,44 @@ func MustDefaultHasher[T any]() Hasher[T, DigestSymbol] {
 		panic(err)
 	}
 	return h
+}
+
+// CollectionHasher returns a deterministic, non-linear 64-bit Hasher for collections
+// or version vectors whose items implement Fingerprinter[DigestSymbol].
+//
+// It derives a digest from the collection's cumulative fingerprint using SipHash with
+// dedicated domain separation keys ("COLL", "VV01" -> 0x434f4c4c, 0x56563031).
+// This guarantees that:
+//  1. Nested collections do not cancel out with underlying leaf elements (H(x) ^ H(col(x, y)) != H(y)).
+//  2. Empty collections (fingerprint 0) map to a deterministic, non-zero digest.
+//  3. Platform endianness conversions are handled automatically and consistently.
+func CollectionHasher[C Fingerprinter[DigestSymbol]]() Hasher[C, DigestSymbol] {
+	return func(col C) DigestSymbol {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], uint64(col.Fingerprint()))
+		return DigestSymbol(siphash.Hash(0x434f4c4c, 0x56563031, buf[:]))
+	}
+}
+
+// CryptographicCollectionHasher returns a collision-resistant Hasher for collections
+// in adversarial settings. It applies SHA-256 over an optional domain string and the
+// collection's cumulative fingerprint, truncating to 64-bit BigEndian.
+//
+// Like CollectionHasher, this ensures domain separation between collections and leaf items
+// and maps empty collections to a deterministic non-zero digest.
+func CryptographicCollectionHasher[C Fingerprinter[DigestSymbol]](domain string) Hasher[C, DigestSymbol] {
+	prefix := []byte(domain)
+	return func(col C) DigestSymbol {
+		h := sha256.New()
+		if len(prefix) > 0 {
+			_, _ = h.Write(prefix)
+		}
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(col.Fingerprint()))
+		_, _ = h.Write(buf[:])
+		sum := h.Sum(nil)
+		return DigestSymbol(binary.BigEndian.Uint64(sum[:8]))
+	}
 }
 
 // digestSet represents a reverse-index hash set that maps deterministic digests

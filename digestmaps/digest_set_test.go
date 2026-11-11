@@ -63,7 +63,7 @@ func (i itemWithCryptoString) CryptographicIdentity() string {
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[userItem]()
-	s, err := digestmaps.NewDigestSet[userItem, digestmaps.DigestSymbol](hasher)
+	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	u1 := userItem{UserID: "u1", FirstName: "Alice"}
@@ -217,7 +217,7 @@ func TestDigestSet_ByteArrayFastPathAndStoreIntegration(t *testing.T) {
 	assert.NotEqual(t, digestA, digestB)
 
 	// 3. DigestSet integration with []byte
-	store, err := digestmaps.NewDigestSet[[]byte, digestmaps.DigestSymbol](hasher)
+	store, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	added := store.AddElements(blobA, blobB)
@@ -253,7 +253,7 @@ func TestDigestSet_ByteArrayFastPathAndStoreIntegration(t *testing.T) {
 
 func TestDigestSet_CopyAndIsolation(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[string]()
-	s, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	s.AddElements("a", "b")
@@ -268,14 +268,14 @@ func TestDigestSet_CopyAndIsolation(t *testing.T) {
 
 func TestDigestSet_JSONSerialization(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[string]()
-	s, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	s.AddElements("item1", "item2")
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
 
-	s2, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	s2, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 	err = json.Unmarshal(data, s2)
 	require.NoError(t, err)
@@ -286,7 +286,7 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 
 func TestDigestSet_ConcurrentAccess(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[string]()
-	s, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -327,7 +327,7 @@ func TestDigestSymbolConversions(t *testing.T) {
 
 func TestDigestSet_InsertAndDigest(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[string]()
-	s, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
 	item := "test-item"
@@ -364,4 +364,71 @@ func BenchmarkDefaultHasher_ByteArray(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestCollectionHasher_EmptyAndNonLinear(t *testing.T) {
+	extractor := func(item string) string { return item }
+	itemHasher := func(vi digestmaps.VersionedItem[string]) digestmaps.DigestSymbol {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(vi.Item))
+		return digestmaps.DigestSymbol(h.Sum64() + vi.Version)
+	}
+
+	emptyVV := digestmaps.NewVersionVectorImmutable(extractor, itemHasher)
+	assert.Equal(t, digestmaps.DigestSymbol(0), emptyVV.Fingerprint())
+
+	colHasher := digestmaps.CollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]()
+	emptyDigest := colHasher(emptyVV)
+
+	// An empty collection must have a deterministic non-zero digest in the outer store
+	assert.NotEqual(t, digestmaps.DigestSymbol(0), emptyDigest)
+
+	// Add an item to create VV with element "x"
+	vv1, added := emptyVV.AddItem(digestmaps.VersionedItem[string]{Item: "x", Version: 1})
+	require.True(t, added)
+	d1 := colHasher(vv1)
+
+	// Add another item "y"
+	vv2, added := vv1.AddItem(digestmaps.VersionedItem[string]{Item: "y", Version: 1})
+	require.True(t, added)
+	d2 := colHasher(vv2)
+
+	assert.NotEqual(t, d1, d2)
+	assert.NotEqual(t, emptyDigest, d1)
+
+	// Verify non-linear behavior: d1 ^ d2 != digest of symmetric difference or any linear combination
+	diffFingerprint := vv1.Fingerprint() ^ vv2.Fingerprint()
+	assert.NotEqual(t, diffFingerprint, d1^d2)
+
+	// Can be used inside a ReverseIndexStore
+	store, err := digestmaps.NewDigestSet(colHasher)
+	require.NoError(t, err)
+
+	d, newlyAdded := store.Insert(vv1)
+	assert.True(t, newlyAdded)
+	assert.Equal(t, d1, d)
+
+	found, ok := store.GetByDigest(d1)
+	assert.True(t, ok)
+	assert.Equal(t, vv1.Fingerprint(), found.Fingerprint())
+}
+
+func TestCryptographicCollectionHasher_DomainSeparation(t *testing.T) {
+	extractor := func(item string) string { return item }
+	itemHasher := func(vi digestmaps.VersionedItem[string]) digestmaps.DigestSymbol {
+		return digestmaps.DigestSymbol(vi.Version)
+	}
+
+	vv := digestmaps.NewVersionVectorImmutable(extractor, itemHasher)
+	vv, _ = vv.AddItem(digestmaps.VersionedItem[string]{Item: "node1", Version: 10})
+
+	hasherA := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]("domain-a")
+	hasherB := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]("domain-b")
+
+	digestA := hasherA(vv)
+	digestB := hasherB(vv)
+
+	assert.NotEqual(t, digestmaps.DigestSymbol(0), digestA)
+	assert.NotEqual(t, digestmaps.DigestSymbol(0), digestB)
+	assert.NotEqual(t, digestA, digestB, "different domain tags must yield different digests for the same collection")
 }

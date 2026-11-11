@@ -24,6 +24,11 @@ type CryptographicIdentity interface {
 	CryptographicIdentity() []byte
 }
 
+// Fingerprinter represents any collection or container that exposes a cumulative commutative fingerprint.
+type Fingerprinter[S Symbol[S]] interface {
+	Fingerprint() S
+}
+
 // XOR implements riblt.Symbol[DigestSymbol].
 func (d DigestSymbol) XOR(other DigestSymbol) DigestSymbol {
 	return d ^ other
