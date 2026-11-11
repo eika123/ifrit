@@ -29,12 +29,8 @@ except ModuleNotFoundError:
     try:
         import tomli as tomllib  # type: ignore
     except ModuleNotFoundError:
-        tomllib = None  # type: ignore
-
-if tomllib is None:
-    print("Error: Python 'tomllib' (or 'tomli') required.", file=sys.stderr)
-    sys.exit(1)
-
+        print("Error: Python 'tomllib' (or 'tomli') required.", file=sys.stderr)
+        raise
 
 def main():
     if len(sys.argv) < 3:
