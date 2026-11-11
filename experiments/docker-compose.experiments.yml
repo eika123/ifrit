@@ -1,7 +1,7 @@
 services:
   ca:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     container_name: ifrit-ca
     command: [ "ifrit-ca", "--new", "--host=0.0.0.0", "--port=8321", "--path=/data/ifrit-cad" ]
@@ -15,7 +15,7 @@ services:
       - ca-data:/data/ifrit-cad
   gossip-node:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     command: [ "gossip-node" ]
     depends_on:
@@ -28,8 +28,8 @@ services:
       - IFRIT_TELEMETRY_CHECKPOINT_INTERVAL=${IFRIT_TELEMETRY_CHECKPOINT_INTERVAL:-10s}
       - IFRIT_NODE_NAME=${IFRIT_NODE_NAME:-}
     volumes:
-      - ./examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
-      - ./experiments/results:/results
+      - ../examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
+      - ./results:/results
     cap_add:
       - NET_ADMIN
     networks:
@@ -37,7 +37,7 @@ services:
   # Passive Network Observer daemon (monitors UDP Ping/Pong & TCP Gossip wire bytes)
   network-observer:
     build:
-      context: .
+      context: ..
       dockerfile: experiments/observer/Containerfile
     container_name: ifrit-observer
     depends_on:
@@ -54,7 +54,7 @@ services:
     environment:
       - TELEMETRY_DB=${TELEMETRY_DB:-/results/network_telemetry.db}
     volumes:
-      - ./experiments/results:/results
+      - ./results:/results
     command: [ "-db", "${TELEMETRY_DB:-/results/network_telemetry.db}", "-iface", "ifrit-br0" ]
 networks:
   ifrit-net:

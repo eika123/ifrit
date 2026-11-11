@@ -5,7 +5,7 @@
 - **Chaos Experiments**: Use **Docker** (with `--docker-activate` where applicable) strictly when running Pumba-based chaos experiments or benchmarks due to Pumba's daemon and socket requirements.
 - **Compose Stacks**:
   - `docker-compose.yml`: Keep clean for standard development (no chaos daemons or socket mounts); compatible with both Podman and Docker.
-  - `docker-compose.experiments.yml`: Dedicated chaos/benchmark stack with Pumba and socket bindings.
+  - `experiments/docker-compose.experiments.yml`: Dedicated chaos/benchmark stack with Pumba and socket bindings.
 
 ## Experiment Scripts & Telemetry Architecture
 - **Specialized Experiment Scripts**:

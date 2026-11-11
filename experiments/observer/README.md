@@ -64,19 +64,19 @@ When cloning the repository onto a fresh computer, run the setup script once:
 ```
 This ensures the host toolchain is installed and the required BPF objects and Go definitions are compiled before running `go build ./...` or `go test ./...`.
 
-## Running as a Container Service in docker-compose.experiments.yml
+## Running as a Container Service in experiments/docker-compose.experiments.yml
 
 Add the observer as an optional service joined to `ifrit-net`:
 
 ```yaml
   network-observer:
     build:
-      context: .
+      context: ..
       dockerfile: experiments/observer/Containerfile
     container_name: ifrit-observer
     network_mode: "host" # or cap_add: [NET_ADMIN, NET_RAW] on ifrit-net
     volumes:
-      - ./experiments/results:/results
+      - ./results:/results
     command: ["-db", "/results/network_telemetry.db"]
 ```
 

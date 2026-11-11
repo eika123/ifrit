@@ -202,6 +202,8 @@ fi
 # Set and export COMPOSE_FILE environment variable for docker compose
 if [ -n "$CUSTOM_COMPOSE_FILE" ]; then
     export COMPOSE_FILE="$CUSTOM_COMPOSE_FILE"
+elif [ -f "experiments/docker-compose.experiments.yml" ]; then
+    export COMPOSE_FILE="experiments/docker-compose.experiments.yml"
 elif [ -f "docker-compose.experiments.yml" ]; then
     export COMPOSE_FILE="docker-compose.experiments.yml"
 fi
@@ -334,7 +336,7 @@ if [ "$BUILD_MODE" = true ]; then
         echo "Notice: go binary not found on PATH; using pre-generated BPF objects."
     fi
 
-    echo "2/2: Building all Docker images in ${COMPOSE_FILE:-docker-compose.experiments.yml}..."
+    echo "2/2: Building all Docker images in ${COMPOSE_FILE:-experiments/docker-compose.experiments.yml}..."
     docker compose build --pull
     echo "Build complete!"
     echo "====================================================================="
