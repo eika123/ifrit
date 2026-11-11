@@ -50,8 +50,25 @@ local-streaming:
     ./scripts/run_local_streaming.sh
 
 [group('experiments')]
-exp *args='-t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3':
-    ./run-experiments.sh {{ args }}
+exp *args:
+    @has_script=0; \
+    has_duration=0; \
+    for arg in "$@"; do \
+        if [[ "$arg" == *.sh ]]; then \
+            has_script=1; \
+        elif [[ "$arg" == -t || "$arg" == --duration || "$arg" == --duration=* ]]; then \
+            has_duration=1; \
+        fi; \
+    done; \
+    if [ "$has_script" -eq 1 ]; then \
+        ./run-experiments.sh "$@"; \
+    elif [ $# -eq 0 ]; then \
+        ./run-experiments.sh -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+    elif [ "$has_duration" -eq 1 ]; then \
+        ./run-experiments.sh "$@" --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+    else \
+        ./run-experiments.sh "$@" -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+    fi
 
 [group('experiments')]
 exp-help:
