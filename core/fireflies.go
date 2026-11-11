@@ -1,6 +1,9 @@
 package core
 
 import (
+	"bytes"
+	"crypto/rand"
+	"errors"
 	"time"
 
 	log "github.com/inconshreveable/log15"
@@ -10,6 +13,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var (
+	errDead                 = errors.New("Peer is dead")
+	errInvalidPongSignature = errors.New("Invalid signature on pong message")
+)
+
+// /////////////// Fireflies ring maintenance //////////////////////////////
 func (n *Node) rebuttal() {
 	neighbours := n.view.GossipPartners()
 
@@ -213,3 +222,89 @@ func (n *Node) getGossipTimeout() time.Duration {
 
 	return n.gossipTimeout
 }
+
+///////////////////////////////////////////////////////////////////////////
+
+// /////////////////// Failure detector module /////////////////////////////
+type failureDetector struct {
+	ps             pingService
+	cs             cryptoService
+	maxFailedPings uint32
+}
+
+type pingService interface {
+	Pause(time.Duration)
+	Ping(string, *pb.Ping) (*pb.Pong, error)
+	Start()
+	Stop()
+	PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte
+}
+
+func newFd(ps pingService, cs cryptoService, maxPing uint32) *failureDetector {
+	return &failureDetector{
+		ps:             ps,
+		cs:             cs,
+		maxFailedPings: maxPing,
+	}
+}
+
+func (fd *failureDetector) stopServing(d time.Duration) {
+	fd.ps.Pause(d)
+}
+
+func (fd *failureDetector) validPong(pong *pb.Pong, pingMsg *pb.Ping, dest *discovery.Peer) bool {
+	sign := pong.GetSignature()
+	if sign == nil || !bytes.Equal(pong.GetNonce(), pingMsg.GetNonce()) {
+		return false
+	}
+
+	content := fd.ps.PongContent(pong.GetNonce(), pong.GetFingerprintData(), pong.GetFingerprintAccusations(), pong.GetFingerprintView())
+	return fd.cs.Verify(content, sign.GetR(), sign.GetS(), dest.PublicKey())
+}
+
+func (fd *failureDetector) probe(dest *discovery.Peer) error {
+	msg := &pb.Ping{
+		Nonce: genNonce(),
+	}
+
+	pong, err := fd.ps.Ping(dest.PingAddr, msg)
+	if err != nil {
+		dest.IncrementPingCount()
+		if dest.NumPing() >= fd.maxFailedPings {
+			return errDead
+		}
+
+		return err
+	}
+
+	if !fd.validPong(pong, msg, dest) {
+		dest.IncrementPingCount()
+		if dest.NumPing() >= fd.maxFailedPings {
+			return errDead
+		}
+		return errInvalidPongSignature
+	}
+
+	dest.ResetPingCount()
+	dest.SetFingerprintData(pong.GetFingerprintData())
+	dest.SetFingerprintAccusations(pong.GetFingerprintAccusations())
+	dest.SetFingerprintView(pong.GetFingerprintView())
+
+	return nil
+}
+
+func (fd *failureDetector) start() {
+	fd.ps.Start()
+}
+
+func (fd *failureDetector) stop() {
+	fd.ps.Stop()
+}
+
+func genNonce() []byte {
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	return nonce
+}
+
+///////////////////////////////////////////////////////////////////////
