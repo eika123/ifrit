@@ -17,6 +17,28 @@ import traceback
 from collections import deque
 
 
+def _resolve_ifrit_config(repo_root):
+    """Resolves IFRIT_CONFIG from env, IFRIT_CONFIG_PATHS, or the example template."""
+    if env_cfg := os.environ.get("IFRIT_CONFIG"):
+        return env_cfg
+
+    raw_paths = os.environ.get("IFRIT_CONFIG_PATHS")
+    if raw_paths:
+        search_dirs = [p for p in raw_paths.split(os.pathsep) if p]
+    else:
+        search_dirs = [os.path.join(repo_root, "config"), repo_root, "/var/tmp"]
+
+    for directory in search_dirs:
+        base_dir = directory if os.path.isabs(directory) else os.path.join(repo_root, directory)
+        for name in ("ifrit_config.yaml", "ifrit_config.yml"):
+            candidate = os.path.join(base_dir, name)
+            if os.path.isfile(candidate):
+                return candidate
+
+    example = os.path.join(repo_root, "config", "ifrit_config.example.yaml")
+    return example if os.path.isfile(example) else None
+
+
 def _is_ca_listening(port=8321, hosts=("127.0.0.1", "127.0.1.1", "localhost"), timeout=0.15):
     """Returns True if a TCP listener is accepting connections on the CA port."""
     for host in hosts:
@@ -88,6 +110,8 @@ class ProcessPane:
             return "[HINT] Port conflict detected. Stop any existing Ifrit processes or containers and try again."
         if "error loading ca" in lower:
             return "[HINT] CA state could not be loaded. Try running 'just clean-ca-data' or passing --new."
+        if "config file" in lower and "not found" in lower:
+            return "[HINT] Missing ifrit_config.yaml. Run 'just config-init' or set IFRIT_CONFIG."
         return None
 
     def _reader(self):
@@ -321,6 +345,10 @@ def main():
         print(f"[-] Compilation failed (exit code {exc.returncode}). Fix build errors above and retry.", file=sys.stderr)
         sys.exit(exc.returncode)
 
+    node_base_env = {}
+    if ifrit_cfg := _resolve_ifrit_config(repo_root):
+        node_base_env["IFRIT_CONFIG"] = ifrit_cfg
+
     panes = [
         ProcessPane(
             title="Certificate Authority (CA :8321)",
@@ -332,14 +360,14 @@ def main():
             title="Gossip Node 1 (RPC :9000, UDP :9001)",
             color_pair=2,
             cmd=[node_bin],
-            env={"IFRIT_HOSTNAME": "localhost", "IFRIT_TCP_PORT": "9000", "IFRIT_UDP_PORT": "9001"},
+            env={**node_base_env, "IFRIT_HOSTNAME": "localhost", "IFRIT_TCP_PORT": "9000", "IFRIT_UDP_PORT": "9001"},
             cwd=repo_root
         ),
         ProcessPane(
             title="Gossip Node 2 (RPC :9002, UDP :9003)",
             color_pair=3,
             cmd=[node_bin],
-            env={"IFRIT_HOSTNAME": "localhost", "IFRIT_TCP_PORT": "9002", "IFRIT_UDP_PORT": "9003"},
+            env={**node_base_env, "IFRIT_HOSTNAME": "localhost", "IFRIT_TCP_PORT": "9002", "IFRIT_UDP_PORT": "9003"},
             cwd=repo_root
         )
     ]

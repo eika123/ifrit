@@ -23,7 +23,7 @@ services:
     environment:
       - IFRIT_CONFIG=/app/ifrit_config.yaml
     volumes:
-      - ./examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
+      - ./config/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
     networks:
       - ifrit-net
 networks:

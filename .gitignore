@@ -46,7 +46,19 @@ ifritlog
 *.pem
 ifrit-cad
 ifrit_certs
+# Local configuration overrides & secrets (keep *.example templates tracked)
 ifrit_config.yaml
+ca_config.yaml
+config/ifrit_config.yaml
+config/ca_config.yaml
+config/*.local.*
+.env
+.env.*
+config/.env
+config/.env.*
+!*.example.*
+!config/*.example.yaml
+!config/.env.example
 logfile
 
 ## executables from _example folder

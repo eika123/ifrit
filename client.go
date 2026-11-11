@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	log "github.com/inconshreveable/log15"
@@ -349,13 +351,33 @@ func (c *Client) SaveCertificate() error {
 	return nil
 }
 
+var defaultConfigPaths = []string{"/var/tmp", "./config", "."}
+
+func configSearchPaths(envPaths string) []string {
+	if strings.TrimSpace(envPaths) == "" {
+		return append([]string(nil), defaultConfigPaths...)
+	}
+
+	var paths []string
+	for _, p := range filepath.SplitList(envPaths) {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	if len(paths) == 0 {
+		return append([]string(nil), defaultConfigPaths...)
+	}
+	return paths
+}
+
 func readConfig() error {
 	if envCfg := os.Getenv("IFRIT_CONFIG"); envCfg != "" {
 		viper.SetConfigFile(envCfg)
 	} else {
 		viper.SetConfigName("ifrit_config")
-		viper.AddConfigPath("/var/tmp")
-		viper.AddConfigPath(".")
+		for _, p := range configSearchPaths(os.Getenv("IFRIT_CONFIG_PATHS")) {
+			viper.AddConfigPath(p)
+		}
 		viper.SetConfigType("yaml")
 	}
 

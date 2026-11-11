@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-# Ensure 'go' is available in PATH, falling back to standard install directories if they exist
-if ! command -v go >/dev/null 2>&1; then
-    for dir in "/usr/local/go/bin" "${HOME}/go/bin"; do
-        if [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]]; then
-            export PATH="${PATH}:${dir}"
-        fi
-    done
-fi
-
-if ! command -v go >/dev/null 2>&1; then
-    echo "[-] Error: 'go' binary not found in PATH." >&2
-    exit 1
-fi
-
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/_env.sh
+source "${REPO_ROOT}/scripts/_env.sh"
 cd "${REPO_ROOT}"
 
 MODE="tui"

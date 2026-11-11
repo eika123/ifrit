@@ -30,8 +30,9 @@ WORKDIR /app
 COPY --from=builder /build/bin/ifrit-ca /usr/local/bin/ifrit-ca
 COPY --from=builder /build/bin/gossip-node /usr/local/bin/gossip-node
 
-# Copy default config template
-COPY ifrit_config.yaml /app/ifrit_config.yaml
+# Copy default config template (overridable at build time or via runtime volume/IFRIT_CONFIG)
+ARG IFRIT_DEFAULT_CONFIG=config/ifrit_config.example.yaml
+COPY ${IFRIT_DEFAULT_CONFIG} /app/ifrit_config.yaml
 
 # Entrypoint default
 CMD ["gossip-node"]

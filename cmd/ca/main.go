@@ -58,7 +58,7 @@ func main() {
 	args.StringVar(&configFile, "config", "./ca_config.yaml", "Configuration file.")
 
 	// Load configuration from files and ENV
-	configor.New(&configor.Config{Debug: false, ENVPrefix: "IFRIT"}).Load(&Config, configFile, "/etc/ifrit/config.yaml")
+	configor.New(&configor.Config{Debug: false, ENVPrefix: "IFRIT"}).Load(&Config, configFile, "./config/ca_config.yaml", "/etc/ifrit/config.yaml")
 
 	args.StringVar(&Config.LogFile, "logfile", "", "Log to file.")
 	args.StringVar(&Config.Host, "host", Config.Host, "Hostname.")

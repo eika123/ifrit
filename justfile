@@ -1,8 +1,27 @@
+set dotenv-load
+set dotenv-path := "config/.env"
 set positional-arguments
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+export IFRIT_CONFIG_PATHS := env("IFRIT_CONFIG_PATHS", "./config:.:/var/tmp")
+
 default:
     @just --list
+
+[group('development')]
+config-init:
+    @if [ ! -f config/ifrit_config.yaml ]; then \
+        cp config/ifrit_config.example.yaml config/ifrit_config.yaml; \
+        echo "Created config/ifrit_config.yaml from example."; \
+    else \
+        echo "config/ifrit_config.yaml already exists."; \
+    fi
+    @if [ ! -f config/.env ]; then \
+        cp config/.env.example config/.env; \
+        echo "Created config/.env from example."; \
+    else \
+        echo "config/.env already exists."; \
+    fi
 
 [group('development')]
 test *args='./...':
