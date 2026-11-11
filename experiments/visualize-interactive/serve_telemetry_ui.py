@@ -11,15 +11,19 @@ Run with uv:
 import argparse
 import glob
 import json
+import logging
 import os
-from typing import Any, Dict, List, Optional
+import sqlite3
+from typing import Any, Optional
 
 import aiosqlite
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-import uvicorn
 from pydantic import BaseModel
+
+logger = logging.getLogger("telemetry_ui")
 
 app = FastAPI(title="Ifrit Telemetry Explorer")
 
@@ -47,7 +51,7 @@ def get_role_clause(role: Optional[str], daemon_port: str = DAEMON_PORT) -> tupl
 
 
 def resolve_db_path() -> str:
-    """Find the best database file to query."""
+    """Find the best database file to query. Returns an empty string if no valid DB file exists."""
     candidates = []
     if DB_TARGET:
         candidates.append(DB_TARGET)
@@ -77,7 +81,9 @@ def resolve_db_path() -> str:
             if all_dbs:
                 return os.path.abspath(sorted(all_dbs, key=os.path.getmtime, reverse=True)[0])
 
-    return DB_TARGET or ""
+    if DB_TARGET and os.path.isfile(DB_TARGET):
+        return os.path.abspath(DB_TARGET)
+    return ""
 
 
 class NodeStats(BaseModel):
@@ -95,7 +101,7 @@ class NodeStats(BaseModel):
     total_accusations_sent: int
     total_accusations_received: int
     active_peers_count: int
-    last_seen: Optional[str] = None
+    last_seen: str | None = None
 
 
 class SummaryStats(BaseModel):
@@ -108,32 +114,27 @@ class SummaryStats(BaseModel):
     total_server_bytes: int = 0
     total_accusations: int = 0
     total_rebuttals: int = 0
-    unique_hosts: List[str] = []
-    unique_remote_hosts: List[str] = []
-    node_names: Dict[str, str] = {}
+    unique_hosts: list[str] = []
+    unique_remote_hosts: list[str] = []
+    node_names: dict[str, str] = {}
     max_notes: int = 0
     max_payload_bytes: int = 0
     total_data_bytes: int = 0
     total_outgoing_bytes: int = 0
     total_incoming_bytes: int = 0
-    min_timestamp: Optional[str] = None
-    max_timestamp: Optional[str] = None
-    nodes_summary: List[NodeStats] = []
+    min_timestamp: str | None = None
+    max_timestamp: str | None = None
+    nodes_summary: list[NodeStats] = []
 
 
-# -------------------------------------------------------------------------
-# Fetch data sets from DB 
-# -------------------------------------------------------------------------
-# Fetch data sets from DB 
-# -------------------------------------------------------------------------
 @app.get("/api/analytics")
-async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, buckets: int = 50):
+async def get_analytics(host: str | None = None, role: str | None = None, buckets: int = 50):
     target = resolve_db_path()
-    exists = os.path.exists(target)
+    exists = bool(target and os.path.isfile(target))
     status_info = {
-        "target": target,
+        "target": target if exists else (DB_TARGET or "No database found"),
         "exists": exists,
-        "is_dir": os.path.isdir(DB_TARGET),
+        "is_dir": os.path.isdir(DB_TARGET) if DB_TARGET else False,
         "size_bytes": os.path.getsize(target) if exists else 0,
     }
 
@@ -141,7 +142,8 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
         return {
             "status": status_info,
             "summary": SummaryStats().model_dump(),
-            "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
+            "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+            "error": f"NO TELEMETRY DATABASE FOUND: '{DB_TARGET}' contains no valid SQLite databases. You must run an experiment first (e.g. `just exp`) before viewing telemetry."
         }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
@@ -153,7 +155,8 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             return {
                 "status": status_info,
                 "summary": SummaryStats().model_dump(),
-                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+                "warning": f"Database at '{target}' has no 'gossip_exchange' table."
             }
 
         # 1. Check table columns dynamically
@@ -199,8 +202,16 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             r_reb = await cur_reb.fetchone()
             if r_reb and r_reb[0]:
                 total_rebuttals = r_reb[0]
-        except Exception:
-            pass
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Optional table 'rebuttal_events' not found or inaccessible: %s", e)
+        except Exception as e:
+            logger.exception("Unexpected error querying rebuttal_events: %s", e)
+            return {
+                "status": status_info,
+                "summary": SummaryStats().model_dump(),
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+                "error": f"Unexpected error: Failed querying rebuttal events: {e}"
+            }
 
         # Check total accusations if accusation_events table exists
         total_accs = row[3] or 0
@@ -209,8 +220,16 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             r_acc = await cur_acc.fetchone()
             if r_acc and r_acc[0]:
                 total_accs = r_acc[0]
-        except Exception:
-            pass
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Optional table 'accusation_events' not found or inaccessible: %s", e)
+        except Exception as e:
+            logger.exception("Unexpected error querying accusation_events: %s", e)
+            return {
+                "status": status_info,
+                "summary": SummaryStats().model_dump(),
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+                "error": f"Unexpected error: Failed querying accusation events: {e}"
+            }
 
         # Check total notes if note_events table exists
         max_notes = row[4] or 0
@@ -219,8 +238,16 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             r_notes = await cur_notes.fetchone()
             if r_notes and r_notes[0]:
                 max_notes = r_notes[0]
-        except Exception:
-            pass
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Optional table 'note_events' not found or inaccessible: %s", e)
+        except Exception as e:
+            logger.exception("Unexpected error querying note_events: %s", e)
+            return {
+                "status": status_info,
+                "summary": SummaryStats().model_dump(),
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+                "error": f"Unexpected error: Failed querying note events: {e}"
+            }
 
         # 2. Node Breakdown
         cursor_nodes = await db.execute(f"""
@@ -284,8 +311,16 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             for ir in await cursor_ident.fetchall():
                 if ir[0] and ir[1]:
                     node_names[ir[0]] = ir[1]
-        except Exception:
-            pass
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Optional table 'node_identity' not found or inaccessible: %s", e)
+        except Exception as e:
+            logger.exception("Unexpected error querying node_identity: %s", e)
+            return {
+                "status": status_info,
+                "summary": SummaryStats().model_dump(),
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
+                "error": f"Unexpected error: Failed querying node identities: {e}"
+            }
 
         summary_data = {
             "total_exchanges": row[0] or 0,
@@ -370,10 +405,13 @@ async def get_summary():
 
 # Standalone timeline endpoint for when the user selects a host or role
 @app.get("/api/timeseries")
-async def get_timeseries(host: Optional[str] = None, role: Optional[str] = None, buckets: int = 50):
+async def get_timeseries(host: str | None = None, role: str | None = None, buckets: int = 50):
     target = resolve_db_path()
-    if not os.path.exists(target):
-        return {"labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": []}
+    if not (target and os.path.isfile(target)):
+        return {
+            "labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": [],
+            "error": f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty."
+        }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
 
@@ -410,8 +448,15 @@ async def get_timeseries(host: Optional[str] = None, role: Optional[str] = None,
                 LIMIT ?
             """, params)
             rows = await cursor.fetchall()
-        except Exception:
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Timeline query table or column not found: %s", e)
             return {"labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": []}
+        except Exception as e:
+            logger.exception("Unexpected error in get_timeseries: %s", e)
+            return {
+                "labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": [],
+                "error": f"Unexpected error: Failed loading timeseries timeline: {e}"
+            }
 
     return {
         "labels": [r[0] for r in rows],
@@ -430,7 +475,7 @@ async def get_timeseries(host: Optional[str] = None, role: Optional[str] = None,
 @app.get("/api/table_counts")
 async def get_table_counts():
     target = resolve_db_path()
-    if not os.path.exists(target):
+    if not (target and os.path.isfile(target)):
         return {}
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
@@ -443,8 +488,12 @@ async def get_table_counts():
                 if row is not None:
                     counts[t] = row[0]
             return counts
-        except Exception:
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Table counts schema issue: %s", e)
             return {}
+        except Exception as e:
+            logger.exception("Unexpected error in get_table_counts: %s", e)
+            return {"error": f"Unexpected error: Failed counting tables: {e}"}
 
 
 @app.get("/api/table_data")
@@ -453,15 +502,21 @@ async def get_table_data(
     limit: int = 50,
     offset: int = 0,
     sort_order: str = "DESC",
-    host: Optional[str] = None,
-    remote_host: Optional[str] = None,
-    direction: Optional[str] = None,
-    role: Optional[str] = None,
-    search: Optional[str] = None,
+    host: str | None = None,
+    remote_host: str | None = None,
+    direction: str | None = None,
+    role: str | None = None,
+    search: str | None = None,
 ):
     target = resolve_db_path()
-    if not os.path.exists(target):
-        return {"items": [], "total": 0, "columns": [], "table": table}
+    if not (target and os.path.isfile(target)):
+        return {
+            "items": [],
+            "total": 0,
+            "columns": [],
+            "table": table,
+            "error": f"NO EXPERIMENT DATABASE: '{DB_TARGET}' contains no databases to query table '{table}'."
+        }
 
     allowed_tables = {"gossip_exchange", "rebuttal_events", "accusation_events", "note_events", "node_identity"}
     if table not in allowed_tables:
@@ -538,8 +593,8 @@ async def get_table_data(
                     elif k in ("rings", "accused_nodes") and isinstance(v, str):
                         try:
                             item_dict[k] = json.loads(v)
-                        except Exception:
-                            item_dict[k] = v
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            item_dict[k] = v  # Fall back to raw string if not JSON
                     else:
                         item_dict[k] = v
                 if table == "gossip_exchange":
@@ -563,20 +618,24 @@ async def get_table_data(
                 "columns": columns,
                 "table": table,
             }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Operational error reading table '%s': %s", table, e)
+            return {"items": [], "total": 0, "columns": [], "table": table, "error": f"Table '{table}' query failed: {e}"}
         except Exception as e:
-            return {"items": [], "total": 0, "columns": [], "table": table, "error": str(e)}
+            logger.exception("Unexpected error in get_table_data for '%s': %s", table, e)
+            return {"items": [], "total": 0, "columns": [], "table": table, "error": f"Unexpected error reading '{table}': {e}"}
 
 
 @app.get("/api/exchanges")
 async def get_exchanges(
-    host: Optional[str] = None,
-    peer: Optional[str] = None,
-    remote_host: Optional[str] = None,
-    direction: Optional[str] = None,
-    role: Optional[str] = None,
+    host: str | None = None,
+    peer: str | None = None,
+    remote_host: str | None = None,
+    direction: str | None = None,
+    role: str | None = None,
     has_accusations: bool = False,
-    has_note: Optional[str] = None,
-    search: Optional[str] = None,
+    has_note: str | None = None,
+    search: str | None = None,
     sort_order: str = "DESC",
     limit: int = 50,
     offset: int = 0
@@ -600,11 +659,11 @@ async def get_exchanges(
 
 @app.get("/api/bytes_per_node")
 async def get_bytes_per_node(
-    direction: Optional[str] = "OUTGOING",
-    role: Optional[str] = "ALL"
+    direction: str | None = "OUTGOING",
+    role: str | None = "ALL"
 ):
     target = resolve_db_path()
-    if not os.path.exists(target):
+    if not (target and os.path.isfile(target)):
         return {
             "nodes": {},
             "total_per_node": {},
@@ -612,6 +671,7 @@ async def get_bytes_per_node(
             "server_totals": {},
             "direction": direction,
             "role": role,
+            "error": f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty.",
         }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
@@ -636,7 +696,8 @@ async def get_bytes_per_node(
                 ORDER BY timestamp ASC
             """, params_q)
             rows = await cursor.fetchall()
-        except Exception:
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Bytes per node query failed: %s", e)
             return {
                 "nodes": {},
                 "total_per_node": {},
@@ -645,8 +706,19 @@ async def get_bytes_per_node(
                 "direction": direction,
                 "role": role,
             }
+        except Exception as e:
+            logger.exception("Unexpected error in get_bytes_per_node: %s", e)
+            return {
+                "nodes": {},
+                "total_per_node": {},
+                "client_totals": {},
+                "server_totals": {},
+                "direction": direction,
+                "role": role,
+                "error": f"Unexpected error: Failed computing node bytes: {e}",
+            }
 
-    node_data: Dict[str, Dict[str, Any]] = {
+    node_data: dict[str, dict[str, Any]] = {
         h: {
             "timestamps": [],
             "bytes": [],
@@ -706,7 +778,7 @@ async def get_bytes_per_node(
 @app.get("/api/rebuttals")
 async def get_rebuttals(limit: int = 100):
     target = resolve_db_path()
-    if not os.path.exists(target):
+    if not (target and os.path.isfile(target)):
         return {"items": [], "total": 0}
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
@@ -731,14 +803,18 @@ async def get_rebuttals(limit: int = 100):
                 for r in rows
             ]
             return {"items": items, "total": total}
-        except Exception:
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Rebuttals table query failed: %s", e)
             return {"items": [], "total": 0}
+        except Exception as e:
+            logger.exception("Unexpected error in get_rebuttals: %s", e)
+            return {"items": [], "total": 0, "error": f"Unexpected error: Failed loading rebuttals: {e}"}
 
 
 @app.get("/api/accusations")
 async def get_accusations(limit: int = 100):
     target = resolve_db_path()
-    if not os.path.exists(target):
+    if not (target and os.path.isfile(target)):
         return {"items": [], "total": 0}
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
@@ -764,8 +840,12 @@ async def get_accusations(limit: int = 100):
                 for r in rows
             ]
             return {"items": items, "total": total}
-        except Exception:
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as e:
+            logger.warning("Accusations table query failed: %s", e)
             return {"items": [], "total": 0}
+        except Exception as e:
+            logger.exception("Unexpected error in get_accusations: %s", e)
+            return {"items": [], "total": 0, "error": f"Unexpected error: Failed loading accusations: {e}"}
 
 
 @app.get("/", response_class=FileResponse)

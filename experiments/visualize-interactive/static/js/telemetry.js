@@ -186,6 +186,80 @@ function showToast(message, type = 'info', duration = 2800) {
   }
 }
 
+function showErrorDialog(message, title = 'Database Notice', level = 'warning') {
+  const dialog = document.getElementById('error-dialog');
+  const box = document.getElementById('error-dialog-box');
+  const iconBox = document.getElementById('error-dialog-icon-box');
+  const badge = document.getElementById('error-dialog-badge');
+  const titleEl = document.getElementById('error-dialog-title');
+  const msgEl = document.getElementById('error-dialog-message');
+  const btn = document.getElementById('error-dialog-btn');
+
+  if (titleEl) titleEl.innerText = title;
+  if (msgEl) msgEl.innerText = message || 'No database found.';
+
+  if (level === 'error') {
+    if (box) box.className = 'bg-slate-950 border-2 border-rose-500 rounded-2xl shadow-[0_0_50px_rgba(244,63,94,0.35)] max-w-lg w-full p-6 text-slate-100 transform transition-all animate-bounce-short';
+    if (iconBox) iconBox.className = 'w-12 h-12 rounded-xl bg-rose-950 border border-rose-500/60 flex items-center justify-center shrink-0 shadow-lg shadow-rose-950';
+    if (badge) {
+      badge.className = 'inline-block px-2 py-0.5 rounded text-[10px] font-bold font-mono tracking-wider uppercase bg-rose-900/60 text-rose-300 border border-rose-700/60 mb-1';
+      badge.innerText = 'Critical';
+    }
+    if (btn) btn.className = 'px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-sm font-bold tracking-wide shadow-lg shadow-rose-600/30 transition focus:outline-none focus:ring-2 focus:ring-rose-400';
+  } else {
+    if (box) box.className = 'bg-slate-950 border-2 border-amber-500/80 rounded-2xl shadow-[0_0_50px_rgba(245,158,11,0.25)] max-w-lg w-full p-6 text-slate-100 transform transition-all animate-bounce-short';
+    if (iconBox) iconBox.className = 'w-12 h-12 rounded-xl bg-amber-950/80 border border-amber-500/60 flex items-center justify-center shrink-0 shadow-lg shadow-amber-950/50';
+    if (badge) {
+      badge.className = 'inline-block px-2 py-0.5 rounded text-[10px] font-bold font-mono tracking-wider uppercase bg-amber-900/60 text-amber-300 border border-amber-700/60 mb-1';
+      badge.innerText = 'Notice';
+    }
+    if (btn) btn.className = 'px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-slate-950 rounded-xl text-sm font-bold tracking-wide shadow-lg shadow-amber-600/30 transition focus:outline-none focus:ring-2 focus:ring-amber-400';
+  }
+
+  if (dialog) dialog.classList.remove('hidden');
+  showStatusBanner(title, message, level);
+  showToast(message, level, 8000);
+}
+
+function closeErrorDialog() {
+  const dialog = document.getElementById('error-dialog');
+  if (dialog) dialog.classList.add('hidden');
+}
+
+function showStatusBanner(title, message, level = 'warning') {
+  const banner = document.getElementById('status-banner');
+  const icon = document.getElementById('status-banner-icon');
+  const titleEl = document.getElementById('status-banner-title');
+  const msgEl = document.getElementById('status-banner-msg');
+  if (!banner || !titleEl || !msgEl || !icon) return;
+
+  const styles = {
+    warning: {
+      bg: 'bg-amber-950/40 border-amber-500/50 text-amber-200',
+      iconBg: 'bg-amber-900/60 text-amber-400 border border-amber-600/50',
+      svg: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`
+    },
+    error: {
+      bg: 'bg-rose-950/50 border-rose-500/60 text-rose-200',
+      iconBg: 'bg-rose-900/70 text-rose-300 border border-rose-600/60',
+      svg: `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
+    }
+  };
+
+  const current = styles[level] || styles.warning;
+  banner.className = `p-4 rounded-xl border flex items-center justify-between transition-all duration-200 ${current.bg}`;
+  icon.className = `w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${current.iconBg}`;
+  icon.innerHTML = current.svg;
+  titleEl.innerText = title;
+  msgEl.innerText = message;
+  banner.classList.remove('hidden');
+}
+
+function dismissStatusBanner() {
+  const banner = document.getElementById('status-banner');
+  if (banner) banner.classList.add('hidden');
+}
+
 // -------------------------------------------------------------
 // Table Switching & Header Rendering
 // -------------------------------------------------------------
@@ -294,6 +368,11 @@ async function loadTableData() {
 
     const res = await fetch(`/api/table_data?${params}`);
     const data = await res.json();
+    if (data.error) {
+      showErrorDialog(data.error, `Error querying ${TABLE_CONFIGS[state.active_table]?.title || state.active_table}`);
+      tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-rose-400 font-mono">Error: ${data.error}</td></tr>`;
+      return;
+    }
     totalItems = data.total || 0;
 
     // Update count badge & pagination
@@ -479,6 +558,11 @@ async function loadAnalytics() {
     const url = `/api/analytics?buckets=50${state.host ? '&host=' + encodeURIComponent(state.host) : ''}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (data.error) {
+      showErrorDialog(data.error, 'Database Notice', 'warning');
+    } else if (data.warning) {
+      showStatusBanner('No Experiment Data', data.warning, 'warning');
+    }
 
     // 1. Status Indicator
     const st = data.status || {};
@@ -583,6 +667,9 @@ async function loadTimeline() {
     const url = `/api/timeseries?${params}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (data.error) {
+      showErrorDialog(data.error, 'Timeline Query Failed');
+    }
     if (timelineChart) {
       timelineChart.data.labels = (data.labels || []).map(l => l.split('T')[1] || l.split(' ')[1] || l);
       if (timelineChart.data.datasets.length >= 4) {
@@ -652,6 +739,9 @@ async function loadBytesTimeline() {
     });
     const res = await fetch(`/api/bytes_per_node?${params}`);
     const data = await res.json();
+    if (data.error) {
+      showErrorDialog(data.error, 'Bytes Per Node Query Failed');
+    }
     const container = document.getElementById('node-bytes-stack');
     if (!container) return;
 
