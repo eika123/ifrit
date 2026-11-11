@@ -10,8 +10,8 @@
 ## Experiment Scripts & Telemetry Architecture
 - **Specialized Experiment Scripts**:
   - Keep scripts in `experiments/` modular and pluggable.
-  - Generic resource usage (CPU/RAM time-series via `docker stats`) is logged by `run-experiments.sh`, but experiment scripts are encouraged to spin up dedicated databases or logs for domain-specific metrics (e.g. network delay vs. reconciliation load, temporal accusation density, message convergence).
-- **Harness Responsibilities (`run-experiments.sh`)**:
+  - Generic resource usage (CPU/RAM time-series via `docker stats`) is logged by `experiments/run-experiments.sh`, but experiment scripts are encouraged to spin up dedicated databases or logs for domain-specific metrics (e.g. network delay vs. reconciliation load, temporal accusation density, message convergence).
+- **Harness Responsibilities (`experiments/run-experiments.sh`)**:
   - Manage experiment timeouts (`-t <duration>`) and process lifecycles.
   - Ensure clean container teardown (`docker compose stop` / `docker compose down`) on timeout, completion, or signal interruption.
   - Log time-series metrics to SQLite using `PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE TRANSACTION;`.

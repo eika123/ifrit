@@ -4,12 +4,13 @@ RED=$'\033[1;31m'
 YELLOW=$'\033[1;33m'
 NC=$'\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 # Locate optional pluggable chaos manager
 CHAOS_MANAGER=""
-if [ -f "experiments/pumba-chaos-manager.sh" ]; then
-    CHAOS_MANAGER="experiments/pumba-chaos-manager.sh"
-elif [ -f "./pumba-chaos-manager.sh" ]; then
-    CHAOS_MANAGER="./pumba-chaos-manager.sh"
+if [ -f "${SCRIPT_DIR}/pumba-chaos-manager.sh" ]; then
+    CHAOS_MANAGER="${SCRIPT_DIR}/pumba-chaos-manager.sh"
 fi
 
 CHAOS_SUPPORTED_OPTS=""
@@ -40,7 +41,7 @@ tracks container resource usage, coordinates pluggable network & lifecycle chaos
 merges SQLite telemetry databases, and generates plots.
 
 Usage:
-  ./run-experiments.sh [runner options] [chaos options] <experiment-script.sh> [script_args...]
+  ./experiments/run-experiments.sh [runner options] [chaos options] <experiment-script.sh> [script_args...]
 -------------------------------------------------------------------------------------------------
 Runner Options:
   --docker-activate         Run experiment inside a dedicated Docker container
@@ -53,9 +54,9 @@ Runner Options:
   -h, --help                Show this help message
 
 Examples:
-  ./run-experiments.sh -t 40s -c 5s gossip-experiment.sh 10
-  ./run-experiments.sh -t 2m --delay 500 --loss 10 gossip-experiment.sh 5
-  ./run-experiments.sh -t 2m --pause-node random --pause-duration 15s gossip-experiment.sh 5
+  ./experiments/run-experiments.sh -t 40s -c 5s gossip-experiment.sh 10
+  ./experiments/run-experiments.sh -t 2m --delay 500 --loss 10 gossip-experiment.sh 5
+  ./experiments/run-experiments.sh -t 2m --pause-node random --pause-duration 15s gossip-experiment.sh 5
 =================================================================================================
 EOF
 
@@ -77,7 +78,7 @@ usage() {
 }
 
 CONTAINER_NAME="go-experiment-runner"
-OUTPUT_DIR="$(pwd)/experiments/results"
+OUTPUT_DIR="${SCRIPT_DIR}/results"
 mkdir -p "$OUTPUT_DIR"
 
 # Parse flags
@@ -202,10 +203,8 @@ fi
 # Set and export COMPOSE_FILE environment variable for docker compose
 if [ -n "$CUSTOM_COMPOSE_FILE" ]; then
     export COMPOSE_FILE="$CUSTOM_COMPOSE_FILE"
-elif [ -f "experiments/docker-compose.experiments.yml" ]; then
-    export COMPOSE_FILE="experiments/docker-compose.experiments.yml"
-elif [ -f "docker-compose.experiments.yml" ]; then
-    export COMPOSE_FILE="docker-compose.experiments.yml"
+elif [ -f "${SCRIPT_DIR}/docker-compose.experiments.yml" ]; then
+    export COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.experiments.yml"
 fi
 
 if [ -n "$COMPOSE_FILE" ]; then
@@ -223,13 +222,19 @@ fi
 
 shift # Remove the script name from the argument list
 
-# Resolve script path (check current directory, experiments/ directory, or absolute path)
+# Resolve script path (check caller path, experiments/ directory, or repo root)
 if [ -f "$EXPERIMENT_SCRIPT" ]; then
-    SCRIPT_PATH="./$EXPERIMENT_SCRIPT"
-elif [ -f "experiments/$EXPERIMENT_SCRIPT" ]; then
-    SCRIPT_PATH="./experiments/$EXPERIMENT_SCRIPT"
+    if [[ "$EXPERIMENT_SCRIPT" = /* || "$EXPERIMENT_SCRIPT" = ./* || "$EXPERIMENT_SCRIPT" = ../* ]]; then
+        SCRIPT_PATH="$EXPERIMENT_SCRIPT"
+    else
+        SCRIPT_PATH="./$EXPERIMENT_SCRIPT"
+    fi
+elif [ -f "${SCRIPT_DIR}/$EXPERIMENT_SCRIPT" ]; then
+    SCRIPT_PATH="${SCRIPT_DIR}/$EXPERIMENT_SCRIPT"
+elif [ -f "${REPO_ROOT}/$EXPERIMENT_SCRIPT" ]; then
+    SCRIPT_PATH="${REPO_ROOT}/$EXPERIMENT_SCRIPT"
 else
-    echo "${RED}Error:${NC} Could not find experiment script '$EXPERIMENT_SCRIPT' (checked . and ./experiments)" >&2
+    echo "${RED}Error:${NC} Could not find experiment script '$EXPERIMENT_SCRIPT' (checked ., ${SCRIPT_DIR}, and ${REPO_ROOT})" >&2
     exit 1
 fi
 
@@ -292,11 +297,11 @@ cleanup() {
             chown -R "$REAL_USER:$REAL_GROUP" "$OUTPUT_DIR" 2>/dev/null || true
             chmod -R u+rwX,go+rX "$OUTPUT_DIR" 2>/dev/null || true
         fi
-        if [ -d "experiments/.venv" ]; then
-            chown -R "$REAL_USER:$REAL_GROUP" "experiments/.venv" 2>/dev/null || true
+        if [ -d "${SCRIPT_DIR}/.venv" ]; then
+            chown -R "$REAL_USER:$REAL_GROUP" "${SCRIPT_DIR}/.venv" 2>/dev/null || true
         fi
-        if [ -d "experiments/observer" ]; then
-            chown -R "$REAL_USER:$REAL_GROUP" "experiments/observer" 2>/dev/null || true
+        if [ -d "${SCRIPT_DIR}/observer" ]; then
+            chown -R "$REAL_USER:$REAL_GROUP" "${SCRIPT_DIR}/observer" 2>/dev/null || true
         fi
     fi
 
@@ -331,7 +336,7 @@ if [ "$BUILD_MODE" = true ]; then
     if command -v go >/dev/null 2>&1 || [ -x "/usr/local/go/bin/go" ]; then
         GO_BIN="$(command -v go || echo "/usr/local/go/bin/go")"
         echo "1/2: Generating eBPF bytecode using $GO_BIN generate..."
-        PATH="$PATH:/usr/local/go/bin:$HOME/go/bin" "$GO_BIN" generate ./experiments/observer
+        (cd "$REPO_ROOT" && PATH="$PATH:/usr/local/go/bin:$HOME/go/bin" "$GO_BIN" generate ./experiments/observer)
     else
         echo "Notice: go binary not found on PATH; using pre-generated BPF objects."
     fi
@@ -570,10 +575,8 @@ fi
 
 # Automatically merge per-node telemetry databases into a unified database
 MERGE_SCRIPT=""
-if [ -f "experiments/merge_gossip_telemetry.py" ]; then
-    MERGE_SCRIPT="experiments/merge_gossip_telemetry.py"
-elif [ -f "merge_gossip_telemetry.py" ]; then
-    MERGE_SCRIPT="merge_gossip_telemetry.py"
+if [ -f "${SCRIPT_DIR}/merge_gossip_telemetry.py" ]; then
+    MERGE_SCRIPT="${SCRIPT_DIR}/merge_gossip_telemetry.py"
 fi
 
 if [ -n "$MERGE_SCRIPT" ]; then
@@ -587,10 +590,8 @@ fi
 # environment inside experiments/.venv if not present.
 # =====================================================================
 PLOT_SCRIPT=""
-if [ -f "experiments/plot_resource_usage.py" ]; then
-    PLOT_SCRIPT="experiments/plot_resource_usage.py"
-elif [ -f "plot_resource_usage.py" ]; then
-    PLOT_SCRIPT="plot_resource_usage.py"
+if [ -f "${SCRIPT_DIR}/plot_resource_usage.py" ]; then
+    PLOT_SCRIPT="${SCRIPT_DIR}/plot_resource_usage.py"
 fi
 
 if [ -n "$PLOT_SCRIPT" ]; then
@@ -613,7 +614,7 @@ if [ -n "$PLOT_SCRIPT" ]; then
         fi
     fi
 
-    VENV_DIR="experiments/.venv"
+    VENV_DIR="${SCRIPT_DIR}/.venv"
     # 2. Create the virtual environment in experiments/.venv if it doesn't exist
     if [ ! -d "$VENV_DIR" ]; then
         echo "Creating a new virtual environment in $VENV_DIR with uv..."
@@ -628,7 +629,7 @@ if [ -n "$PLOT_SCRIPT" ]; then
     uv run --python "$VENV_DIR" python3 "$PLOT_SCRIPT" -d "$DB_FILE" -o "$PLOT_FILE"
 
     # Also generate network telemetry plots if network telemetry DB exists and plot script is present
-    NET_PLOT_SCRIPT="experiments/plot_network_telemetry.py"
+    NET_PLOT_SCRIPT="${SCRIPT_DIR}/plot_network_telemetry.py"
     if [ -f "$NET_PLOT_SCRIPT" ] && [ -f "$TELEMETRY_DB_FILE" ]; then
         echo "Generating network telemetry plots..."
         uv run --python "$VENV_DIR" python3 "$NET_PLOT_SCRIPT" -d "$TELEMETRY_DB_FILE" -o "$TELEMETRY_PLOT_FILE"

@@ -80,18 +80,18 @@ exp *args:
         fi; \
     done; \
     if [ "$has_script" -eq 1 ]; then \
-        ./run-experiments.sh "$@"; \
+        ./experiments/run-experiments.sh "$@"; \
     elif [ $# -eq 0 ]; then \
-        ./run-experiments.sh -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+        ./experiments/run-experiments.sh -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
     elif [ "$has_duration" -eq 1 ]; then \
-        ./run-experiments.sh "$@" --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+        ./experiments/run-experiments.sh "$@" --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
     else \
-        ./run-experiments.sh "$@" -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
+        ./experiments/run-experiments.sh "$@" -t 1m --loss 10 --corrupt 5 --delay 200 --jitter 50 ./experiments/gossip-experiment.sh --nodes 10 --rings 3; \
     fi
 
 [group('experiments')]
 exp-help:
-    ./run-experiments.sh --help
+    ./experiments/run-experiments.sh --help
 
 [group('experiments')]
 clean-results:
