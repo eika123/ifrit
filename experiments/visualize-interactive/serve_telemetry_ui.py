@@ -23,7 +23,36 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+class ColoredFormatter(logging.Formatter):
+    """Terminal color formatter for log output."""
+    COLORS = {
+        logging.DEBUG: "\033[36m",     # Cyan
+        logging.INFO: "\033[32m",      # Green
+        logging.WARNING: "\033[33m",   # Yellow
+        logging.ERROR: "\033[31m",     # Red
+        logging.CRITICAL: "\033[35m",  # Magenta
+    }
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        color = self.COLORS.get(record.levelno, self.RESET)
+        level_name = f"{self.BOLD}{color}{record.levelname:<7}{self.RESET}"
+        name = f"\033[34m{record.name}\033[0m"
+        timestamp = f"\033[90m{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}\033[0m"
+        message = record.getMessage()
+        if record.levelno >= logging.WARNING:
+            message = f"{color}{message}{self.RESET}"
+        return f"{timestamp} {level_name} [{name}] {message}"
+
+
 logger = logging.getLogger("telemetry_ui")
+_handler = logging.StreamHandler()
+_handler.setFormatter(ColoredFormatter())
+logger.handlers.clear()
+logger.addHandler(_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 app = FastAPI(title="Ifrit Telemetry Explorer")
 
@@ -139,11 +168,13 @@ async def get_analytics(host: str | None = None, role: str | None = None, bucket
     }
 
     if not exists:
+        msg = f"NO TELEMETRY DATABASE FOUND: '{DB_TARGET}' contains no valid SQLite databases. You must run an experiment first (e.g. `just exp`) before viewing telemetry."
+        logger.warning(msg)
         return {
             "status": status_info,
             "summary": SummaryStats().model_dump(),
             "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
-            "error": f"NO TELEMETRY DATABASE FOUND: '{DB_TARGET}' contains no valid SQLite databases. You must run an experiment first (e.g. `just exp`) before viewing telemetry."
+            "error": msg
         }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
@@ -152,11 +183,13 @@ async def get_analytics(host: str | None = None, role: str | None = None, bucket
         # Check table
         cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='gossip_exchange'")
         if not await cursor.fetchone():
+            msg = f"Database at '{target}' has no 'gossip_exchange' table."
+            logger.warning(msg)
             return {
                 "status": status_info,
                 "summary": SummaryStats().model_dump(),
                 "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []},
-                "warning": f"Database at '{target}' has no 'gossip_exchange' table."
+                "warning": msg
             }
 
         # 1. Check table columns dynamically
@@ -408,9 +441,11 @@ async def get_summary():
 async def get_timeseries(host: str | None = None, role: str | None = None, buckets: int = 50):
     target = resolve_db_path()
     if not (target and os.path.isfile(target)):
+        msg = f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty."
+        logger.warning(msg)
         return {
             "labels": [], "outgoing": [], "incoming": [], "bytes": [], "client": [], "server": [],
-            "error": f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty."
+            "error": msg
         }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
@@ -510,12 +545,14 @@ async def get_table_data(
 ):
     target = resolve_db_path()
     if not (target and os.path.isfile(target)):
+        msg = f"NO EXPERIMENT DATABASE: '{DB_TARGET}' contains no databases to query table '{table}'."
+        logger.warning(msg)
         return {
             "items": [],
             "total": 0,
             "columns": [],
             "table": table,
-            "error": f"NO EXPERIMENT DATABASE: '{DB_TARGET}' contains no databases to query table '{table}'."
+            "error": msg
         }
 
     allowed_tables = {"gossip_exchange", "rebuttal_events", "accusation_events", "note_events", "node_identity"}
@@ -664,6 +701,8 @@ async def get_bytes_per_node(
 ):
     target = resolve_db_path()
     if not (target and os.path.isfile(target)):
+        msg = f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty."
+        logger.warning(msg)
         return {
             "nodes": {},
             "total_per_node": {},
@@ -671,7 +710,7 @@ async def get_bytes_per_node(
             "server_totals": {},
             "direction": direction,
             "role": role,
-            "error": f"NO TELEMETRY DATA: Results folder '{DB_TARGET}' is empty.",
+            "error": msg,
         }
 
     d_int = int(DAEMON_PORT) if DAEMON_PORT.isdigit() else 9000
