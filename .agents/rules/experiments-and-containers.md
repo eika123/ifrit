@@ -15,7 +15,7 @@
   - Manage experiment timeouts (`-t <duration>`) and process lifecycles.
   - Ensure clean container teardown (`docker compose stop` / `docker compose down`) on timeout, completion, or signal interruption.
   - Log time-series metrics to SQLite using `PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE TRANSACTION;`.
-  - Restore file ownership (`chown -R $REAL_USER`) on `experiment_results/` and `experiments/.venv` when executed under `sudo`.
+  - Restore file ownership (`chown -R $REAL_USER`) on `experiments/results/` and `experiments/.venv` when executed under `sudo`.
 
 ## Python Tooling & Plotting Standards
 - **Always Use `uv`**: Prefer `uv` for managing virtual environments and running Python scripts (`uv run`, `uv pip install`, `uv venv`).

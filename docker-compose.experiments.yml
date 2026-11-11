@@ -29,7 +29,7 @@ services:
       - IFRIT_NODE_NAME=${IFRIT_NODE_NAME:-}
     volumes:
       - ./examples/ifrit_container_config.yaml:/app/ifrit_config.yaml:ro
-      - ./experiment_results:/results
+      - ./experiments/results:/results
     cap_add:
       - NET_ADMIN
     networks:
@@ -54,7 +54,7 @@ services:
     environment:
       - TELEMETRY_DB=${TELEMETRY_DB:-/results/network_telemetry.db}
     volumes:
-      - ./experiment_results:/results
+      - ./experiments/results:/results
     command: [ "-db", "${TELEMETRY_DB:-/results/network_telemetry.db}", "-iface", "ifrit-br0" ]
 networks:
   ifrit-net:

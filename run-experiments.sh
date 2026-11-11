@@ -77,7 +77,7 @@ usage() {
 }
 
 CONTAINER_NAME="go-experiment-runner"
-OUTPUT_DIR="$(pwd)/experiment_results"
+OUTPUT_DIR="$(pwd)/experiments/results"
 mkdir -p "$OUTPUT_DIR"
 
 # Parse flags

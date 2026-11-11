@@ -59,11 +59,11 @@ exp-help:
 
 [group('experiments')]
 clean:
-    @if [ -d experiment_results ]; then \
-        find experiment_results -mindepth 1 -delete; \
-        echo "Cleaned experiment_results/"; \
+    @if [ -d experiments/results ]; then \
+        find experiments/results -mindepth 1 -delete; \
+        echo "Cleaned experiments/results/"; \
     else \
-        echo "experiment_results/ does not exist."; \
+        echo "experiments/results/ does not exist."; \
     fi
 
 alias clean-results := clean

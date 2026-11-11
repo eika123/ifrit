@@ -7,13 +7,13 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser(description="Plot time-series CPU and RAM usage from SQLite database.")
 parser.add_argument(
     "-d", "--db-path",
-    default="experiment_results/resource_stats.db",
-    help="Path to SQLite database file (default: experiment_results/resource_stats.db)",
+    default="experiments/results/resource_stats.db",
+    help="Path to SQLite database file (default: experiments/results/resource_stats.db)",
 )
 parser.add_argument(
     "-o", "--output-image",
-    default="experiment_results/experiment_plot.png",
-    help="Path to output plot PNG file (default: experiment_results/experiment_plot.png)",
+    default="experiments/results/experiment_plot.png",
+    help="Path to output plot PNG file (default: experiments/results/experiment_plot.png)",
 )
 args = parser.parse_args()
 db_path = args.db_path

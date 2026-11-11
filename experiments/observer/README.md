@@ -12,7 +12,7 @@ This directory contains the scaffolding for the passive network observation daem
        │    └──► Calculates actual round-trip latency (RTT) per nonce
        │
        └──► TCP 9000: Measures gossip content wire byte size over time
-            └──► SQLite database: experiment_results/network_telemetry.db
+            └──► SQLite database: experiments/results/network_telemetry.db
 
   ─────────────────────────────────────────────────────────────
 
@@ -76,14 +76,14 @@ Add the observer as an optional service joined to `ifrit-net`:
     container_name: ifrit-observer
     network_mode: "host" # or cap_add: [NET_ADMIN, NET_RAW] on ifrit-net
     volumes:
-      - ./experiment_results:/results
+      - ./experiments/results:/results
     command: ["-db", "/results/network_telemetry.db"]
 ```
 
 ## Running Locally on Host (Requires root / sudo for raw socket)
 
 ```bash
-sudo go run ./experiments/observer/main.go -db experiment_results/network_telemetry.db
+sudo go run ./experiments/observer/main.go -db experiments/results/network_telemetry.db
 ```
 
 ## SQLite Telemetry Schema

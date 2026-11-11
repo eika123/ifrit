@@ -57,9 +57,10 @@ def resolve_db_path() -> str:
         candidates.append(env_target)
 
     candidates.extend([
-        "experiment_results",
-        os.path.join("..", "experiment_results"),
-        os.path.join("..", "..", "experiment_results"),
+        "experiments/results",
+        os.path.join("..", "results"),
+        os.path.join("..", "experiments", "results"),
+        os.path.join("..", "..", "experiments", "results"),
     ])
 
     for target in candidates:
@@ -184,6 +185,12 @@ async def get_analytics(host: Optional[str] = None, role: Optional[str] = None, 
             FROM gossip_exchange
         """)
         row = await cursor_totals.fetchone()
+        if row is None:
+            return {
+                "status": status_info,
+                "summary": SummaryStats().model_dump(),
+                "timeline": {"labels": [], "outgoing": [], "incoming": [], "bytes": []}
+            }
 
         # Check total rebuttals if rebuttal_events table exists
         total_rebuttals = 0
@@ -432,7 +439,9 @@ async def get_table_counts():
             counts = {}
             for t in tables:
                 c = await db.execute(f"SELECT COUNT(*) FROM {t}")
-                counts[t] = (await c.fetchone())[0]
+                row = await c.fetchone()
+                if row is not None:
+                    counts[t] = row[0]
             return counts
         except Exception:
             return {}
@@ -504,7 +513,8 @@ async def get_table_data(
             where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
             cnt_cursor = await db.execute(f"SELECT COUNT(*) FROM {table} {where_clause}", params)
-            total = (await cnt_cursor.fetchone())[0]
+            cnt_row = await cnt_cursor.fetchone()
+            total = cnt_row[0] if cnt_row is not None else 0
 
             sort_col = "timestamp" if "timestamp" in columns else columns[0]
             col_list_str = ", ".join(columns)
@@ -701,7 +711,8 @@ async def get_rebuttals(limit: int = 100):
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
             c = await db.execute("SELECT COUNT(*) FROM rebuttal_events")
-            total = (await c.fetchone())[0]
+            cnt_row = await c.fetchone()
+            total = cnt_row[0] if cnt_row is not None else 0
             cursor = await db.execute(
                 "SELECT timestamp, direction, host, remote_host, node_id, epoch, mask FROM rebuttal_events ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
@@ -732,7 +743,8 @@ async def get_accusations(limit: int = 100):
     async with aiosqlite.connect(f"file:{target}?mode=ro", uri=True) as db:
         try:
             c = await db.execute("SELECT COUNT(*) FROM accusation_events")
-            total = (await c.fetchone())[0]
+            cnt_row = await c.fetchone()
+            total = cnt_row[0] if cnt_row is not None else 0
             cursor = await db.execute(
                 "SELECT timestamp, direction, host, remote_host, accuser, accused, ring_num, epoch FROM accusation_events ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
@@ -764,15 +776,18 @@ async def dashboard_index():
 
 def main():
     parser = argparse.ArgumentParser(description="Ifrit Telemetry Dashboard Server (FastAPI + SQLite)")
-    default_target = "experiment_results"
-    if not os.path.exists(default_target) and os.path.exists(os.path.join("..", "experiment_results")):
-        default_target = os.path.join("..", "experiment_results")
+    default_target = "experiments/results"
+    if not os.path.exists(default_target):
+        if os.path.exists(os.path.join("..", "results")):
+            default_target = os.path.join("..", "results")
+        elif os.path.exists(os.path.join("..", "experiments", "results")):
+            default_target = os.path.join("..", "experiments", "results")
     
     parser.add_argument(
         "target",
         nargs="?",
         default=default_target,
-        help="Path to merged SQLite file or experiment directory containing telemetry databases (default: experiment_results)",
+        help="Path to merged SQLite file or experiment directory containing telemetry databases (default: experiments/results)",
     )
     
     parser.add_argument(

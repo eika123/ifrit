@@ -167,8 +167,8 @@ def merge_databases(db_files, output_db, cleanup_sources=False, dns_file=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Merge per-node gossip telemetry SQLite databases into a unified database.")
-    parser.add_argument("-d", "--dir", default="experiment_results", help="Directory containing telemetry_*.db files")
-    parser.add_argument("-o", "--output", default="experiment_results/unified_gossip_telemetry.db", help="Output unified SQLite database path")
+    parser.add_argument("-d", "--dir", default="experiments/results", help="Directory containing telemetry_*.db files")
+    parser.add_argument("-o", "--output", default="experiments/results/unified_gossip_telemetry.db", help="Output unified SQLite database path")
     parser.add_argument("--pattern", default="telemetry_*.db", help="Filename pattern to match node databases")
     parser.add_argument("--dns-file", default=None, help="Path to docker inspect DNS text file (<ip> <container_name>)")
     parser.add_argument("--cleanup", action="store_true", help="Remove source databases after successful merge")

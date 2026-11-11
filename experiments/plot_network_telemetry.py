@@ -8,13 +8,13 @@ from datetime import datetime
 parser = argparse.ArgumentParser(description="Plot network telemetry metrics (Ping RTT & Gossip Bytes) from SQLite.")
 parser.add_argument(
     "-d", "--db-path",
-    default="experiment_results/network_telemetry.db",
-    help="Path to SQLite telemetry DB (default: experiment_results/network_telemetry.db)",
+    default="experiments/results/network_telemetry.db",
+    help="Path to SQLite telemetry DB (default: experiments/results/network_telemetry.db)",
 )
 parser.add_argument(
     "-o", "--output-image",
-    default="experiment_results/network_telemetry.png",
-    help="Path to output plot PNG (default: experiment_results/network_telemetry.png)",
+    default="experiments/results/network_telemetry.png",
+    help="Path to output plot PNG (default: experiments/results/network_telemetry.png)",
 )
 args = parser.parse_args()
 db_path = args.db_path

@@ -166,7 +166,7 @@ type Observer struct {
 func main() {
 	var cfg Config
 	flag.StringVar(&cfg.Interface, "iface", "any", "Network interface or bridge to sniff on (e.g., eth0, ifrit-net, any)")
-	flag.StringVar(&cfg.DBPath, "db", "experiment_results/network_telemetry.db", "SQLite output database path")
+	flag.StringVar(&cfg.DBPath, "db", "experiments/results/network_telemetry.db", "SQLite output database path")
 	flag.IntVar(&cfg.UDPPort, "udp-port", 9001, "UDP port for failure detection ping/pong")
 	flag.IntVar(&cfg.TCPPort, "tcp-port", 9000, "TCP port for gRPC gossip traffic")
 	flag.BoolVar(&cfg.UseEBPF, "ebpf", true, "Use eBPF TC filter and RingBuffer instead of raw socket sniffer")
