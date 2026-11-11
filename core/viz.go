@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/gorilla/mux"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/netutil"
 	"github.com/rs/cors"
 )
 
@@ -56,7 +56,7 @@ func (s *state) marshal() io.Reader {
 }
 
 func newViz(n *Node, vizAddr string, updateInterval time.Duration, trusted bool) (*viz, error) {
-	l, err := netutil.ListenOnPort(httpPort)
+	l, err := listenOnPort(httpPort)
 	if err != nil {
 		return nil, err
 	}
@@ -293,5 +293,25 @@ func (v *viz) remove() {
 		}
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
+	}
+}
+
+var errFoundNoPort = errors.New("could not find any available port")
+
+func listenOnPort(port int) (net.Listener, error) {
+	startPort := port
+
+	for {
+		l, err := net.Listen("tcp4", fmt.Sprintf(":%d", startPort))
+		if err == nil {
+			return l, nil
+		}
+
+		if startPort > (port + 100) {
+			log.Error(err.Error())
+			return nil, errFoundNoPort
+		}
+
+		startPort++
 	}
 }

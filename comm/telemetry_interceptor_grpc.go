@@ -22,7 +22,6 @@ import (
 	"time"
 
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/netutil"
 	pb "github.com/joonnna/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3" // needed for sqlite3 driver
 	"golang.org/x/net/context"
@@ -88,7 +87,7 @@ type NoteEvent struct {
 }
 
 func getLocalHostIdentifier() string {
-	if ip := netutil.GetLocalIP(); ip != "" {
+	if ip := GetLocalIP(); ip != "" {
 		return ip
 	}
 	if h := os.Getenv("HOSTNAME"); h != "" {

@@ -13,7 +13,6 @@ import (
 	"github.com/joonnna/ifrit/core"
 	"github.com/joonnna/ifrit/crypto/identity"
 	"github.com/joonnna/ifrit/digestmaps"
-	"github.com/joonnna/ifrit/netutil"
 	"github.com/spf13/viper"
 )
 
@@ -68,12 +67,12 @@ func NewClient(config *Config) (*Client, error) {
 
 	for {
 		var err error
-		udpConn, udpAddr, err = netutil.ListenUdp(config.Hostname, config.UDPPort)
+		udpConn, udpAddr, err = comm.ListenUdp(config.Hostname, config.UDPPort)
 		if err != nil {
 			return nil, err
 		}
 
-		l, tcpAddr, err = netutil.GetListener(config.Hostname, config.TCPPort)
+		l, tcpAddr, err = comm.GetListener(config.Hostname, config.TCPPort)
 		if err != nil {
 			if closeErr := udpConn.Close(); closeErr != nil {
 				log.Error("failed to close udpConn on listener error", "err", closeErr)

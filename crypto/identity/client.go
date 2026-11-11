@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/netutil"
 )
 
 type certResponse struct {
@@ -37,11 +36,14 @@ func sendCertRequest(privKey *ecdsa.PrivateKey, caAddr string, pk pkix.Name, DNS
 	var certs certResponse
 	set := &certSet{}
 
-	localIP := netutil.GetLocalIP()
-
 	var ipAddresses []net.IP
-	if parsed := net.ParseIP(localIP); parsed != nil {
-		ipAddresses = append(ipAddresses, parsed)
+	if len(pk.Locality) > 0 {
+		serviceAddr := strings.Split(pk.Locality[0], ":")
+		if len(serviceAddr) > 0 && serviceAddr[0] != "" {
+			if serviceIP, err := net.LookupIP(serviceAddr[0]); err == nil && len(serviceIP) > 0 {
+				ipAddresses = append(ipAddresses, serviceIP[0])
+			}
+		}
 	}
 
 	template := x509.CertificateRequest{
@@ -154,4 +156,3 @@ func selfSignedCert(priv *ecdsa.PrivateKey, pk pkix.Name) (*certSet, error) {
 
 	return &certSet{ownCert: parsed}, nil
 }
-
