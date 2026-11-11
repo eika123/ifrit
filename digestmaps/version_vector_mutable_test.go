@@ -14,7 +14,7 @@ func testMutableKeyFunc(item testEntity) DigestSymbol {
 }
 
 func TestVersionVectorMutable_BasicOperations(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	assert.True(t, vv.Empty())
 	assert.Equal(t, 0, vv.Size())
 	assert.Equal(t, DigestSymbol(0), vv.Fingerprint())
@@ -57,7 +57,7 @@ func TestVersionVectorMutable_BasicOperations(t *testing.T) {
 }
 
 func TestVersionVectorMutable_MonotonicAdvancement(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	e1 := testEntity{ID: "node-1", Payload: "v1"}
 	key1 := testMutableKeyFunc(e1)
 
@@ -88,7 +88,7 @@ func TestVersionVectorMutable_MonotonicAdvancement(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RejectsStaleAndEqualVersions(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	e1 := testEntity{ID: "node-1", Payload: "v5"}
 	key1 := testMutableKeyFunc(e1)
 
@@ -122,7 +122,7 @@ func TestVersionVectorMutable_RejectsStaleAndEqualVersions(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RemovalAndClear(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	vItem1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	vItem2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "v1"}, Version: 1}
 
@@ -152,7 +152,7 @@ func TestVersionVectorMutable_RemovalAndClear(t *testing.T) {
 }
 
 func TestVersionVectorMutable_RemoveVersion(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	vItem := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v5"}, Version: 5}
 	key := testMutableKeyFunc(vItem.Item)
 
@@ -175,8 +175,8 @@ func TestVersionVectorMutable_RemoveVersion(t *testing.T) {
 }
 
 func TestVersionVectorMutable_Commutativity(t *testing.T) {
-	vv1 := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
-	vv2 := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv1 := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
+	vv2 := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 
 	items := []VersionedItem[testEntity]{
 		{Item: testEntity{ID: "node-A", Payload: "data-A"}, Version: 1},
@@ -200,7 +200,7 @@ func TestVersionVectorMutable_Commutativity(t *testing.T) {
 }
 
 func TestVersionVectorMutable_ElementsAndVersions(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	v1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "p1"}, Version: 10}
 	v2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "p2"}, Version: 20}
 
@@ -218,7 +218,7 @@ func TestVersionVectorMutable_ElementsAndVersions(t *testing.T) {
 }
 
 func TestVersionVectorMutable_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	vv := NewVersionVectorMutable[DigestSymbol, testEntity, DigestSymbol](testMutableKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(testMutableKeyFunc, testHasher)
 	var wg sync.WaitGroup
 
 	numGoroutines := 20
@@ -267,7 +267,7 @@ func TestVersionVectorMutable_StringKeyed(t *testing.T) {
 		return item.ID
 	}
 
-	vv := NewVersionVectorMutable[string, testEntity, DigestSymbol](stringKeyFunc, testHasher)
+	vv := NewVersionVectorMutable(stringKeyFunc, testHasher)
 	assert.True(t, vv.Empty())
 
 	item1 := VersionedItem[testEntity]{Item: testEntity{ID: "peer-alpha", Payload: "hello"}, Version: 1}

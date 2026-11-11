@@ -31,7 +31,7 @@ func testKeyFunc(item testEntity) string {
 }
 
 func TestVersionVectorImmutable_BasicOperations(t *testing.T) {
-	vv := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vv := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	assert.True(t, vv.Empty())
 	assert.Equal(t, 0, vv.Size())
 	assert.Equal(t, DigestSymbol(0), vv.Fingerprint())
@@ -82,7 +82,7 @@ func TestVersionVectorImmutable_BasicOperations(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_ImmutabilityAndBranching(t *testing.T) {
-	root := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	root := NewVersionVectorImmutable(testKeyFunc, testHasher)
 
 	itemA := VersionedItem[testEntity]{Item: testEntity{ID: "node-A", Payload: "A"}, Version: 1}
 	itemB := VersionedItem[testEntity]{Item: testEntity{ID: "node-B", Payload: "B"}, Version: 1}
@@ -131,7 +131,7 @@ func TestVersionVectorImmutable_ImmutabilityAndBranching(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_AddIdempotencyAndStaleRejection(t *testing.T) {
-	vv := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vv := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	itemV2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v2"}, Version: 2}
 
 	vv1, ok := vv.AddItem(itemV2)
@@ -146,13 +146,13 @@ func TestVersionVectorImmutable_AddIdempotencyAndStaleRejection(t *testing.T) {
 func TestVersionVectorImmutable_DifferentVersionsProduceDistinctFingerprints(t *testing.T) {
 	// Vector A with node-1 at version 1
 	itemV1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "state"}, Version: 1}
-	vvA0 := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vvA0 := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	vvA, okA := vvA0.AddItem(itemV1)
 	require.True(t, okA)
 
 	// Vector B with node-1 at version 2 (rebuttal / update)
 	itemV2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "state"}, Version: 2}
-	vvB0 := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vvB0 := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	vvB, okB := vvB0.AddItem(itemV2)
 	require.True(t, okB)
 
@@ -161,7 +161,7 @@ func TestVersionVectorImmutable_DifferentVersionsProduceDistinctFingerprints(t *
 }
 
 func TestVersionVectorImmutable_VersionUpgradePattern(t *testing.T) {
-	vv := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vv := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	e1v1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	digV1 := testHasher(e1v1)
 
@@ -199,7 +199,7 @@ func TestVersionVectorImmutable_VersionUpgradePattern(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_Removal(t *testing.T) {
-	vv0 := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vv0 := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	e1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "v1"}, Version: 1}
 	e2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "v1"}, Version: 1}
 
@@ -248,13 +248,13 @@ func TestVersionVectorImmutable_Commutativity(t *testing.T) {
 	}
 
 	// Insert in forward order
-	vvForward := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vvForward := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	for _, item := range items {
 		vvForward, _ = vvForward.AddItem(item)
 	}
 
 	// Insert in reverse order
-	vvReverse := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vvReverse := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	for i := len(items) - 1; i >= 0; i-- {
 		vvReverse, _ = vvReverse.AddItem(items[i])
 	}
@@ -267,7 +267,7 @@ func TestVersionVectorImmutable_Commutativity(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_ElementsAndVersions(t *testing.T) {
-	vv := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	vv := NewVersionVectorImmutable(testKeyFunc, testHasher)
 	item1 := VersionedItem[testEntity]{Item: testEntity{ID: "node-1", Payload: "p1"}, Version: 10}
 	item2 := VersionedItem[testEntity]{Item: testEntity{ID: "node-2", Payload: "p2"}, Version: 20}
 
@@ -286,7 +286,7 @@ func TestVersionVectorImmutable_ElementsAndVersions(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_ConcurrentAccessAndRaceDetector(t *testing.T) {
-	baseVV := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	baseVV := NewVersionVectorImmutable(testKeyFunc, testHasher)
 
 	numBaseItems := 10
 	for i := 0; i < numBaseItems; i++ {
@@ -343,7 +343,7 @@ func TestVersionVectorImmutable_ConcurrentAccessAndRaceDetector(t *testing.T) {
 }
 
 func TestVersionVectorImmutable_SliceIsolationAndConcurrentMutation(t *testing.T) {
-	baseVV := NewVersionVectorImmutable[string, testEntity, DigestSymbol](testKeyFunc, testHasher)
+	baseVV := NewVersionVectorImmutable(testKeyFunc, testHasher)
 
 	numItems := 50
 	for i := 0; i < numItems; i++ {
