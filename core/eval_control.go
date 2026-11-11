@@ -268,6 +268,43 @@ func (n *Node) evalValidCertificate(cert *x509.Certificate) error {
 	return nil
 }
 
+func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.Note) (*discovery.Peer, bool, bool, error) {
+	var wasObserved, wasAccused bool
+
+	if err := n.validateCertificate(cert); err != nil {
+		log.Error(err.Error())
+		return nil, wasObserved, wasAccused, err
+	}
+
+	peer := n.view.Peer(remoteId)
+	if peer != nil {
+		wasObserved = true
+		wasAccused = n.view.IsAccused(peer)
+	}
+
+	if !wasObserved {
+		if err := n.evalValidCertificate(cert); err != nil {
+			log.Error(err.Error())
+			return nil, wasObserved, wasAccused, err
+		}
+		if peer == nil {
+			peer = n.view.Peer(remoteId)
+		}
+	}
+
+	if ownNote != nil {
+		if string(ownNote.GetId()) != remoteId {
+			log.Warn("admitCaller: ownNote ID does not match mTLS certificate remoteId", "noteId", string(ownNote.GetId()), "remoteId", remoteId)
+		} else {
+			if err := n.evalNote(ownNote); err != nil && err != errOldNote {
+				log.Debug(err.Error())
+			}
+		}
+	}
+
+	return peer, wasObserved, wasAccused, nil
+}
+
 // promotePendingAccusationsForPeer scans AccusationStore for any unpromoted accusations
 // where id is either the accused or the accuser, and evaluates them if all prerequisite
 // peers and active notes are now available.
