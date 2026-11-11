@@ -88,4 +88,3 @@ func NewCertificate(raw []byte) *Certificate {
 		raw: raw,
 	}
 }
-

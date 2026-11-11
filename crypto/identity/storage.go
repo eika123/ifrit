@@ -227,4 +227,3 @@ func loadPrivKey(certPath string) (*ecdsa.PrivateKey, error) {
 	log.Info("private-key loaded", "path", path)
 	return privKey, nil
 }
-

@@ -63,4 +63,3 @@ func TestIdentity_SelfSignedAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, loaded.Verify(data, r2, s2, &loaded.Priv().PublicKey))
 }
-
