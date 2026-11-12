@@ -43,6 +43,7 @@ fmt:
 build:
     go build ./...
 
+# Runs go fmt, vet, build, test and test -race
 [group('development')]
 check: fmt vet build test test-race
 
@@ -50,16 +51,19 @@ check: fmt vet build test test-race
 tui-gossip *args:
     ./scripts/run_local_gossip.sh "$@"
 
+# Run the interactive browser visualizer
 [group('local')]
 tui-telemetry *args:
     ./experiments/run-visualizer.sh "$@"
 
 alias viz := tui-telemetry
 
+# Set up a server with a POST and GET method. Data is gossiped to the other servers
 [group('local')]
 local-http *args:
     ./scripts/run_local_http.sh "$@"
 
+# Use the http server to test data convergence.
 [group('local')]
 local-http-test nodes='5' mode='--test':
     ./scripts/run_local_http.sh -n {{ nodes }} {{ mode }}
@@ -68,6 +72,9 @@ local-http-test nodes='5' mode='--test':
 local-streaming:
     ./scripts/run_local_streaming.sh
 
+[doc("No args: 
+run a \"default\" experiment. Can override time by passing e.g -t 30s or -t 2m,
+and fresh build with passing --build. See/run experiments/run-experiment --help or just run `$ just exp-help` for more info")]
 [group('experiments')]
 exp *args:
     @has_script=0; \
@@ -93,7 +100,8 @@ exp *args:
 exp-help:
     ./experiments/run-experiments.sh --help
 
-[group('experiments')]
+# Clean experiment output files in experiments/results/
+[group('cleaning')]
 clean-results:
     @if [ -d experiments/results ]; then \
         find experiments/results -mindepth 1 -delete; \
@@ -102,20 +110,30 @@ clean-results:
         echo "experiments/results/ does not exist."; \
     fi
 
-[group('experiments')]
+# Clean libpod build and runtime artifacts
+[group('cleaning')]
 clean-libpod:
     rm -rf libpod
 
-[group('experiments')]
+# Clean local CA data and certificates in ifrit-cad/
+[group('cleaning')]
 clean-ca-data:
     rm -rf ifrit-cad
 
-[group('development')]
+# Clean compiled binaries in repository root (ca, gossipContentExample, streamingExample, messagesExample)
+[group('cleaning')]
 clean-bin:
     rm -f ca gossipContentExample streamingExample messagesExample
 
-[group('experiments')]
-clean: clean-results clean-libpod clean-bin
+# Clean local log files (logfile)
+[group('cleaning')]
+clean-logs:
+    rm -f logfile
 
-[group('experiments')]
+# Clean standard artifacts (experiment results, libpod, binaries, and logs)
+[group('cleaning')]
+clean: clean-results clean-libpod clean-bin clean-logs
+
+# Clean all artifacts including CA data and certificates
+[group('cleaning')]
 clean-all: clean clean-ca-data
