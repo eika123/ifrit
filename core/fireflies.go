@@ -53,15 +53,15 @@ func (n *Node) gossip() {
 	neighbours := n.view.GossipPartners()
 	adv := n.AdversarialPolicy()
 
-	for _, p := range neighbours {
-		if !n.IsDivergent(p) {
+	for _, peer := range neighbours {
+		if !n.IsDivergent(peer) {
 			continue
 		}
 
 		var sess *PeerReconcileSession
 		var seq uint64
 		if n.sessionManager != nil {
-			sess = n.sessionManager.GetOrCreate(p.Id)
+			sess = n.sessionManager.GetOrCreate(peer.Id)
 			var ok bool
 			seq, ok = sess.TryStartOutboundReconciling()
 			if !ok {
@@ -69,22 +69,22 @@ func (n *Node) gossip() {
 			}
 		}
 
-		msg := n.collectDigestDiffsForPeer(p)
+		msg := n.collectDigestDiffsForPeer(peer)
 
 		if adv != nil && adv.OnGossipOut != nil {
-			adv.OnGossipOut(p, msg)
+			adv.OnGossipOut(peer, msg)
 		}
 
 		// the comm.Gossip actually does the RPC
-		reply, err := n.comm.Gossip(p.Addr, msg)
+		reply, err := n.comm.Gossip(peer.Addr, msg)
 		if err != nil {
 			if sess != nil {
 				sess.ResetIfSeq(seq)
 			}
 			if status.Code(err) == codes.Aborted {
-				log.Debug("Outbound gossip aborted by peer tie-breaker", "addr", p.Addr)
+				log.Debug("Outbound gossip aborted by peer tie-breaker", "addr", peer.Addr)
 			} else {
-				log.Error(err.Error(), "addr", p.Addr)
+				log.Error(err.Error(), "addr", peer.Addr)
 			}
 			continue
 		}
@@ -107,18 +107,14 @@ func (n *Node) gossip() {
 		}
 
 		if deltas.HasDeltas() {
-			n.spawnSyncSession(p, sess, seq)
+			n.spawnSyncSession(peer, sess, seq)
 		} else {
 			// In sync: update cached peer fingerprints from responder's reply
-			if fpData := reply.GetFingerprintData(); fpData != nil {
-				p.SetFingerprintData(fpData)
-			}
-			if fpAcc := reply.GetFingerprintAccusations(); fpAcc != nil {
-				p.SetFingerprintAccusations(fpAcc)
-			}
-			if fpView := reply.GetFingerprintView(); fpView != nil {
-				p.SetFingerprintView(fpView)
-			}
+			peer.SetFingerprints(
+				reply.GetFingerprintData(),
+				reply.GetFingerprintAccusations(),
+				reply.GetFingerprintView(),
+			)
 		}
 	}
 }
@@ -129,37 +125,37 @@ func (n *Node) monitor() {
 	// Fireflies protocol: ping one successor per ring,
 	// up to ringsPingedPerInterval in total.
 	for i := 1; i <= n.ringsPingedPerInterval; i++ {
-		p, ringNum := n.view.MonitorTarget()
-		if p == nil {
+		peer, ringNum := n.view.MonitorTarget()
+		if peer == nil {
 			continue
 		}
 
-		err := n.fd.probe(p)
+		err := n.fd.probe(peer)
 		if err == errDead {
-			log.Debug("Monitor --> Successor dead, accusing", "succ", p.Addr, "ringNum", ringNum)
-			peerNote, found := n.view.ActiveNote(p.Id)
+			log.Debug("Monitor --> Successor dead, accusing", "succ", peer.Addr, "ringNum", ringNum)
+			peerNote, found := n.view.ActiveNote(peer.Id)
 
 			// Will always have note for a peer in our liveView, except when the peer stems
 			// from the initial contact list of the CA, if it's dead
 			// we should remove it to ensure it doesn't stay in our liveView.
 			// Not possible to accuse a peer without a note.
 			if !found || peerNote == nil {
-				n.view.RemoveLive(p)
+				n.view.RemoveLive(peer)
 				log.Debug("Monitor -- Removing live peer due to not having note and being accused",
-					"addr", p.Addr)
+					"addr", peer.Addr)
 				continue
 			}
 
-			if adv.shouldSuppressAccusation(p, ringNum) {
-				log.Debug("Adversary: suppressed accusation against peer", "addr", p.Addr, "ringNum", ringNum)
+			if adv.shouldSuppressAccusation(peer, ringNum) {
+				log.Debug("Adversary: suppressed accusation against peer", "addr", peer.Addr, "ringNum", ringNum)
 				continue
 			}
 
-			err := n.view.CreateAccusation(p, peerNote, ringNum, n.cs)
+			err := n.view.CreateAccusation(peer, peerNote, ringNum, n.cs)
 			if err == discovery.ErrAccAlreadyExists || err == nil {
-				live := n.view.IsAlive(p)
-				if exists := n.view.HasTimer(p); !exists && live {
-					n.view.StartTimer(p, peerNote, n.self)
+				live := n.view.IsAlive(peer)
+				if exists := n.view.HasTimer(peer); !exists && live {
+					n.view.StartTimer(peer, peerNote, n.self)
 				}
 			} else {
 				log.Error(err.Error())
@@ -167,11 +163,11 @@ func (n *Node) monitor() {
 		}
 
 		if err == errInvalidPongSignature {
-			log.Debug("Monitor -- Invalid pong signature, successor is malicious (or this implementation is just buggy!)", "succ", p.Addr)
+			log.Debug("Monitor -- Invalid pong signature, successor is malicious (or this implementation is just buggy!)", "succ", peer.Addr)
 		}
 
 		if err != nil && err != errInvalidPongSignature {
-			log.Error(err.Error(), "Monitor -- successor peer addr:", p.Addr)
+			log.Error(err.Error(), "Monitor -- successor peer addr:", peer.Addr)
 		}
 	}
 }
@@ -286,9 +282,11 @@ func (fd *failureDetector) probe(dest *discovery.Peer) error {
 	}
 
 	dest.ResetPingCount()
-	dest.SetFingerprintData(pong.GetFingerprintData())
-	dest.SetFingerprintAccusations(pong.GetFingerprintAccusations())
-	dest.SetFingerprintView(pong.GetFingerprintView())
+	dest.SetFingerprints(
+		pong.GetFingerprintData(),
+		pong.GetFingerprintAccusations(),
+		pong.GetFingerprintView(),
+	)
 
 	return nil
 }

@@ -30,14 +30,24 @@ var (
 	ErrAccAlreadyExists        = errors.New("Accusation already exists")
 )
 
+// Peer represents a discovered node in the Fireflies overlay, holding its
+// certificate-bound identity, network endpoints, liveness state, and cached
+// reconciliation fingerprints.
 type Peer struct {
-	Addr     string
+	// Addr is the peer's TCP/gRPC gossip and sync endpoint (host:port),
+	// populated from cert.Subject.Locality[0].
+	Addr string
+
+	// PingAddr is the peer's UDP heartbeat/ping endpoint (host:port),
+	// populated from cert.Subject.Locality[1].
 	PingAddr string
 
 	// Debuging and experiments only.
 	HttpAddr string
 
-	// id is the hash (sha256) of the certificate
+	// Id is the peer's opaque 32-byte random identifier as a raw byte-string,
+	// populated from cert.SubjectKeyId. Used for ring placement, view indexing,
+	// and mTLS caller lookup on inbound RPCs (where source ports are ephemeral).
 	Id        string
 	cert      *x509.Certificate
 	publicKey *ecdsa.PublicKey
@@ -69,6 +79,8 @@ type timeout struct {
 	lastNote  *Note
 }
 
+// newPeer constructs a Peer from an X.509 certificate, expecting SubjectKeyId
+// for Peer.Id and Subject.Locality entries [TCP/gRPC, UDP ping, optional HTTP].
 func newPeer(cert *x509.Certificate, numRings uint32) (*Peer, error) {
 	var ok bool
 	var http string
@@ -181,4 +193,21 @@ func (p *Peer) SetFingerprintView(fp []byte) {
 	defer p.fingerprintMutex.Unlock()
 
 	p.fingerprintView = fp
+}
+
+// SetFingerprints updates cached peer fingerprints from remote responses.
+func (p *Peer) SetFingerprints(data, acc, view []byte) {
+	// go: method calls on nil structs are allowed
+	if p == nil {
+		return
+	}
+	if len(data) > 0 {
+		p.SetFingerprintData(data)
+	}
+	if len(acc) > 0 {
+		p.SetFingerprintAccusations(acc)
+	}
+	if len(view) > 0 {
+		p.SetFingerprintView(view)
+	}
 }

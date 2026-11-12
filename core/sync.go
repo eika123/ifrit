@@ -41,8 +41,8 @@ type SyncConfig struct {
 // DefaultSyncConfig returns standard streaming parameters.
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
-		ChunkBytes:       131072,   // 128 KB
-		MaxItemBytes:     67108864, // 64 MB
+		ChunkBytes:       1024 * 128,       // 128 KB
+		MaxItemBytes:     1024 * 1024 * 64, // 64 MB
 		ControlBatchSize: 128,
 		Timeout:          30 * time.Second,
 	}
@@ -63,7 +63,7 @@ func (n *Node) SyncConfig() SyncConfig {
 }
 
 // spawnSyncSession spawns a tracked outbound Sync streaming goroutine to the given peer.
-func (n *Node) spawnSyncSession(p *discovery.Peer, sess *PeerReconcileSession, seq uint64) {
+func (n *Node) spawnSyncSession(peer *discovery.Peer, sess *PeerReconcileSession, seq uint64) {
 	n.exitMutex.RLock()
 	if n.exitFlag {
 		n.exitMutex.RUnlock()
@@ -78,13 +78,13 @@ func (n *Node) spawnSyncSession(p *discovery.Peer, sess *PeerReconcileSession, s
 
 	go func() {
 		defer n.wg.Done()
-		n.runSyncSession(p, sess, seq)
+		n.runSyncSession(peer, sess, seq)
 	}()
 }
 
-// runSyncSession executes caller-side Sync transfer to peer p.
-func (n *Node) runSyncSession(p *discovery.Peer, sess *PeerReconcileSession, seq uint64) {
-	if p == nil || sess == nil {
+// runSyncSession executes caller-side Sync transfer to peer.
+func (n *Node) runSyncSession(peer *discovery.Peer, sess *PeerReconcileSession, seq uint64) {
+	if peer == nil || sess == nil {
 		return
 	}
 
@@ -96,22 +96,23 @@ func (n *Node) runSyncSession(p *discovery.Peer, sess *PeerReconcileSession, seq
 	ctx, cancel := context.WithTimeout(n.syncCtx, timeout)
 	defer cancel()
 
-	stream, err := n.comm.OpenSyncStream(ctx, p.Addr)
+	stream, err := n.comm.OpenSyncStream(ctx, peer.Addr)
 	if err != nil || stream == nil {
-		log.Error("Failed to open sync stream", "addr", p.Addr, "err", err, "streamIsNil", stream == nil)
+		log.Error("Failed to open sync stream", "addr", peer.Addr, "err", err, "streamIsNil", stream == nil)
 		sess.ResetIfSeq(seq)
 		return
 	}
 
-	if err := n.executeBidirectionalSync(ctx, stream, p, sess, seq, true); err != nil {
-		log.Error("Outbound sync session failed", "addr", p.Addr, "err", err)
+	if err := n.executeBidirectionalSync(ctx, stream, peer, sess, seq, true); err != nil {
+		log.Error("Outbound sync session failed", "addr", peer.Addr, "err", err)
 		sess.ResetIfSeq(seq)
 		return
 	}
 }
 
-// syncBootstrap executes a synchronous outbound Sync stream to an entry point address
-// using negotiated deltas, ingesting initial certificates and notes.
+// syncBootstrap executes a synchronous outbound Sync stream to a
+// peer address of the form (host:port) using negotiated deltas,
+// ingesting initial certificates and notes.
 func (n *Node) syncBootstrap(addr string, deltas ReconcileDeltas) error {
 	if !deltas.HasDeltas() {
 		return nil
@@ -141,22 +142,22 @@ func (n *Node) syncBootstrap(addr string, deltas ReconcileDeltas) error {
 	return n.executeBidirectionalSync(ctx, stream, nil, sess, seq, true)
 }
 
-// executeBidirectionalSync executes the symmetric streaming transfer engine.
-// It is invoked on both the Caller (outbound) and the Responder (inbound).
-func (n *Node) executeBidirectionalSync(
+func (n *Node) runSyncStreams(
 	ctx context.Context,
 	stream syncStream,
-	p *discovery.Peer,
 	sess *PeerReconcileSession,
-	seq uint64,
 	isCaller bool,
-) error {
-	if stream == nil {
-		if sess != nil {
-			sess.ResetIfSeq(seq)
-		}
-		return errors.New("sync: stream cannot be nil")
+) (*pb.SyncComplete, error) {
+
+	type ingressResult struct {
+		complete *pb.SyncComplete
+		err      error
 	}
+
+	// sess.PeerID() is always equal to peer.Id if peer is not nil.
+	// When peer is nil at bootstrap time, sess.PeerID() is the remote
+	// host:port address
+	peerID := sess.PeerID()
 
 	deltas := sess.Deltas()
 	cfg := n.SyncConfig()
@@ -164,32 +165,17 @@ func (n *Node) executeBidirectionalSync(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	type egressResult struct {
-		err error
-	}
-	type ingressResult struct {
-		complete *pb.SyncComplete
-		err      error
-	}
+	egressCh := make(chan error, 1)
 
 	var callerCompleteCh chan struct{}
 	if !isCaller {
 		callerCompleteCh = make(chan struct{})
 	}
 
-	egressCh := make(chan egressResult, 1)
 	ingressCh := make(chan ingressResult, 1)
 
-	var peerID string
-	if p != nil {
-		peerID = p.Id
-	} else if sess != nil {
-		peerID = sess.PeerID()
-	}
-
 	go func() {
-		err := n.sendEgress(ctx, stream, deltas, isCaller, cfg, callerCompleteCh)
-		egressCh <- egressResult{err: err}
+		egressCh <- n.sendEgress(ctx, stream, deltas, isCaller, cfg, callerCompleteCh)
 	}()
 
 	go func() {
@@ -201,10 +187,9 @@ func (n *Node) executeBidirectionalSync(
 	var ingressErr error
 	var remoteComplete *pb.SyncComplete
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
-		case res := <-egressCh:
-			egressErr = res.err
+		case egressErr = <-egressCh:
 			if egressErr != nil {
 				cancel()
 			}
@@ -227,25 +212,45 @@ func (n *Node) executeBidirectionalSync(
 	}
 
 	if egressErr != nil {
-		sess.ResetIfSeq(seq)
-		return egressErr
+		return nil, egressErr
 	}
 	if ingressErr != nil {
-		sess.ResetIfSeq(seq)
-		return ingressErr
+		return nil, ingressErr
 	}
 
-	// Update cached peer fingerprints from remote's SyncComplete for immediate single-round quiescence
-	if p != nil && remoteComplete != nil {
-		if fpData := remoteComplete.GetFingerprintData(); len(fpData) > 0 {
-			p.SetFingerprintData(fpData)
-		}
-		if fpAcc := remoteComplete.GetFingerprintAccusations(); len(fpAcc) > 0 {
-			p.SetFingerprintAccusations(fpAcc)
-		}
-		if fpView := remoteComplete.GetFingerprintView(); len(fpView) > 0 {
-			p.SetFingerprintView(fpView)
-		}
+	return remoteComplete, nil
+}
+
+// executeBidirectionalSync executes the symmetric streaming transfer engine.
+// It is invoked on both the Caller (outbound) and the Responder (inbound).
+func (n *Node) executeBidirectionalSync(
+	ctx context.Context,
+	stream syncStream,
+	peer *discovery.Peer,
+	sess *PeerReconcileSession,
+	seq uint64,
+	isCaller bool,
+) error {
+	if sess == nil {
+		return errors.New("sync: session (sess) cannot be nil")
+	}
+	if stream == nil {
+		sess.ResetIfSeq(seq)
+		return errors.New("sync: stream cannot be nil")
+	}
+
+	remoteComplete, err := n.runSyncStreams(ctx, stream, sess, isCaller)
+	if err != nil {
+		sess.ResetIfSeq(seq)
+		return err
+	}
+
+	if remoteComplete != nil {
+		peer.SetFingerprints(
+			remoteComplete.GetFingerprintData(),
+			remoteComplete.GetFingerprintAccusations(),
+			remoteComplete.GetFingerprintView(),
+		)
 	}
 
 	sess.CompleteTransfer(seq)
