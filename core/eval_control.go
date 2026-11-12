@@ -417,12 +417,12 @@ func (n *Node) validateCtx(ctx context.Context) (*x509.Certificate, error) {
 	var tlsInfo credentials.TLSInfo
 	var ok bool
 
-	p, ok := grpcPeer.FromContext(ctx)
+	peer, ok := grpcPeer.FromContext(ctx)
 	if !ok {
 		return nil, errNoPeerInCtx
 	}
 
-	if tlsInfo, ok = p.AuthInfo.(credentials.TLSInfo); !ok {
+	if tlsInfo, ok = peer.AuthInfo.(credentials.TLSInfo); !ok {
 		return nil, errNoTLSInfo
 	}
 

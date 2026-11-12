@@ -17,6 +17,8 @@ message State {
     Note ownNote = 2;
     bytes fingerprint_data = 4;
     bytes fingerprint_accusations = 5;
+    
+    // fingerprint_view is an xor of notes and certificates fingerprints
     bytes fingerprint_view = 6;
     repeated uint64 accusation_digests = 7;
     repeated uint64 note_digests = 8;

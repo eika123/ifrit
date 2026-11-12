@@ -498,6 +498,8 @@ func (g *group) getTrustedNodes() [][]byte {
 	return ret
 }
 
+// genId generates a cryptographically random 32-byte peer ID (stored in the
+// certificate's SubjectKeyId) that is unique within this CA group.
 func (g *group) genId() []byte {
 	g.idMutex.Lock()
 	defer g.idMutex.Unlock()

@@ -15,6 +15,8 @@ import (
 	log "github.com/inconshreveable/log15"
 )
 
+// genId generates a cryptographically random 32-byte peer ID for a
+// self-signed certificate's SubjectKeyId.
 func genId() []byte {
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
