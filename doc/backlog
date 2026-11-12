@@ -77,6 +77,11 @@
 
 - Certificates
     - Change address placements
+    - Certificate rotation & node reboot/rejoin support
+      (e.g. compromised/affected benign nodes taken down for maintenance, re-keyed, rebooted, and rejoining):
+      - CA (`crypto/cauth/ca.go`): decide whether renewals preserve `SubjectKeyId` (`Peer.Id`) or retire/revoke the old cert; currently `certRequestHandler` always mints a new `g.genId()`, which leaves the old `Peer` in `n.view` as a ghost duplicate sharing the same `Addr`/`PingAddr`.
+      - View & cert ingestion (`core/eval_control.go`): `mergeCertificates`, `admitCaller`, and `evalValidCertificate` currently short-circuit when `n.view.Exists(id)` / `wasObserved` is true, so `peer.cert` and `peer.publicKey` are never refreshed when a rotated cert arrives for an existing `Id` (causing `Note`/`Accusation` signature checks to fail against the stale key).
+      - Transport (`comm/comm.go`): `tls.Config` is constructed statically at startup; support `GetCertificate`/`GetClientCertificate` hooks if live (non-reboot) cert rotation is needed, alongside revocation/CRL handling for compromised keys.
 
 - Done
     - Change test setup
