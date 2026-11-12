@@ -460,97 +460,131 @@ func (n *Node) sendEgress(
 	return nil
 }
 
-func validateRecvDataHeader(
+// validateDataHeader verifies that an incoming DataItemHeader is authorized by the session allowlist
+// and within the configured maximum item size limit, returning the validated digest.
+func validateDataHeader(
+	header *pb.DataItemHeader,
+	expectedData map[uint64]struct{},
 	cfg SyncConfig,
-	curDataDigest uint64,
-	payload *pb.SyncFrame_DataHeader,
-	hasActiveData bool,
 	peerID string,
-	expectedData map[uint64]struct{}) (uint64, error) {
-	if hasActiveData {
-		log.Error("Sync framing violation: received DataHeader while previous item still active",
-			"remotePeer", peerID,
-			"activeDigest", fmt.Sprintf("%016x", curDataDigest),
-			"newDigest", fmt.Sprintf("%016x", payload.DataHeader.GetDigest()),
-		)
-		return 0, fmt.Errorf("%w: received DataHeader while item %016x is active", ErrFramingViolation, curDataDigest)
+) (uint64, error) {
+	if header == nil {
+		return 0, nil
 	}
-	newDataDigest := payload.DataHeader.GetDigest()
+
+	digest := header.GetDigest()
 	if len(expectedData) == 0 {
-		// Structural protocol fault: remote peer sent an unsolicited DataHeader when 0 data items were negotiated or transfer quota was already fulfilled.
 		log.Error("Security/Protocol violation: remote peer pushed DataHeader when zero items expected",
 			"remotePeer", peerID,
-			"digest", fmt.Sprintf("%016x", newDataDigest),
+			"digest", fmt.Sprintf("%016x", digest),
 		)
-		return 0, fmt.Errorf("%w: remote peer pushed DataHeader %016x when 0 items expected", ErrUnexpectedSyncFrame, curDataDigest)
+		return 0, fmt.Errorf("%w: remote peer pushed DataHeader %016x when 0 items expected", ErrUnexpectedSyncFrame, digest)
 	}
-	if _, exists := expectedData[newDataDigest]; !exists {
+	if _, exists := expectedData[digest]; !exists {
 		log.Warn("Sync ingress: received unexpected digest not in allowlist",
 			"remotePeer", peerID,
-			"digest", fmt.Sprintf("%016x", newDataDigest),
+			"digest", fmt.Sprintf("%016x", digest),
 		)
-		return 0, fmt.Errorf("%w: %016x", ErrUnexpectedDigest, newDataDigest)
+		return 0, fmt.Errorf("%w: %016x", ErrUnexpectedDigest, digest)
 	}
-	if cfg.MaxItemBytes > 0 && payload.DataHeader.GetTotalSize() > cfg.MaxItemBytes {
+	if cfg.MaxItemBytes > 0 && header.GetTotalSize() > cfg.MaxItemBytes {
 		log.Warn("Sync ingress: item header exceeds size limit",
 			"remotePeer", peerID,
-			"digest", fmt.Sprintf("%016x", newDataDigest),
-			"totalSize", payload.DataHeader.GetTotalSize(),
+			"digest", fmt.Sprintf("%016x", digest),
+			"totalSize", header.GetTotalSize(),
 			"limit", cfg.MaxItemBytes,
 		)
 		return 0, fmt.Errorf(
 			"%w: item %016x header size %d exceeds maximum allowed size of %d bytes",
-			ErrItemSizeLimitExceeded, newDataDigest, payload.DataHeader.GetTotalSize(), cfg.MaxItemBytes,
+			ErrItemSizeLimitExceeded, digest, header.GetTotalSize(), cfg.MaxItemBytes,
 		)
 	}
-	return newDataDigest, nil
+	return digest, nil
 }
 
-func (n *Node) ingestDataEnd(
-	payload *pb.SyncFrame_DataEnd,
-	curDataBuf *bytes.Buffer,
-	curDataDigest uint64,
-	hasActiveData bool,
-	peerID string,
-) error {
-	err := validateDataEnd(payload, curDataDigest, hasActiveData, peerID)
-	if err != nil {
-		return err
+// appendDataChunk enforces size limits and writes chunk payload into the in-progress buffer.
+func appendDataChunk(chunk *pb.DataItemChunk, buf *bytes.Buffer, digest uint64, maxItemBytes int64) error {
+	if chunk == nil || len(chunk.GetData()) == 0 {
+		return nil
 	}
-	reconciler := n.GetDataReconciler()
-	if reconciler != nil {
-		if err := reconciler.IngestItem(digestmaps.DigestSymbol(curDataDigest), curDataBuf); err != nil {
-			return fmt.Errorf("failed to ingest item %016x: %w", curDataDigest, err)
+	if maxItemBytes > 0 && int64(buf.Len()+len(chunk.GetData())) > maxItemBytes {
+		return fmt.Errorf("%w: item %016x exceeds maximum allowed size of %d bytes", ErrItemSizeLimitExceeded, digest, maxItemBytes)
+	}
+	buf.Write(chunk.GetData())
+	return nil
+}
+
+// ingestDataEnd validates the end digest against the header digest and writes assembled bytes to the DataReconciler.
+func (n *Node) ingestDataEnd(end *pb.DataItemEnd, buf *bytes.Buffer, digest uint64, peerID string) error {
+	if end != nil && end.GetDigest() != digest {
+		log.Error("Sync framing violation: data end digest does not match header",
+			"remotePeer", peerID,
+			"endDigest", fmt.Sprintf("%016x", end.GetDigest()),
+			"headerDigest", fmt.Sprintf("%016x", digest),
+		)
+		return fmt.Errorf("data end digest %016x != header digest %016x", end.GetDigest(), digest)
+	}
+	if reconciler := n.GetDataReconciler(); reconciler != nil {
+		if err := reconciler.IngestItem(digestmaps.DigestSymbol(digest), buf); err != nil {
+			return fmt.Errorf("failed to ingest item %016x: %w", digest, err)
 		}
 	}
 	return nil
 }
 
-func validateDataEnd(
-	payload *pb.SyncFrame_DataEnd,
-	curDataDigest uint64,
-	hasActiveData bool,
+// recvDataItem reads chunks for a single DataItem until DataEnd is received,
+// validating chunk sizes and ingesting the assembled bytes into the DataReconciler.
+func (n *Node) recvDataItem(
+	ctx context.Context,
+	stream syncStream,
+	header *pb.DataItemHeader,
+	expectedData map[uint64]struct{},
+	cfg SyncConfig,
 	peerID string,
 ) error {
-
-	if !hasActiveData {
-		log.Error("Sync framing violation: received DataEnd without active DataHeader",
-			"remotePeer", peerID,
-		)
-		return fmt.Errorf("%w: received DataEnd without active DataHeader", ErrFramingViolation)
+	digest, err := validateDataHeader(header, expectedData, cfg, peerID)
+	if err != nil {
+		return err
 	}
-	if payload.DataEnd == nil {
+	if header == nil {
 		return nil
 	}
-	if payload.DataEnd.GetDigest() != curDataDigest {
-		log.Error("Sync framing violation: data end digest does not match header",
-			"remotePeer", peerID,
-			"endDigest", fmt.Sprintf("%016x", payload.DataEnd.GetDigest()),
-			"headerDigest", fmt.Sprintf("%016x", curDataDigest),
-		)
-		return fmt.Errorf("data end digest %016x != header digest %016x", payload.DataEnd.GetDigest(), curDataDigest)
+
+	var buf bytes.Buffer
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		frame, err := stream.Recv()
+		if err != nil {
+			return handleStreamRecvError(err, peerID, true, digest)
+		}
+		if frame == nil {
+			continue
+		}
+
+		switch payload := frame.Payload.(type) {
+		case *pb.SyncFrame_DataChunk:
+			if err := appendDataChunk(payload.DataChunk, &buf, digest, cfg.MaxItemBytes); err != nil {
+				return err
+			}
+		case *pb.SyncFrame_DataEnd:
+			if err := n.ingestDataEnd(payload.DataEnd, &buf, digest, peerID); err != nil {
+				return err
+			}
+			delete(expectedData, digest)
+			return nil
+		default:
+			log.Error("Sync framing violation: received non-chunk frame while reading data item",
+				"remotePeer", peerID,
+				"activeDigest", fmt.Sprintf("%016x", digest),
+			)
+			return fmt.Errorf("%w: received unexpected frame while item %016x is active", ErrFramingViolation, digest)
+		}
 	}
-	return nil
 }
 
 // recvIngress receives incoming frames, validates incoming digests against session allowlists,
@@ -580,10 +614,6 @@ func (n *Node) recvIngress(
 		expectedData[d] = struct{}{}
 	}
 
-	var curDataDigest uint64
-	var curDataBuf bytes.Buffer
-	var hasActiveData bool
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -593,7 +623,7 @@ func (n *Node) recvIngress(
 
 		frame, err := stream.Recv()
 		if err != nil {
-			return nil, handleStreamRecvError(err, peerID, hasActiveData, curDataDigest)
+			return nil, handleStreamRecvError(err, peerID, false, 0)
 		}
 		if frame == nil {
 			continue
@@ -613,40 +643,19 @@ func (n *Node) recvIngress(
 				n.mergeAccusations(payload.Accusations.GetItems())
 			}
 		case *pb.SyncFrame_DataHeader:
-			if payload.DataHeader != nil {
-				curDataDigest, err = validateRecvDataHeader(cfg,
-					curDataDigest,
-					payload,
-					hasActiveData,
-					peerID,
-					expectedData)
-				if err != nil {
-					return nil, err
-				}
-				curDataBuf.Reset()
-				hasActiveData = true
-			}
-		case *pb.SyncFrame_DataChunk:
-			if !hasActiveData {
-				log.Error("Sync framing violation: received DataChunk without active DataHeader",
-					"remotePeer", peerID,
-				)
-				return nil, fmt.Errorf("%w: received DataChunk without active DataHeader", ErrFramingViolation)
-			}
-			if payload.DataChunk != nil && len(payload.DataChunk.GetData()) > 0 {
-				if cfg.MaxItemBytes > 0 && int64(curDataBuf.Len()+len(payload.DataChunk.GetData())) > cfg.MaxItemBytes {
-					return nil, fmt.Errorf("%w: item %016x exceeds maximum allowed size of %d bytes", ErrItemSizeLimitExceeded, curDataDigest, cfg.MaxItemBytes)
-				}
-				curDataBuf.Write(payload.DataChunk.GetData())
-			}
-		case *pb.SyncFrame_DataEnd:
-			err = n.ingestDataEnd(payload, &curDataBuf, curDataDigest, hasActiveData, peerID)
-			if err != nil {
+			if err := n.recvDataItem(ctx, stream, payload.DataHeader, expectedData, cfg, peerID); err != nil {
 				return nil, err
 			}
-			hasActiveData = false
-			curDataBuf.Reset()
-			delete(expectedData, curDataDigest)
+		case *pb.SyncFrame_DataChunk:
+			log.Error("Sync framing violation: received DataChunk without active DataHeader",
+				"remotePeer", peerID,
+			)
+			return nil, fmt.Errorf("%w: received DataChunk without active DataHeader", ErrFramingViolation)
+		case *pb.SyncFrame_DataEnd:
+			log.Error("Sync framing violation: received DataEnd without active DataHeader",
+				"remotePeer", peerID,
+			)
+			return nil, fmt.Errorf("%w: received DataEnd without active DataHeader", ErrFramingViolation)
 		case *pb.SyncFrame_Complete:
 			if payload.Complete != nil {
 				return payload.Complete, nil
