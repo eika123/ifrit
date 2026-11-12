@@ -110,8 +110,12 @@ clean-libpod:
 clean-ca-data:
     rm -rf ifrit-cad
 
+[group('development')]
+clean-bin:
+    rm -f ca gossipContentExample streamingExample messagesExample
+
 [group('experiments')]
-clean: clean-results clean-libpod
+clean: clean-results clean-libpod clean-bin
 
 [group('experiments')]
 clean-all: clean clean-ca-data
