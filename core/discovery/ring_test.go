@@ -281,8 +281,8 @@ func (suite *RingsTestSuite) TestMyRingNeighbours() {
 
 	for _, r := range suite.rings.ringMap {
 		ringNeighbours := suite.rings.myRingNeighbours(r.ringNum)
-		succ := r.successor().p
-		prev := r.predecessor().p
+		succ := r.successor().peer
+		prev := r.predecessor().peer
 
 		for _, n := range ringNeighbours {
 			if succ.Id == n.Id {
@@ -297,14 +297,14 @@ func (suite *RingsTestSuite) TestMyRingNeighbours() {
 }
 
 func (suite *RingsTestSuite) TestMyRingSuccessor() {
-	p := &Peer{
+	peer := &Peer{
 		Id: "testId",
 	}
 
-	suite.rings.add(p)
+	suite.rings.add(peer)
 
 	myRingSucc := suite.rings.myRingSuccessor(suite.rings.numRings)
-	succ := suite.rings.ringMap[suite.rings.numRings].successor().p
+	succ := suite.rings.ringMap[suite.rings.numRings].successor().peer
 
 	assert.Equal(suite.T(), succ.Id, myRingSucc.Id, "Retreieved wrong successor.")
 
@@ -312,14 +312,14 @@ func (suite *RingsTestSuite) TestMyRingSuccessor() {
 }
 
 func (suite *RingsTestSuite) TestMyRingPredecessor() {
-	p := &Peer{
+	peer := &Peer{
 		Id: "testId",
 	}
 
-	suite.rings.add(p)
+	suite.rings.add(peer)
 
 	myRingPrev := suite.rings.myRingPredecessor(suite.rings.numRings)
-	prev := suite.rings.ringMap[suite.rings.numRings].predecessor().p
+	prev := suite.rings.ringMap[suite.rings.numRings].predecessor().peer
 
 	assert.Equal(suite.T(), prev.Id, myRingPrev.Id, "Retreieved wrong predecessor.")
 
@@ -349,11 +349,11 @@ func (suite *RingsTestSuite) TestNewRing() {
 	assert.Equal(suite.T(), ringNum, r.ringNum, "Incorrect ringNumber.")
 	require.NotNil(suite.T(), r.succList, "Successor list not allocated..")
 	require.NotNil(suite.T(), r.peerToRing, "Peer to ring map not allocated.")
-	assert.Equal(suite.T(), self, r.selfId.p, "Self is incorrect.")
+	assert.Equal(suite.T(), self, r.selfId.peer, "Self is incorrect.")
 
 	require.Equal(suite.T(), 1, len(r.succList), "Self not added to successor list.")
 	require.Equal(suite.T(), len(r.succList), int(r.length), "Self not added to successor list.")
-	assert.Equal(suite.T(), r.succList[0].p, self, "Self not added to internal ringId.")
+	assert.Equal(suite.T(), r.succList[0].peer, self, "Self not added to internal ringId.")
 
 	assert.Equal(suite.T(), 1, len(r.peerToRing), "Self not added to peerToRing map.")
 }
@@ -361,21 +361,21 @@ func (suite *RingsTestSuite) TestNewRing() {
 func (suite *RingTestSuite) TestRingAdd() {
 	found := false
 
-	p := &Peer{
+	peer := &Peer{
 		Id: "testId",
 	}
 
 	r := suite.ring
 
-	r.add(p)
+	r.add(peer)
 
 	assert.Equal(suite.T(), 2, len(r.succList), "Peer not added to successor list.")
 	assert.Equal(suite.T(), 2, r.length, "Peer not added to successor list.")
 	assert.Equal(suite.T(), 2, len(r.peerToRing), "Peer not added to peerToRing map.")
 
 	for idx, rId := range r.succList {
-		if rId.p.Id == p.Id {
-			require.Equal(suite.T(), rId.p, p, "Wrong peer representation stored.")
+		if rId.peer.Id == peer.Id {
+			require.Equal(suite.T(), rId.peer, peer, "Wrong peer representation stored.")
 			found = true
 			if idx == 0 {
 				require.Equal(suite.T(), r.selfIdx, uint32(1), "Self index not incremented.")
@@ -387,11 +387,11 @@ func (suite *RingTestSuite) TestRingAdd() {
 
 	require.True(suite.T(), found, "Did not find peerId in succList.")
 
-	mapPeer, ok := r.peerToRing[p.Id]
+	mapPeer, ok := r.peerToRing[peer.Id]
 	require.True(suite.T(), ok, "Peer not found in map.")
-	require.Equal(suite.T(), mapPeer.p, p, "Wrong peer representation stored.")
+	require.Equal(suite.T(), mapPeer.peer, peer, "Wrong peer representation stored.")
 
-	r.add(p)
+	r.add(peer)
 	assert.Equal(suite.T(), 2, len(r.succList), "Adding peer twice should fail.")
 	assert.Equal(suite.T(), 2, r.length, "Adding peer twice should fail.")
 	assert.Equal(suite.T(), 2, len(r.peerToRing), "Adding peer twice should fail.")
@@ -400,32 +400,32 @@ func (suite *RingTestSuite) TestRingAdd() {
 }
 
 func (suite *RingTestSuite) TestRingRemove() {
-	p := &Peer{
+	peer := &Peer{
 		Id: "testId",
 	}
 
 	r := suite.ring
 
-	r.add(p)
+	r.add(peer)
 
-	r.remove(p)
+	r.remove(peer)
 	assert.Zero(suite.T(), r.selfIdx, "Self index changed incorrectly.")
 
 	for _, rId := range r.succList {
-		require.NotEqual(suite.T(), rId.p.Id, p.Id, "Peer still present in ring after being removed.")
+		require.NotEqual(suite.T(), rId.peer.Id, peer.Id, "Peer still present in ring after being removed.")
 	}
 
 	assert.Equal(suite.T(), 1, r.length, "SuccList has wrong number of elements.")
 	assert.Equal(suite.T(), 1, len(r.succList), "SuccList has wrong number of elements.")
 	assert.Equal(suite.T(), 1, len(r.peerToRing), "PeerToRing map has wrong number of elements.")
 
-	r.remove(p)
+	r.remove(peer)
 	assert.Equal(suite.T(), 1, r.length, "Removing self should fail.")
 	assert.Equal(suite.T(), 1, len(r.succList), "Removing same peer twice should fail.")
 	assert.Equal(suite.T(), 1, len(r.peerToRing), "Removing same peer twice should fail.")
 	assert.Zero(suite.T(), r.selfIdx, "Self index changed incorrectly.")
 
-	r.remove(r.selfId.p)
+	r.remove(r.selfId.peer)
 	assert.Equal(suite.T(), 1, r.length, "Removing self should fail.")
 	assert.Equal(suite.T(), 1, len(r.succList), "Removing self should fail.")
 	assert.Equal(suite.T(), 1, len(r.peerToRing), "Removing self should fail.")
@@ -443,26 +443,26 @@ func (suite *RingTestSuite) TestIsPrev() {
 		r.add(p)
 	}
 
-	p1 := r.succList[0].p
-	p1Succ := r.succList[1].p
-	p1Prev := r.succList[len(r.succList)-1].p
+	p1 := r.succList[0].peer
+	p1Succ := r.succList[1].peer
+	p1Prev := r.succList[len(r.succList)-1].peer
 
 	r.remove(p1)
 
-	p2 := r.succList[3].p
-	p2Succ := r.succList[4].p
-	p2Prev := r.succList[2].p
+	p2 := r.succList[3].peer
+	p2Succ := r.succList[4].peer
+	p2Prev := r.succList[2].peer
 
 	r.remove(p2)
 	r.remove(p2Succ)
 	r.remove(p2Prev)
 
 	p3 := r.succList[6]
-	p3Prev := r.succList[5].p
-	r.remove(p3.p)
-	r.peerToRing[p3.p.Id] = p3
+	p3Prev := r.succList[5].peer
+	r.remove(p3.peer)
+	r.peerToRing[p3.peer.Id] = p3
 
-	selfPrev := r.predecessor().p
+	selfPrev := r.predecessor().peer
 
 	tests := []struct {
 		acc     *Peer
@@ -470,13 +470,13 @@ func (suite *RingTestSuite) TestIsPrev() {
 		out     bool
 	}{
 		{
-			acc:     r.succList[r.selfIdx].p,
+			acc:     r.succList[r.selfIdx].peer,
 			accuser: selfPrev,
 			out:     true,
 		},
 
 		{
-			acc:     p3.p,
+			acc:     p3.peer,
 			accuser: p3Prev,
 			out:     false,
 		},
@@ -549,11 +549,11 @@ func (suite *RingTestSuite) TestBetweenNeighbours() {
 	prev := r.predecessor()
 	for _, rId := range r.succList {
 		if eq := rId.equal(r.selfId); eq {
-			assert.True(suite.T(), r.betweenNeighbours(rId.p.Id), "Should return true with self id.")
+			assert.True(suite.T(), r.betweenNeighbours(rId.peer.Id), "Should return true with self id.")
 		} else if !succ.equal(rId) && !prev.equal(rId) {
-			assert.False(suite.T(), r.betweenNeighbours(rId.p.Id), "Non-neighbour should return false.")
+			assert.False(suite.T(), r.betweenNeighbours(rId.peer.Id), "Non-neighbour should return false.")
 		} else {
-			assert.True(suite.T(), r.betweenNeighbours(rId.p.Id), "Neighbour should return false.")
+			assert.True(suite.T(), r.betweenNeighbours(rId.peer.Id), "Neighbour should return false.")
 		}
 	}
 
@@ -565,8 +565,8 @@ func (suite *RingTestSuite) TestNeigbours() {
 	r := suite.ring
 
 	succ, prev := r.neighbours("test")
-	assert.Equal(suite.T(), succ.p, r.selfId.p, "Should return myself as successor with only myself in ring.")
-	assert.Equal(suite.T(), prev.p, r.selfId.p, "Should return myself as predecessor with only myself in ring.")
+	assert.Equal(suite.T(), succ.peer, r.selfId.peer, "Should return myself as successor with only myself in ring.")
+	assert.Equal(suite.T(), prev.peer, r.selfId.peer, "Should return myself as predecessor with only myself in ring.")
 
 	p := &Peer{
 		Id: "testId",
@@ -575,15 +575,15 @@ func (suite *RingTestSuite) TestNeigbours() {
 	r.add(p)
 
 	for _, rId := range r.succList {
-		ids = append(ids, rId.p.Id)
+		ids = append(ids, rId.peer.Id)
 	}
 
 	succ, prev = r.neighbours("non-existing-id")
-	assert.ElementsMatch(suite.T(), ids, []string{succ.p.Id, prev.p.Id}, "Should find neighbours of non-existing id.")
+	assert.ElementsMatch(suite.T(), ids, []string{succ.peer.Id, prev.peer.Id}, "Should find neighbours of non-existing id.")
 
 	succ, prev = r.neighbours(p.Id)
-	assert.Equal(suite.T(), succ.p, r.selfId.p, "Should return myself with only 1 other in ring.")
-	assert.Equal(suite.T(), prev.p, r.selfId.p, "Should return myself with only 1 other in ring.")
+	assert.Equal(suite.T(), succ.peer, r.selfId.peer, "Should return myself with only 1 other in ring.")
+	assert.Equal(suite.T(), prev.peer, r.selfId.peer, "Should return myself with only 1 other in ring.")
 
 }
 

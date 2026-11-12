@@ -41,7 +41,7 @@ type ring struct {
 }
 
 type ringId struct {
-	p    *Peer
+	peer *Peer
 	hash []byte
 }
 
@@ -112,14 +112,14 @@ func (rs *rings) findNeighbours(id string) []*Peer {
 	for _, r := range rs.ringMap {
 		succ, prev := r.neighbours(id)
 
-		if _, ok := exists[succ.p.Id]; !ok {
-			exists[succ.p.Id] = true
-			ret = append(ret, succ.p)
+		if _, ok := exists[succ.peer.Id]; !ok {
+			exists[succ.peer.Id] = true
+			ret = append(ret, succ.peer)
 		}
 
-		if _, ok := exists[prev.p.Id]; !ok {
-			exists[prev.p.Id] = true
-			ret = append(ret, prev.p)
+		if _, ok := exists[prev.peer.Id]; !ok {
+			exists[prev.peer.Id] = true
+			ret = append(ret, prev.peer)
 		}
 	}
 
@@ -134,14 +134,14 @@ func (rs *rings) allMyNeighbours() []*Peer {
 		succ := r.successor()
 		prev := r.predecessor()
 
-		if _, ok := exists[succ.p.Id]; !ok && succ.p.Id != rs.self.Id {
-			exists[succ.p.Id] = true
-			ret = append(ret, succ.p)
+		if _, ok := exists[succ.peer.Id]; !ok && succ.peer.Id != rs.self.Id {
+			exists[succ.peer.Id] = true
+			ret = append(ret, succ.peer)
 		}
 
-		if _, ok := exists[prev.p.Id]; !ok && prev.p.Id != rs.self.Id {
-			exists[prev.p.Id] = true
-			ret = append(ret, prev.p)
+		if _, ok := exists[prev.peer.Id]; !ok && prev.peer.Id != rs.self.Id {
+			exists[prev.peer.Id] = true
+			ret = append(ret, prev.peer)
 		}
 	}
 
@@ -157,8 +157,8 @@ func (rs *rings) myRingNeighbours(ringNum uint32) []*Peer {
 
 	ret := make([]*Peer, 0, 2)
 
-	succ := r.successor().p
-	prev := r.predecessor().p
+	succ := r.successor().peer
+	prev := r.predecessor().peer
 
 	if succ.Id != rs.self.Id {
 		ret = append(ret, succ)
@@ -178,7 +178,7 @@ func (rs *rings) myRingSuccessor(ringNum uint32) *Peer {
 		return nil
 	}
 
-	succ := r.successor().p
+	succ := r.successor().peer
 
 	if succ.Id == rs.self.Id {
 		return nil
@@ -194,7 +194,7 @@ func (rs *rings) myRingPredecessor(ringNum uint32) *Peer {
 		return nil
 	}
 
-	prev := r.predecessor().p
+	prev := r.predecessor().peer
 
 	if prev.Id == rs.self.Id {
 		return nil
@@ -216,7 +216,7 @@ func (rs *rings) shouldBeMyNeighbour(id string) bool {
 
 func newRing(ringNum uint32, self *Peer) *ring {
 	id := &ringId{
-		p:    self,
+		peer: self,
 		hash: hashId(ringNum, []byte(self.Id)),
 	}
 
@@ -233,20 +233,20 @@ func newRing(ringNum uint32, self *Peer) *ring {
 	return r
 }
 
-func (r *ring) add(p *Peer) []string {
+func (r *ring) add(peer *Peer) []string {
 	var idx int
 	var oldNeighbours []string
 
-	if _, ok := r.peerToRing[p.Id]; ok {
-		log.Error("Peer already exists in ring", "ringNum", r.ringNum, "addr", p.Addr)
+	if _, ok := r.peerToRing[peer.Id]; ok {
+		log.Error("Peer already exists in ring", "ringNum", r.ringNum, "addr", peer.Addr)
 		return nil
 	}
 
-	hash := hashId(r.ringNum, []byte(p.Id))
+	hash := hashId(r.ringNum, []byte(peer.Id))
 
 	id := &ringId{
 		hash: hash,
-		p:    p,
+		peer: peer,
 	}
 
 	oldSucc := r.successor()
@@ -259,18 +259,18 @@ func (r *ring) add(p *Peer) []string {
 	r.length++
 
 	if new := r.successor(); !new.equal(oldSucc) {
-		oldNeighbours = append(oldNeighbours, oldSucc.p.Addr)
+		oldNeighbours = append(oldNeighbours, oldSucc.peer.Addr)
 	}
 
 	if new := r.predecessor(); !new.equal(oldPrev) {
-		oldNeighbours = append(oldNeighbours, oldPrev.p.Addr)
+		oldNeighbours = append(oldNeighbours, oldPrev.peer.Addr)
 	}
 
 	if eq := r.succList[r.selfIdx].equal(r.selfId); !eq {
 		log.Error(errLostSelf.Error())
 	}
 
-	r.peerToRing[p.Id] = id
+	r.peerToRing[peer.Id] = id
 
 	return oldNeighbours
 }
@@ -464,7 +464,7 @@ func (r *ring) prevAtIdx(idx int) *ringId {
 }
 
 func hashId(ringNum uint32, id []byte) []byte {
-	preHashId := append(id, []byte(fmt.Sprintf("%d", ringNum))...)
+	preHashId := append(id, fmt.Appendf(nil, "%d", ringNum)...)
 
 	h := sha256.New()
 	h.Write(preHashId)
