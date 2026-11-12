@@ -335,7 +335,9 @@ func (d ReconcileDeltas) IngressData(isCaller bool) []uint64 {
 // PeerReconcileSession tracks per-peer reconciliation state across certificates, notes, accusations, and data.
 // It is protected by a mutex ensuring only one active reconciliation session per peer pair is in flight.
 type PeerReconcileSession struct {
-	mu           sync.Mutex
+	mu sync.Mutex
+	// if peer == nil at bootstrap time, peerID holds the address of the remote peer
+	// in host:port format
 	peerID       string
 	state        SessionState
 	seq          uint64
