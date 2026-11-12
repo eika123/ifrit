@@ -11,6 +11,13 @@
 - Architecture
 	- Finalize streaming rateless IBLT set reconciliation.
 	  Also extend it to e.g MTZ and others for comparison.
+	- Cap per-session reconciliation deltas for large networks / cold-start joins:
+	  - `Sync` already batches control frames (128 certs, 512 notes/accusations), so `SyncFrame` stays well under gRPC's 4 MiB default; the 4 MiB ceiling is hit first in unary `Spread` `StateResponse` digest lists (~210k+ nodes, or 420k total items).
+	  - Limiting digests returned per `StateResponse` lets `SyncComplete` fingerprints naturally keep `IsDivergent(peer) == true` so subsequent gossip rounds drain remaining deltas automatically.
+	  - Required follow-ups when capping:
+	    - Loop `syncBootstrap` in `core/node.go` (currently single-pass) until initial certs/notes converge enough for ring integration.
+	    - Prioritize causal order when capping (`Certificates` -> `Notes` -> `Accusations` -> `Data`) so notes are not dropped awaiting missing certs.
+	    - Note: populated nodes sending naive `State` requests still send full digest lists; RIBLT/MTZ or streaming reconciliation is still needed to bound the request side.
 	- move from the protocol interface to AdversarialPolicy interface defining behaviours
 	  OnRebuttal, OnMonitorPing, OnGossipDigest, etc.
 	- Provide a mock crypto service mimicking a malicious node; forge certificates, sings stale notes
