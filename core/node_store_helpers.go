@@ -74,13 +74,13 @@ func (n *Node) IsDivergent(p *discovery.Peer) bool {
 }
 
 // DivergentSets returns boolean indicators for which specific sets differ between peer p and the local node.
-func (n *Node) DivergentSets(p *discovery.Peer) (dataDiff, accDiff, viewDiff bool) {
-	if p == nil {
+func (n *Node) DivergentSets(peer *discovery.Peer) (dataDiff, accDiff, viewDiff bool) {
+	if peer == nil {
 		return false, false, false
 	}
-	dataDiff = !bytes.Equal(p.FingerprintData(), n.FingerprintData())
-	accDiff = !bytes.Equal(p.FingerprintAccusations(), n.AccusationFingerprintBytes())
-	viewDiff = !bytes.Equal(p.FingerprintView(), n.ViewFingerprintBytes())
+	dataDiff = !bytes.Equal(peer.FingerprintData(), n.FingerprintData())
+	accDiff = !bytes.Equal(peer.FingerprintAccusations(), n.AccusationFingerprintBytes())
+	viewDiff = !bytes.Equal(peer.FingerprintView(), n.ViewFingerprintBytes())
 	return
 }
 

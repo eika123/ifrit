@@ -133,7 +133,7 @@ func (n *Node) mergeCertificates(certs []*pb.Certificate) {
 
 // applyValidAccusation records a validated accusation in the view's activeAccusations and starts a suspicion
 // removal timer if the peer is live and the accusation is actively promoted.
-func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.Peer) error {
+func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, peer *discovery.Peer) error {
 	rawAcc := discovery.AccusationFromPb(a)
 	if rawAcc == nil {
 		return errInvalidSignature
@@ -144,16 +144,16 @@ func (n *Node) applyValidAccusation(a *pb.Accusation, accuserPeer, p *discovery.
 	}
 
 	if n.view.PromoteAccusation(rawAcc) {
-		if n.view.IsAlive(p) && !n.view.HasTimer(p) {
-			if note, ok := n.view.ActiveNote(p.Id); ok {
-				n.view.StartTimer(p, note, accuserPeer)
+		if n.view.IsAlive(peer) && !n.view.HasTimer(peer) {
+			if note, ok := n.view.ActiveNote(peer.Id); ok {
+				n.view.StartTimer(peer, note, accuserPeer)
 			}
 		}
 	}
 	return nil
 }
 
-// evalAccusation validates and processes an incoming gossip accusation against peer p.
+// evalAccusation validates and processes an incoming gossip accusation against given peer.
 //
 // Behavior:
 //  1. Verifies the accusation's ECDSA signature using the accuser's public key.
@@ -512,12 +512,12 @@ func (n *Node) Sign(content []byte) ([]byte, []byte, error) {
 }
 
 func (n *Node) Verify(r, s, content []byte, id string) bool {
-	p := n.view.Peer(id)
-	if p == nil {
+	peer := n.view.Peer(id)
+	if peer == nil {
 		return false
 	}
 
-	return n.cs.Verify(content, r, s, p.PublicKey())
+	return n.cs.Verify(content, r, s, peer.PublicKey())
 }
 
 /////////////////////////////////////////////////////////////////////////

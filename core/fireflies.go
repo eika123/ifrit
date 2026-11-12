@@ -34,16 +34,16 @@ func (n *Node) rebuttal() {
 
 	adv := n.AdversarialPolicy()
 
-	for _, p := range neighbours {
-		msg, suppress := adv.shouldSuppressRebuttal(p, baseMsg)
+	for _, peer := range neighbours {
+		msg, suppress := adv.shouldSuppressRebuttal(peer, baseMsg)
 		if suppress || msg == nil {
-			log.Debug("Adversary: suppressed rebuttal to peer", "addr", p.Addr)
+			log.Debug("Adversary: suppressed rebuttal to peer", "addr", peer.Addr)
 			continue
 		}
 
-		_, err := n.comm.Gossip(p.Addr, msg)
+		_, err := n.comm.Gossip(peer.Addr, msg)
 		if err != nil {
-			log.Error(err.Error(), "addr", p.Addr)
+			log.Error(err.Error(), "addr", peer.Addr)
 			continue
 		}
 	}

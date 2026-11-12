@@ -373,12 +373,12 @@ func (n *Node) SendMessage(dest string, ch chan *Message, data []byte) {
 }
 
 func (n *Node) IdToAddr(id []byte) (string, error) {
-	p := n.view.Peer(string(id))
-	if p == nil {
+	peer := n.view.Peer(string(id))
+	if peer == nil {
 		return "", errors.New("Could not find peer with specified id")
 	}
 
-	return p.Addr, nil
+	return peer.Addr, nil
 }
 
 func (n *Node) SendMessages(dest []string, ch chan *Message, data []byte) {
@@ -466,8 +466,8 @@ func (n *Node) LiveMembers() []string {
 
 	ret := make([]string, 0, len(live))
 
-	for _, p := range n.view.Live() {
-		ret = append(ret, p.Addr)
+	for _, peer := range n.view.Live() {
+		ret = append(ret, peer.Addr)
 	}
 
 	return ret

@@ -179,9 +179,9 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 
 	succ, prev := node.view.MyRingNeighbours(ringNum)
 
-	for _, p := range node.view.Live() {
-		if p.Id != succ.Id && p.Id != prev.Id {
-			randomPeer = p
+	for _, peer := range node.view.Live() {
+		if peer.Id != succ.Id && peer.Id != prev.Id {
+			randomPeer = peer
 			break
 		}
 	}
