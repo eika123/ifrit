@@ -3,6 +3,7 @@
     - Readme (partly done)
     - GoDoc (partly done)
     - More examples
+    - Add example with custom codec for data streaming
 
 - API changes
     - Remove recording feature (?)
