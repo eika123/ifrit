@@ -21,6 +21,11 @@ type RawHashedSymbol interface {
 	GetHash() uint64
 }
 
+type RawCodedSymbol[H RawHashedSymbol] interface {
+	GetHashedSymbol() H
+	GetCount() int64
+}
+
 func EncodeDigestSymbol(sym DigestSymbol) []byte {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint64(buf, uint64(sym))
@@ -90,4 +95,22 @@ func EncodeHashedSymbols[S Symbol[S], Out RawHashedSymbol](
 		out[i] = EncodeHashedSymbol(s, encode, build)
 	}
 	return out
+}
+
+func DecodeCodedSymbols[S Symbol[S], H RawHashedSymbol, C RawCodedSymbol[H]](
+	raw []C,
+	decode SymbolDecoder[S],
+) ([]riblt.CodedSymbol[S], error) {
+	out := make([]riblt.CodedSymbol[S], len(raw))
+	for i, s := range raw {
+		hs, err := DecodeHashedSymbol(s.GetHashedSymbol(), decode)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = riblt.CodedSymbol[S]{
+			HashedSymbol: hs,
+			Count:        s.GetCount(),
+		}
+	}
+	return out, nil
 }
