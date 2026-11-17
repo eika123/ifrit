@@ -73,12 +73,6 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// Digest returns the deterministic digest symbol for an element according to the store's configured hasher.
 	Digest(elem T) S
 
-	// Remove removes an element from the store. Returns true if present and removed.
-	Remove(elem T) bool
-
-	// RemoveByDigest removes an element by its digest. Returns true if present and removed.
-	RemoveByDigest(digest S) bool
-
 	// Contains retrieves the stored element matching elem's digest.
 	// Returns the stored element and true if found, or zero value and false otherwise.
 	// Returning (T, bool) enables callers to verify full field equality and guard against hash collisions.
@@ -112,6 +106,18 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 
 	// Copy returns an independent, deep copy of the set at this point in time.
 	Copy() ReverseIndexStore[T, S]
+}
+
+// MutableReverseIndexStore extends ReverseIndexStore with element removal operations
+// for non-reconciled or locally mutable stores (such as live peer membership).
+type MutableReverseIndexStore[T any, S Symbol[S]] interface {
+	ReverseIndexStore[T, S]
+
+	// Remove removes an element from the store. Returns true if present and removed.
+	Remove(elem T) bool
+
+	// RemoveByDigest removes an element by its digest. Returns true if present and removed.
+	RemoveByDigest(digest S) bool
 }
 
 // VersionedItem wraps an arbitrary value T with a monotonically ordered uint64 version.

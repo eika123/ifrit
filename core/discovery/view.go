@@ -41,7 +41,7 @@ type View struct {
 	viewStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
 	viewMutex sync.RWMutex
 
-	liveStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
+	liveStore digestmaps.MutableReverseIndexStore[*Peer, digestmaps.DigestSymbol]
 
 	accusationStore   digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
 	activeAccusations digestmaps.VersionVectorMutable[string, *Accusation, digestmaps.DigestSymbol]
@@ -146,7 +146,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	liveStore, err := digestmaps.NewDigestSet(peerHasher)
+	liveStore, err := digestmaps.NewMutableDigestSet(peerHasher)
 	if err != nil {
 		return nil, err
 	}
@@ -596,8 +596,8 @@ func (v *View) ViewStore() digestmaps.ReverseIndexStore[*Peer, digestmaps.Digest
 	return v.viewStore
 }
 
-// LiveStore returns the underlying ReverseIndexStore backing the live view.
-func (v *View) LiveStore() digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol] {
+// LiveStore returns the underlying MutableReverseIndexStore backing the live view.
+func (v *View) LiveStore() digestmaps.MutableReverseIndexStore[*Peer, digestmaps.DigestSymbol] {
 	return v.liveStore
 }
 
@@ -1306,16 +1306,17 @@ func (v *View) RemoveTestFull(id string) error {
 		return ErrCertsNotInitialized
 	}
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
-		v.viewStore.Remove(p)
+		mustMutableStore("viewStore", v.viewStore).Remove(p)
 		if p.cert != nil && len(p.cert.Raw) > 0 {
-			v.certStore.Remove(pki.CertificateFromX509(p.cert))
+			mustMutableStore("certStore", v.certStore).Remove(pki.CertificateFromX509(p.cert))
 		}
 		if v.activeNotes != nil {
 			v.activeNotes.Remove(id)
 		}
+		mutableNotes := mustMutableStore("noteStore", v.noteStore)
 		for _, n := range v.noteStore.Elements() {
 			if n.id == id {
-				v.noteStore.Remove(n)
+				mutableNotes.Remove(n)
 			}
 		}
 	}
@@ -1371,12 +1372,21 @@ func (v *View) ClearTestNote(p *Peer) {
 		v.activeNotes.Remove(p.Id)
 	}
 	if v.noteStore != nil {
+		mutableNotes := mustMutableStore("noteStore", v.noteStore)
 		for _, n := range v.noteStore.Elements() {
 			if n.id == p.Id {
-				v.noteStore.Remove(n)
+				mutableNotes.Remove(n)
 			}
 		}
 	}
+}
+
+func mustMutableStore[T any, S digestmaps.Symbol[S]](name string, store digestmaps.ReverseIndexStore[T, S]) digestmaps.MutableReverseIndexStore[T, S] {
+	m, ok := store.(digestmaps.MutableReverseIndexStore[T, S])
+	if !ok {
+		panic(fmt.Sprintf("%s does not implement MutableReverseIndexStore", name))
+	}
+	return m
 }
 
 // ONLY for testing

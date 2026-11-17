@@ -63,7 +63,7 @@ func (i itemWithCryptoString) CryptographicIdentity() string {
 
 func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	hasher := digestmaps.MustDefaultHasher[userItem]()
-	s, err := digestmaps.NewDigestSet(hasher)
+	s, err := digestmaps.NewMutableDigestSet(hasher)
 	require.NoError(t, err)
 
 	u1 := userItem{UserID: "u1", FirstName: "Alice"}

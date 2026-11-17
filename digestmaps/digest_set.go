@@ -181,6 +181,12 @@ var ErrNilHasher = errors.New("hasher cannot be nil")
 // NewDigestSet creates a new empty ReverseIndexStore backed by an in-memory digest set.
 // An explicit, non-nil Hasher must be provided to compute element digests.
 func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (ReverseIndexStore[T, S], error) {
+	return NewMutableDigestSet(hasher)
+}
+
+// NewMutableDigestSet creates a new empty MutableReverseIndexStore backed by an in-memory digest set.
+// An explicit, non-nil Hasher must be provided to compute element digests.
+func NewMutableDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (MutableReverseIndexStore[T, S], error) {
 	if hasher == nil {
 		return nil, ErrNilHasher
 	}
