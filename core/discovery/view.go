@@ -322,7 +322,7 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 		return err
 	}
 
-	v.viewStore.AddElement(p)
+	v.viewStore.Insert(p)
 	if v.certStore != nil && cert != nil && len(cert.Raw) > 0 {
 		v.certStore.Insert(pki.CertificateFromX509(cert))
 	}
@@ -667,7 +667,7 @@ func (v *View) AddLive(p *Peer) {
 		return
 	}
 
-	v.liveStore.AddElement(p)
+	v.liveStore.Insert(p)
 
 	old := v.rings.add(p)
 	v.viewMutex.Unlock()
@@ -1324,7 +1324,7 @@ func (v *View) RemoveTestFull(id string) error {
 
 // ONLY for testing
 func (v *View) AddTestPeer(p *Peer) {
-	v.viewStore.AddElement(p)
+	v.viewStore.Insert(p)
 	if v.certStore != nil && p.cert != nil && len(p.cert.Raw) > 0 {
 		v.certStore.Insert(pki.CertificateFromX509(p.cert))
 	}
@@ -1332,7 +1332,7 @@ func (v *View) AddTestPeer(p *Peer) {
 
 // ONLY for testing
 func (v *View) AddTestLivePeer(p *Peer) {
-	v.liveStore.AddElement(p)
+	v.liveStore.Insert(p)
 }
 
 // ONLY for testing

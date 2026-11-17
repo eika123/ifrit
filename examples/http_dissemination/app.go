@@ -294,7 +294,7 @@ func (a *App) handlePostItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isNew := a.store.AddElement(item)
+	_, isNew := a.store.Insert(item)
 
 	resp := PostItemResponse{
 		Status:      "added",

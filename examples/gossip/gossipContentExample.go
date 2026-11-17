@@ -113,7 +113,7 @@ func (a *application) Start() {
 	}
 }
 
-// addRandomUser creates a new local user and incorporates it via AddElement.
+// addRandomUser creates a new local user and incorporates it via Insert.
 // The reconcilable store updates the local state and disseminates updates to peers.
 func (a *application) addRandomUser() {
 	a.counter++
@@ -128,8 +128,8 @@ func (a *application) addRandomUser() {
 
 	log.Info("Created new local user", "id", userID, "added_by", newUser.AddedBy)
 
-	// AddElement handles mathematical insertion and deduplication
-	a.store.AddElement(newUser)
+	// Insert handles mathematical insertion and deduplication
+	a.store.Insert(newUser)
 
 	log.Info("Current store elements count", "size", a.store.Size())
 }

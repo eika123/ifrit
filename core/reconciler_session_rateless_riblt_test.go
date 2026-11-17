@@ -19,12 +19,12 @@ func TestDigestSymbol_Reconciliation(t *testing.T) {
 
 	// Alice has elements 1, 2, 3, 4
 	for _, e := range []DigestSymbol{1, 2, 3, 4} {
-		aliceStore.AddElement(e)
+		aliceStore.Insert(e)
 	}
 
 	// Bob has elements 2, 3, 4, 5 (missing 1, has extra 5)
 	for _, e := range []DigestSymbol{2, 3, 4, 5} {
-		bobStore.AddElement(e)
+		bobStore.Insert(e)
 	}
 
 	encodeDigest := func(d DigestSymbol) []byte {
@@ -70,10 +70,10 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30} {
-		aliceStore.AddElement(e)
-		bobStore.AddElement(e)
+		aliceStore.Insert(e)
+		bobStore.Insert(e)
 	}
-	aliceStore.AddElement(DigestSymbol(999)) // difference
+	aliceStore.Insert(DigestSymbol(999)) // difference
 
 	encodeDigest := func(d DigestSymbol) []byte {
 		buf := make([]byte, 8)
@@ -92,9 +92,9 @@ func TestRIBLTSession_SequentialMutationSnapshotIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mutate the stores AFTER session creation (should not affect active sessions)
-	aliceStore.AddElement(DigestSymbol(1001))
-	aliceStore.AddElement(DigestSymbol(1002))
-	bobStore.AddElement(DigestSymbol(2001))
+	aliceStore.Insert(DigestSymbol(1001))
+	aliceStore.Insert(DigestSymbol(1002))
+	bobStore.Insert(DigestSymbol(2001))
 
 	// Reconcile
 	for !bobSession.Done() {
@@ -117,10 +117,10 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, e := range []DigestSymbol{10, 20, 30, 40, 50} {
-		aliceStore.AddElement(e)
-		bobStore.AddElement(e)
+		aliceStore.Insert(e)
+		bobStore.Insert(e)
 	}
-	aliceStore.AddElement(DigestSymbol(999)) // known difference
+	aliceStore.Insert(DigestSymbol(999)) // known difference
 
 	encodeDigest := func(d DigestSymbol) []byte {
 		buf := make([]byte, 8)
@@ -145,7 +145,7 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 			case <-stopWriters:
 				return
 			default:
-				aliceStore.AddElement(val)
+				aliceStore.Insert(val)
 				val++
 			}
 		}
@@ -161,7 +161,7 @@ func TestRIBLTSession_ConcurrentMutationSnapshotIsolation(t *testing.T) {
 			case <-stopWriters:
 				return
 			default:
-				bobStore.AddElement(val)
+				bobStore.Insert(val)
 				val++
 			}
 		}

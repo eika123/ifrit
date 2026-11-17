@@ -119,7 +119,7 @@ if err != nil {
 ifrit.RegisterDataStore(c, store)
 
 // Insert local items; Ifrit automatically reconciles divergence with ring neighbors.
-store.AddElement(user{ID: "user-1", FirstName: "Ada", LastName: "Lovelace"})
+store.Insert(user{ID: "user-1", FirstName: "Ada", LastName: "Lovelace"})
 ```
 
 For custom serialization formats, use `ifrit.RegisterDataStoreWithCodec(c, store, codec)`. See the complete example in [examples/gossip/gossipContentExample.go](examples/gossip/gossipContentExample.go).

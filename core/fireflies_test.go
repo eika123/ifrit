@@ -111,8 +111,8 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	store, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
 	require.NoError(t, err)
 
-	store.AddElement("item-alpha")
-	store.AddElement("item-beta")
+	store.Insert("item-alpha")
+	store.Insert("item-beta")
 
 	RegisterDataStore(n, store)
 

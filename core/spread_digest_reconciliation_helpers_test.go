@@ -160,8 +160,8 @@ func (suite *HandlerTestSuite) TestSpread_DataDigestReconciliationOmitsBulkBytes
 		return DigestSymbol(elem)
 	})
 	require.NoError(suite.T(), err)
-	store.AddElement(101)
-	store.AddElement(102)
+	store.Insert(101)
+	store.Insert(102)
 
 	node.SetFingerprintData([]byte("local-data-fp-8b"))
 	RegisterDataStore(node, store)
@@ -201,8 +201,8 @@ func (suite *HandlerTestSuite) TestSpread_DataReconciliationWithTypedDataStore()
 	store, err := digestmaps.NewDigestSet[testItem, DigestSymbol](hasher)
 	require.NoError(suite.T(), err)
 
-	store.AddElement(testItem{ID: "item1", Data: "alpha"})
-	store.AddElement(testItem{ID: "item2", Data: "beta"})
+	store.Insert(testItem{ID: "item1", Data: "alpha"})
+	store.Insert(testItem{ID: "item2", Data: "beta"})
 
 	RegisterDataStore(node, store)
 	defer func() {

@@ -69,7 +69,7 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	u1 := userItem{UserID: "u1", FirstName: "Alice"}
 	u2 := userItem{UserID: "u2", FirstName: "Bob"}
 
-	added := s.AddElements(u1, u2)
+	added := s.InsertBatch(u1, u2)
 	assert.Equal(t, 2, added)
 	assert.Equal(t, 2, s.Size())
 	assert.False(t, s.Empty())
@@ -104,7 +104,7 @@ func TestDigestSet_BasicOperationsAndGetByDigest(t *testing.T) {
 	assert.False(t, found)
 
 	// Batch GetByDigests test
-	s.AddElement(u1) // s now contains u1 and u2
+	s.Insert(u1) // s now contains u1 and u2
 	elems, allFound := s.GetByDigests([]digestmaps.DigestSymbol{d1, d2})
 	assert.True(t, allFound)
 	assert.ElementsMatch(t, []userItem{u1, u2}, elems)
@@ -220,7 +220,7 @@ func TestDigestSet_ByteArrayFastPathAndStoreIntegration(t *testing.T) {
 	store, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
-	added := store.AddElements(blobA, blobB)
+	added := store.InsertBatch(blobA, blobB)
 	assert.Equal(t, 2, added)
 	assert.Equal(t, 2, store.Size())
 	assert.Equal(t, digestA.XOR(digestB), store.Fingerprint())
@@ -256,10 +256,10 @@ func TestDigestSet_CopyAndIsolation(t *testing.T) {
 	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
-	s.AddElements("a", "b")
+	s.InsertBatch("a", "b")
 	cp := s.Copy()
 
-	s.AddElements("c")
+	s.InsertBatch("c")
 	assert.Equal(t, 3, s.Size())
 	assert.Equal(t, 2, cp.Size())
 	_, foundC := cp.Contains("c")
@@ -271,7 +271,7 @@ func TestDigestSet_JSONSerialization(t *testing.T) {
 	s, err := digestmaps.NewDigestSet(hasher)
 	require.NoError(t, err)
 
-	s.AddElements("item1", "item2")
+	s.InsertBatch("item1", "item2")
 	data, err := json.Marshal(s)
 	require.NoError(t, err)
 
@@ -295,7 +295,7 @@ func TestDigestSet_ConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			item := fmt.Sprintf("worker-%d", id)
-			s.AddElements(item)
+			s.InsertBatch(item)
 			_ = s.Fingerprint()
 			_, _ = s.Contains(item)
 			_ = s.Elements()

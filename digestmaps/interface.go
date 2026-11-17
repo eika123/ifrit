@@ -67,14 +67,11 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// Insert adds an element to the store and returns its digest symbol and whether it was newly inserted.
 	Insert(elem T) (digest S, newlyAdded bool)
 
+	// InsertBatch adds multiple elements to the store and returns the count of newly added elements.
+	InsertBatch(elems ...T) int
+
 	// Digest returns the deterministic digest symbol for an element according to the store's configured hasher.
 	Digest(elem T) S
-
-	// AddElement adds an element to the store. Returns true if the element was newly added.
-	AddElement(elem T) bool
-
-	// AddElements adds multiple elements to the store. Returns the count of newly added elements.
-	AddElements(elems ...T) int
 
 	// Remove removes an element from the store. Returns true if present and removed.
 	Remove(elem T) bool

@@ -190,12 +190,8 @@ func NewDigestSet[T any, S Symbol[S]](hasher Hasher[T, S]) (ReverseIndexStore[T,
 	}, nil
 }
 
-// Insert adds an element to the set.
-// Returns the element's digest of type S and true if the element was newly inserted.
-func (s *digestSet[T, S]) Insert(item T) (S, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// insertLocked adds item to the set under s.mu, returning its digest and whether it was newly inserted.
+func (s *digestSet[T, S]) insertLocked(item T) (S, bool) {
 	if s.hasher == nil {
 		panic(ErrNilHasher)
 	}
@@ -214,53 +210,43 @@ func (s *digestSet[T, S]) Insert(item T) (S, bool) {
 	return d, true
 }
 
-// Digest computes and returns the deterministic digest symbol for the given item.
-func (s *digestSet[T, S]) Digest(item T) S {
-	if s.hasher == nil {
-		panic(ErrNilHasher)
-	}
-	return s.hasher(item)
+// Insert adds an element to the set.
+// Returns the element's digest of type S and true if the element was newly inserted.
+func (s *digestSet[T, S]) Insert(item T) (S, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.insertLocked(item)
 }
 
-// AddElement inserts an element into the set and returns true if newly added.
-func (s *digestSet[T, S]) AddElement(elem T) bool {
-	_, inserted := s.Insert(elem)
-	return inserted
-}
-
-// InsertSlice adds multiple elements to the set.
-// Returns the count of newly inserted elements.
-func (s *digestSet[T, S]) InsertSlice(items []T) int {
-	if len(items) == 0 {
+// InsertBatch inserts multiple elements into the set and returns the count of newly added elements.
+func (s *digestSet[T, S]) InsertBatch(elems ...T) int {
+	if len(elems) == 0 {
 		return 0
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.hasher == nil {
-		panic(ErrNilHasher)
-	}
 	if s.itemsByDigest == nil {
-		s.itemsByDigest = make(map[S]T, len(items))
+		s.itemsByDigest = make(map[S]T, len(elems))
 	}
 
 	added := 0
-	for _, item := range items {
-		d := s.hasher(item)
-		if _, exists := s.itemsByDigest[d]; !exists {
-			s.itemsByDigest[d] = item
-			s.fingerprint = s.fingerprint.XOR(d)
+	for _, elem := range elems {
+		if _, inserted := s.insertLocked(elem); inserted {
 			added++
 		}
 	}
-
 	return added
 }
 
-// AddElements inserts multiple elements into the set and returns the count of newly added elements.
-func (s *digestSet[T, S]) AddElements(elems ...T) int {
-	return s.InsertSlice(elems)
+// Digest computes and returns the deterministic digest symbol for the given item.
+func (s *digestSet[T, S]) Digest(item T) S {
+	if s.hasher == nil {
+		panic(ErrNilHasher)
+	}
+	return s.hasher(item)
 }
 
 // Remove removes an element from the set.

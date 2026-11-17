@@ -15,17 +15,17 @@ func TestSetUnionMerging(t *testing.T) {
 	hasher := ifrit.MustDefaultHasher[user]()
 	s1, err := ifrit.NewDigestSet(hasher)
 	require.NoError(t, err)
-	s1.AddElement(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
-	s1.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"})
+	s1.Insert(user{ID: "node1-1", FirstName: "User-1", AddedBy: "node1"})
+	s1.Insert(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"})
 
 	s2, err := ifrit.NewDigestSet(hasher)
 	require.NoError(t, err)
-	s2.AddElement(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"}) // Duplicate
-	s2.AddElement(user{ID: "node2-1", FirstName: "User-1", AddedBy: "node2"})
+	s2.Insert(user{ID: "node1-2", FirstName: "User-2", AddedBy: "node1"}) // Duplicate
+	s2.Insert(user{ID: "node2-1", FirstName: "User-1", AddedBy: "node2"})
 
 	// Verify delta merging into an independent copy
 	merged := s1.Copy()
-	added := merged.AddElements(s2.Elements()...)
+	added := merged.InsertBatch(s2.Elements()...)
 	assert.Equal(t, 1, added) // Only s2's node2-1 is new
 	assert.Equal(t, 3, merged.Size())
 	assert.Equal(t, 2, s1.Size()) // s1 remains untouched
@@ -69,14 +69,14 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 			peerSet, err := ifrit.NewDigestSet(ifrit.MustDefaultHasher[user]())
 			require.NoError(t, err)
 			for i := 0; i < itemsPerPeer; i++ {
-				peerSet.AddElement(user{
+				peerSet.Insert(user{
 					ID:        fmt.Sprintf("node-%d-item-%d", peerIdx, i),
 					FirstName: fmt.Sprintf("User-%d", i),
 					AddedBy:   fmt.Sprintf("node-%d", peerIdx),
 				})
 			}
 			// Add an overlap element shared across all peers
-			peerSet.AddElement(user{
+			peerSet.Insert(user{
 				ID:        "shared-user",
 				FirstName: "Shared",
 				AddedBy:   "common",
@@ -87,7 +87,7 @@ func TestApplicationGossipSetIntegration(t *testing.T) {
 				// Inject gossip bytes directly into the node's store
 				var items []user
 				_ = json.Unmarshal(raw, &items)
-				app.store.AddElements(items...)
+				app.store.InsertBatch(items...)
 			}
 		}(p)
 	}
