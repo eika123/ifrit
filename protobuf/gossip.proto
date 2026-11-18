@@ -5,26 +5,18 @@ option go_package = "github.com/eika123/ifrit/protobuf;proto";
 
 service gossip {
     rpc Spread (State) returns (StateResponse) {}
-    rpc Sync (stream SyncFrame) returns (stream SyncFrame) {}
     rpc Messenger (Msg) returns (MsgResponse) {}
     rpc Stream (stream Msg) returns (stream MsgResponse) {}
 }
 
 message State {
-    reserved 1, 3, 12, 13, 14;
-    reserved "existingHosts", "externalGossip", "pushed_certificates", "pushed_notes", "pushed_accusations";
+    Note ownNote = 1;
+    bytes fingerprint_data = 2;
+    bytes fingerprint_accusations = 3;
 
-    Note ownNote = 2;
-    bytes fingerprint_data = 4;
-    bytes fingerprint_accusations = 5;
-    
     // fingerprint_view is an xor of notes and certificates fingerprints
-    bytes fingerprint_view = 6;
-    repeated uint64 accusation_digests = 7;
-    repeated uint64 note_digests = 8;
-    repeated uint64 data_digests = 9;
-    bytes fingerprint_certificates = 10;
-    repeated uint64 certificate_digests = 11;
+    bytes fingerprint_view = 4;
+    bytes fingerprint_certificates = 5;
 }
 
 // Application message
@@ -39,24 +31,11 @@ message MsgResponse {
 }
 
 message StateResponse {
-    reserved 4;
-    reserved "externalGossip";
-
-    repeated Certificate certificates = 1;
-    repeated Note notes = 2;
-    repeated Accusation accusations = 3;
-    bytes fingerprint_data = 5;
-    bytes fingerprint_accusations = 6;
-    bytes fingerprint_view = 7;
-    repeated uint64 requested_accusation_digests = 8;
-    repeated uint64 requested_note_digests = 9;
-    repeated uint64 requested_data_digests = 10;
-    bytes fingerprint_certificates = 11;
-    repeated uint64 available_data_digests = 12;
-    repeated uint64 requested_certificate_digests = 13;
-    repeated uint64 available_certificate_digests = 14;
-    repeated uint64 available_note_digests = 15;
-    repeated uint64 available_accusation_digests = 16;
+    repeated Accusation accusations = 1;
+    bytes fingerprint_data = 2;
+    bytes fingerprint_accusations = 3;
+    bytes fingerprint_view = 4;
+    bytes fingerprint_certificates = 5;
 }
 
 // Raw certificate
@@ -96,49 +75,4 @@ message Pong {
     bytes fingerprint_data = 3;
     bytes fingerprint_accusations = 4;
     bytes fingerprint_view = 5;
-}
-
-// Unified transfer stream framing
-message SyncFrame {
-    oneof payload {
-        CertificateBatch certificates = 1;
-        NoteBatch notes               = 2;
-        AccusationBatch accusations   = 3;
-        DataItemHeader data_header    = 4;
-        DataItemChunk data_chunk      = 5;
-        DataItemEnd data_end          = 6;
-        SyncComplete complete         = 7;
-    }
-}
-
-message CertificateBatch {
-    repeated Certificate items = 1;
-}
-
-message NoteBatch {
-    repeated Note items = 1;
-}
-
-message AccusationBatch {
-    repeated Accusation items = 1;
-}
-
-message DataItemHeader {
-    uint64 digest     = 1;
-    int64  total_size = 2; // -1 if unknown stream length, >= 0 when known
-}
-
-message DataItemChunk {
-    bytes data = 1;        // Sized by sync_chunk_bytes (default 128 KB)
-}
-
-message DataItemEnd {
-    uint64 digest = 1;     // Confirms clean end-of-item before store Commit/Ingest
-}
-
-message SyncComplete {
-    bytes fingerprint_view         = 1;
-    bytes fingerprint_accusations  = 2;
-    bytes fingerprint_data         = 3;
-    bytes fingerprint_certificates = 4;
 }

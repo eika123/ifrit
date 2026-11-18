@@ -1,7 +1,6 @@
 package ifrit
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,18 +14,17 @@ func TestClient_ItemCodecExport(t *testing.T) {
 	codec := DefaultItemCodec[string]()
 	require.NotNil(t, codec)
 
-	var buf bytes.Buffer
-	err := codec.Encode("test-payload", &buf)
+	encoded, err := codec.Encode("test-payload")
 	require.NoError(t, err)
 
-	decoded, err := codec.Decode(&buf)
+	decoded, err := codec.Decode(encoded)
 	require.NoError(t, err)
 	assert.Equal(t, "test-payload", decoded)
 }
 
 func TestClient_RegisterDataStoreNilClient(t *testing.T) {
 	hasher := MustDefaultHasher[string]()
-	store, err := NewDigestSet(hasher)
+	store, err := NewReconcilableStore(hasher)
 	require.NoError(t, err)
 
 	// Guard against nil client or nil node

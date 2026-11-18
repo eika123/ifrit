@@ -9,8 +9,6 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var (
@@ -50,73 +48,7 @@ func (n *Node) rebuttal() {
 }
 
 func (n *Node) gossip() {
-	neighbours := n.view.GossipPartners()
-	adv := n.AdversarialPolicy()
-
-	for _, peer := range neighbours {
-		if !n.IsDivergent(peer) {
-			continue
-		}
-
-		var sess *PeerReconcileSession
-		var seq uint64
-		if n.sessionManager != nil {
-			sess = n.sessionManager.GetOrCreate(peer.Id)
-			var ok bool
-			seq, ok = sess.TryStartOutboundReconciling()
-			if !ok {
-				continue
-			}
-		}
-
-		msg := n.collectDigestDiffsForPeer(peer)
-
-		if adv != nil && adv.OnGossipOut != nil {
-			adv.OnGossipOut(peer, msg)
-		}
-
-		// the comm.Gossip actually does the RPC
-		reply, err := n.comm.Gossip(peer.Addr, msg)
-		if err != nil {
-			if sess != nil {
-				sess.ResetIfSeq(seq)
-			}
-			if status.Code(err) == codes.Aborted {
-				log.Debug("Outbound gossip aborted by peer tie-breaker", "addr", peer.Addr)
-			} else {
-				log.Error(err.Error(), "addr", peer.Addr)
-			}
-			continue
-		}
-
-		// Ingest control items if present (e.g. bootstrap response)
-		if certs := reply.GetCertificates(); len(certs) > 0 {
-			n.mergeCertificates(certs)
-		}
-		if notes := reply.GetNotes(); len(notes) > 0 {
-			n.mergeNotes(notes)
-		}
-		if accs := reply.GetAccusations(); len(accs) > 0 {
-			n.mergeAccusations(accs)
-		}
-
-		deltas := ExtractReconcileDeltas(reply)
-		if sess != nil {
-			sess.SetDeltas(seq, deltas)
-			sess.TransitionAfterReconcile(seq, true)
-		}
-
-		if deltas.HasDeltas() {
-			n.spawnSyncSession(peer, sess, seq)
-		} else {
-			// In sync: update cached peer fingerprints from responder's reply
-			peer.SetFingerprints(
-				reply.GetFingerprintData(),
-				reply.GetFingerprintAccusations(),
-				reply.GetFingerprintView(),
-			)
-		}
-	}
+	n.gossipWithStoreReconcilers()
 }
 
 func (n *Node) monitor() {

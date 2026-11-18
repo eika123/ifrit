@@ -35,17 +35,18 @@ type SketchStore[S digestmaps.Symbol[S]] interface {
 	MakeDecoder() riblt.Decoder[S]
 }
 
-// ReconcileDiff holds the decoded symmetric difference (A\B and B\A).
+// ReconcileDiff holds the decoded symmetric difference (A\B and B\A) and remote fingerprint.
 type ReconcileDiff[S digestmaps.Symbol[S]] struct {
-	Requested    []S // A \ B: symbols caller has that responder lacks
-	Available    []S // B \ A: symbols responder has that caller lacks
-	UsedFallback bool
+	Requested         []S // A \ B: symbols caller has that responder lacks
+	Available         []S // B \ A: symbols responder has that caller lacks
+	RemoteFingerprint []byte
+	UsedFallback      bool
 }
 
 // ReconcileClientTransport abstracts the wire stream for the reconciliation initiator.
 type ReconcileClientTransport[S digestmaps.Symbol[S]] interface {
 	SendCoded(batch []riblt.CodedSymbol[S]) error
-	RecvResponse() (decoded bool, req, avail []S, eof bool, err error)
+	RecvResponse() (decoded bool, req, avail []S, fp []byte, eof bool, err error)
 	CloseSend() error
 }
 
@@ -98,7 +99,7 @@ func receiveReconcileResponses[S digestmaps.Symbol[S]](
 	var agg ReconcileDiff[S]
 
 	for {
-		decoded, req, avail, eof, err := tr.RecvResponse()
+		decoded, req, avail, fp, eof, err := tr.RecvResponse()
 		if eof {
 			doneCh <- reconcileResult[S]{diff: agg}
 			return
@@ -112,6 +113,9 @@ func receiveReconcileResponses[S digestmaps.Symbol[S]](
 			decodedOnce.Do(func() { close(decodedCh) })
 		} else if len(req) == 0 && len(avail) == 0 {
 			needMoreOnce.Do(func() { close(needMoreCh) })
+		}
+		if len(fp) > 0 {
+			agg.RemoteFingerprint = fp
 		}
 		agg.Requested = append(agg.Requested, req...)
 		agg.Available = append(agg.Available, avail...)

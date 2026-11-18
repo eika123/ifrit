@@ -19,6 +19,7 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
+	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,11 +159,11 @@ func TestSync_TwoNodeDataConvergence(t *testing.T) {
 
 	// 1. Set up data store on Node A and Node B
 	t.Log("Setting up data stores")
-	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeA, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeB, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 
@@ -218,11 +219,11 @@ func TestSync_BidirectionalMutualConvergence(t *testing.T) {
 	peerAOnB, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
 
 	// Set up stores
-	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeA, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeB, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 
@@ -281,11 +282,11 @@ func TestSync_TelemetryAccountingDuringConvergence(t *testing.T) {
 	require.NotNil(t, peerAOnB)
 	require.NotNil(t, peerBOnA)
 
-	storeA, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeA, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeA, storeA)
 
-	storeB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	storeB, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	RegisterDataStore(nodeB, storeB)
 
@@ -371,11 +372,7 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	require.NoError(t, err, "Node B must successfully send Spread RPC to Node A")
 	require.NotNil(t, reply, "SpreadResponse must not be nil")
 
-	// 2. Verify Zero-Piggybacking invariant on SpreadResponse
-	assert.Empty(t, reply.GetCertificates(), "SpreadResponse must not piggyback certificates")
-	assert.Empty(t, reply.GetNotes(), "SpreadResponse must not piggyback notes")
-
-	// 3. Verify non-empty fingerprints in SpreadResponse
+	// 2. Verify non-empty fingerprints in SpreadResponse
 	assert.NotEmpty(t, reply.GetFingerprintCertificates(), "SpreadResponse must return non-empty certificate fingerprint")
 	assert.NotEmpty(t, reply.GetFingerprintView(), "SpreadResponse must return non-empty view fingerprint")
 	assert.NotEmpty(t, reply.GetFingerprintAccusations(), "SpreadResponse must return non-empty accusations fingerprint")
@@ -385,46 +382,25 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	assert.Equal(t, nodeA.ViewFingerprintBytes(), reply.GetFingerprintView(),
 		"SpreadResponse view fingerprint must match Node A's fingerprint")
 
-	// 4. Verify deltas were negotiated
-	deltas := ExtractReconcileDeltas(reply)
-	require.True(t, deltas.HasDeltas(), "SpreadResponse must contain negotiated control deltas")
-
-	// 5. Ingest fast-path accusations and trigger streaming Sync to pull down Node A's control items
+	// 3. Ingest fast-path accusations if present and run control store bootstrap reconciliation
 	if accs := reply.GetAccusations(); len(accs) > 0 {
 		nodeB.mergeAccusations(accs)
 	}
 
-	err = nodeB.syncBootstrap(commA.Addr(), deltas)
-	require.NoError(t, err, "Node B must successfully stream sync with Node A")
+	err = nodeB.reconcileBootstrapControl(commA.Addr())
+	require.NoError(t, err, "Node B must successfully reconcile control stores with Node A")
 
-	// 6. Verify Node B now has Node A's certificate and peer representation
-	require.Eventually(t, func() bool {
-		return nodeB.view.Exists(idA)
-	}, 3*time.Second, 20*time.Millisecond, "Node B must have admitted Node A into full view via Sync")
+	// 4. Verify Node B now has Node A's certificate and peer representation
+	require.True(t, nodeB.view.Exists(idA), "Node B must have admitted Node A into full view via control reconciler")
 
 	peerAOnB := nodeB.view.Peer(idA)
 	require.NotNil(t, peerAOnB, "Node B must have Peer object for Node A")
 
-	// 7. Verify Node B has converged on Node A's certificate fingerprint
+	// 5. Verify Node B has converged on Node A's control fingerprints
 	assert.Equal(t, nodeA.CertFingerprintBytes(), nodeB.CertFingerprintBytes(),
-		"Certificate fingerprints must match after bootstrap sync")
-
-	// 8. Verify single-round quiescence: subsequent gossip to Node A reports no deltas
-	msgInSync := &pb.State{
-		FingerprintCertificates: nodeB.CertFingerprintBytes(),
-		FingerprintView:         nodeB.ViewFingerprintBytes(),
-		FingerprintAccusations:  nodeB.AccusationFingerprintBytes(),
-		FingerprintData:         nodeB.FingerprintData(),
-	}
-	replyInSync, err := nodeB.comm.Gossip(commA.Addr(), msgInSync)
-	require.NoError(t, err)
-	deltasInSync := ExtractReconcileDeltas(replyInSync)
-
-	// 8. Verify control state quiescence: subsequent gossip to Node A reports zero control deltas
-	assert.Empty(t, deltasInSync.AvailableCertificates, "Subsequent gossip must have zero available certificate deltas")
-	assert.Empty(t, deltasInSync.RequestedCertificates, "Subsequent gossip must have zero requested certificate deltas")
-	assert.Empty(t, deltasInSync.AvailableNotes, "Subsequent gossip must have zero available note deltas")
-	assert.Empty(t, deltasInSync.RequestedNotes, "Subsequent gossip must have zero requested note deltas")
-	assert.Empty(t, deltasInSync.AvailableAccusations, "Subsequent gossip must have zero available accusation deltas")
-	assert.Empty(t, deltasInSync.RequestedAccusations, "Subsequent gossip must have zero requested accusation deltas")
+		"Certificate fingerprints must match after bootstrap reconciliation")
+	assert.Equal(t, nodeA.ViewFingerprintBytes(), nodeB.ViewFingerprintBytes(),
+		"View fingerprints must match after bootstrap reconciliation")
+	assert.Equal(t, nodeA.AccusationFingerprintBytes(), nodeB.AccusationFingerprintBytes(),
+		"Accusation fingerprints must match after bootstrap reconciliation")
 }

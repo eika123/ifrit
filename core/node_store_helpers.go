@@ -7,6 +7,7 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile"
 	log "github.com/inconshreveable/log15"
 )
 
@@ -27,11 +28,10 @@ func (n *Node) FingerprintData() []byte {
 		return selfFp
 	}
 	n.dataReconcilerMutex.RLock()
-	defer n.dataReconcilerMutex.RUnlock()
-	if n.dataReconciler != nil {
-		var buf [8]byte
-		binary.BigEndian.PutUint64(buf[:], uint64(n.dataReconciler.Fingerprint()))
-		return buf[:]
+	fingerprintpFn := n.dataStoreFP
+	n.dataReconcilerMutex.RUnlock()
+	if fingerprintpFn != nil {
+		return fingerprintpFn()
 	}
 	return nil
 }
@@ -151,64 +151,19 @@ func (n *Node) CertDigestsUint64() []uint64 {
 	return digestmaps.AsUint64Slice(n.CertDigests())
 }
 
-// DataDigests returns the local digest symbols, or nil if no reconciler is registered.
-func (n *Node) DataDigests() []digestmaps.DigestSymbol {
-	n.dataReconcilerMutex.RLock()
-	defer n.dataReconcilerMutex.RUnlock()
-	if n.dataReconciler != nil {
-		return n.dataReconciler.Digests()
-	}
-	return nil
-}
-
-// DataDigestsUint64 returns the local 64-bit uint64 data digests, or nil if no provider is registered.
-func (n *Node) DataDigestsUint64() []uint64 {
-	return digestmaps.AsUint64Slice(n.DataDigests())
-}
-
 // SessionManager returns the peer reconciliation session manager.
 func (n *Node) SessionManager() *PeerSessionManager {
 	return n.sessionManager
 }
 
-// SetDataReconciler registers a DataReconciler on the node.
-func (n *Node) SetDataReconciler(r DataReconciler) {
-	n.dataReconcilerMutex.Lock()
-	defer n.dataReconcilerMutex.Unlock()
-	n.dataReconciler = r
+// RegisterDataStore registers an application's typed reconcilable data store on the node
+// using the default reconcile.ItemCodec for type T.
+func RegisterDataStore[T any](n *Node, store reconcile.Store[T]) {
+	RegisterDataStoreWithCodec(n, store, nil)
 }
 
-// GetDataReconciler returns the currently registered DataReconciler, or nil.
-func (n *Node) GetDataReconciler() DataReconciler {
-	n.dataReconcilerMutex.RLock()
-	defer n.dataReconcilerMutex.RUnlock()
-	return n.dataReconciler
-}
-
-// RegisterDataStore registers an application's typed data store on the node,
-// wrapping it into a DataReconciler using the default item codec and default session factory.
-func RegisterDataStore[T any](n *Node, store ReverseIndexStore[T, digestmaps.DigestSymbol]) {
-	RegisterDataStoreWithCodec(n, store, DefaultItemCodec[T]())
-}
-
-// RegisterDataStoreWithCodec registers an application's typed data store on the node with a custom ItemCodec.
-func RegisterDataStoreWithCodec[T any](n *Node, store ReverseIndexStore[T, digestmaps.DigestSymbol], codec ItemCodec[T]) {
-	if n == nil {
-		return
-	}
-	n.SetDataReconciler(NewTypedDataReconcilerWithCodec(store, codec, nil))
-}
-
-// SetReconciliationProtocol configures the node's set reconciliation protocol.
-func (n *Node) SetReconciliationProtocol(def ProtocolDefinition) {
-	n.reconProtocolMutex.Lock()
-	defer n.reconProtocolMutex.Unlock()
-	n.reconProtocol = def
-}
-
-// ReconciliationProtocol returns the node's active set reconciliation protocol.
-func (n *Node) ReconciliationProtocol() ProtocolDefinition {
-	n.reconProtocolMutex.RLock()
-	defer n.reconProtocolMutex.RUnlock()
-	return n.reconProtocol
+// RegisterDataStoreWithCodec registers an application's typed reconcilable data store on the node
+// with a custom reconcile.ItemCodec.
+func RegisterDataStoreWithCodec[T any](n *Node, store reconcile.Store[T], codec reconcile.ItemCodec[T]) {
+	RegisterReconcilableDataStore(n, store, codec)
 }

@@ -69,7 +69,6 @@ func (suite *HandlerTestSuite) SetupTest() {
 }
 
 func (suite *HandlerTestSuite) TestSpread() {
-	var nonExistingNeighbours []string
 	var ringNum uint32 = 1
 
 	node := suite.n
@@ -122,9 +121,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 		exists    bool
 		live      bool
 
-		certs []string
-		notes []string
-		accs  []string
+		accs []string
 
 		findNeighbours bool
 	}{
@@ -198,8 +195,6 @@ func (suite *HandlerTestSuite) TestSpread() {
 		{
 			ctx:    peerContext(nonExistingPeer),
 			err:    false,
-			certs:  nonExistingNeighbours,
-			notes:  nonExistingNeighbours,
 			exists: true,
 			live:   true,
 			peer:   nonExistingPeer,
@@ -235,40 +230,15 @@ func (suite *HandlerTestSuite) TestSpread() {
 		require.Equalf(suite.T(), t.live, node.view.IsAlive(t.peer),
 			"Invalid live state for test %d.", i)
 
-		var certs []string
-		for _, c := range reply.GetCertificates() {
-			cert, err := x509.ParseCertificate(c.GetRaw())
-			require.NoError(suite.T(), err, "Failed to parse certificate.")
-
-			certs = append(certs, string(cert.SubjectKeyId))
-		}
-
-		var notes []string
-		for _, n := range reply.GetNotes() {
-			notes = append(notes, string(n.GetId()))
-		}
-
 		var accs []string
 		for _, a := range reply.GetAccusations() {
 			accs = append(accs, string(a.GetAccused()))
 		}
 
 		if !t.findNeighbours {
-			require.ElementsMatchf(suite.T(), t.certs, certs,
-				"Invalid certificate output for test %d.", i)
-
-			require.ElementsMatchf(suite.T(), t.notes, notes,
-				"Invalid note output for test %d.", i)
-
 			require.ElementsMatchf(suite.T(), t.accs, accs,
 				"Invalid accusation output for test %d.", i)
 		} else {
-			// Zero-piggybacking invariant: non-neighbour Spread must not piggyback raw certificates or notes.
-			require.Emptyf(suite.T(), reply.GetCertificates(),
-				"SpreadResponse must not piggyback certificates in test %d.", i)
-			require.Emptyf(suite.T(), reply.GetNotes(),
-				"SpreadResponse must not piggyback notes in test %d.", i)
-
 			// Fingerprints must be populated and non-empty for control state reconciliation
 			require.NotEmptyf(suite.T(), reply.GetFingerprintCertificates(),
 				"SpreadResponse must include non-empty certificate fingerprint in test %d.", i)

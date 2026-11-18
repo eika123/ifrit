@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,4 +133,66 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 func TestPeerCertFromContext_Errors(t *testing.T) {
 	_, err := PeerCertFromContext(context.Background())
 	require.Error(t, err)
+}
+
+func TestComm_RegisterServiceAndUntrustedCARejection(t *testing.T) {
+	caPriv, caCert := genTestKeyAndCert(t, nil, nil, []byte("trusted-ca"))
+	privB, certB := genTestKeyAndCert(t, caCert, caPriv, []byte("peer-b-id"))
+
+	// Client signed by a completely different CA.
+	rogueCAPriv, rogueCACert := genTestKeyAndCert(t, nil, nil, []byte("rogue-ca"))
+	privRogue, certRogue := genTestKeyAndCert(t, rogueCACert, rogueCAPriv, []byte("rogue-peer"))
+
+	lisB, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addrB := lisB.Addr().String()
+	lisRogue, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	t.Setenv("IFRIT_TELEMETRY_DB", filepath.Join(t.TempDir(), "telemetry.db"))
+
+	commB, err := NewComm(certB, caCert, privB, lisB)
+	require.NoError(t, err)
+	defer commB.Stop()
+
+	commRogue, err := NewComm(certRogue, rogueCACert, privRogue, lisRogue)
+	require.NoError(t, err)
+	defer commRogue.Stop()
+
+	var handlerCalled atomic.Bool
+	svc := &testGossipService{
+		onSpread: func(ctx context.Context, req *pb.State) (*pb.StateResponse, error) {
+			handlerCalled.Store(true)
+			return &pb.StateResponse{}, nil
+		},
+	}
+
+	// Register directly via RegisterService (not RegisterGRPC).
+	commB.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "proto.gossip",
+		HandlerType: (*pb.GossipServer)(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "Spread",
+				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					in := new(pb.State)
+					if err := dec(in); err != nil {
+						return nil, err
+					}
+					return srv.(pb.GossipServer).Spread(ctx, in)
+				},
+			},
+		},
+	}, svc)
+	go commB.Start()
+
+	cc, err := commRogue.ClientConn(addrB)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err = pb.NewGossipClient(cc).Spread(ctx, &pb.State{})
+	require.Error(t, err)
+	assert.False(t, handlerCalled.Load(), "untrusted CA client must be rejected by mTLS before reaching RPC handler")
 }

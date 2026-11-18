@@ -2,15 +2,12 @@ package core
 
 import (
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
 	"golang.org/x/net/context"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 var (
@@ -59,10 +56,6 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, args, reply)
 	}
 
-	if err := n.computeControlAndDataDeltas(remoteId, args, reply); err != nil {
-		return nil, err
-	}
-
 	return reply, nil
 }
 
@@ -89,13 +82,8 @@ func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, w
 	reply.FingerprintView = n.ViewFingerprintBytes()
 	reply.FingerprintAccusations = n.AccusationFingerprintBytes()
 
-	// force data reecon after integration -- find a better way to negotiate this later
+	// Force data recon after integration.
 	reply.FingerprintData = args.FingerprintData
-
-	// compute control deltas for certs, notes, and accusations
-	if err := n.computeControlDeltas(remoteId, args, reply); err != nil {
-		return nil, err
-	}
 
 	return reply, nil
 }
@@ -188,35 +176,6 @@ done:
 		return recvErr
 	}
 	return nil
-}
-
-// Sync handles inbound bulk data and anti-entropy synchronization streams from peers.
-func (n *Node) Sync(srv pb.Gossip_SyncServer) error {
-	if srv == nil {
-		return errors.New("sync: server stream is nil")
-	}
-	ctx := srv.Context()
-	cert, err := n.validateCtx(ctx)
-	if err != nil {
-		log.Error("Sync validateCtx failed", "err", err)
-		return status.Errorf(codes.Unauthenticated, "invalid caller cert: %v", err)
-	}
-	remoteID := string(cert.SubjectKeyId)
-
-	peer := n.view.Peer(remoteID)
-	if peer == nil {
-		log.Error("Sync peer not in view", "remoteID", fmt.Sprintf("%x", remoteID))
-		return status.Errorf(codes.PermissionDenied, "caller not recognized in view: %x", remoteID)
-	}
-
-	sess := n.sessionManager.GetOrCreate(remoteID)
-	seq, err := sess.StartInboundTransfer()
-	if err != nil {
-		log.Error("Sync StartInboundTransfer failed", "err", err, "state", sess.State())
-		return status.Errorf(codes.FailedPrecondition, "session not awaiting stream: %v", err)
-	}
-
-	return n.executeBidirectionalSync(ctx, srv, peer, sess, seq, false)
 }
 
 func (n *Node) replyStream(reply chan []byte, srv pb.Gossip_StreamServer) {

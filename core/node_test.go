@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/tls"
@@ -12,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/crypto"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
@@ -55,30 +55,44 @@ func (suite *NodeTestSuite) SetupTest() {
 }
 
 func (suite *NodeTestSuite) TestGossip() {
-	// Everyone gossips with everyone,
-	// then assert that everyone has the same view.
+	// Six real Comm-backed nodes admit each other via thin Spread and converge control views
+	// via StoreReconciler bootstrap control reconciliation, then assert identical views.
+	caCert, caPriv := genTestCA(suite.T())
+	const numNodes = 6
 
-	for _, n := range suite.nodes {
-		for _, n2 := range suite.nodes {
+	nodes := make([]*Node, numNodes)
+	comms := make([]*comm.Comm, numNodes)
+	for i := 0; i < numNodes; i++ {
+		n, c, _, _ := createTestNodeWithComm(suite.T(), caCert, caPriv)
+		nodes[i] = n
+		comms[i] = c
+		defer n.Stop()
+		defer c.Stop()
+		go c.Start()
+	}
+
+	for _, n := range nodes {
+		for _, n2 := range nodes {
 			if n == n2 {
 				continue
 			}
-			msg := &pb.State{}
-			if selfNote := n.view.SelfNote(); selfNote != nil {
-				msg.OwnNote = selfNote.ToPbMsg()
-			}
-			reply, err := n2.Spread(peerContext(n.self), msg)
-			if err != nil {
-				continue
-			}
-			n.mergeCertificates(reply.GetCertificates())
-			n.mergeNotes(reply.GetNotes())
-			n.mergeAccusations(reply.GetAccusations())
+			require.NoError(suite.T(), n.admitViaThinSpread(n2.comm.Addr()))
+			require.NoError(suite.T(), n.reconcileBootstrapControl(n2.comm.Addr()))
 		}
 	}
 
-	for _, n := range suite.nodes {
-		for _, n2 := range suite.nodes {
+	// Second pass ensures nodes joined earlier pick up notes/certs from later joiners.
+	for _, n := range nodes {
+		for _, n2 := range nodes {
+			if n == n2 {
+				continue
+			}
+			require.NoError(suite.T(), n.reconcileBootstrapControl(n2.comm.Addr()))
+		}
+	}
+
+	for _, n := range nodes {
+		for _, n2 := range nodes {
 			require.NoError(suite.T(), n.view.Compare(n2.view), "Views are not equal.")
 		}
 	}
@@ -193,10 +207,6 @@ func (cs *commStub) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) 
 
 func (cs *commStub) Send(addr string, m *pb.Msg) (*pb.MsgResponse, error) {
 	return &pb.MsgResponse{}, nil
-}
-
-func (cs *commStub) OpenSyncStream(ctx context.Context, addr string) (pb.Gossip_SyncClient, error) {
-	return nil, nil
 }
 
 type pingStub struct {

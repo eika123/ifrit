@@ -14,6 +14,9 @@ import (
 	"github.com/eika123/ifrit/core"
 	"github.com/eika123/ifrit/crypto/identity"
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile"
+	"github.com/eika123/ifrit/reconcile/naive"
+	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	log "github.com/inconshreveable/log15"
 	"github.com/spf13/viper"
 )
@@ -261,6 +264,10 @@ func (c *Client) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) {
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
 type ReverseIndexStore[T any] = digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol]
 
+// ReconcilableStore is a reconcilable data store whose Insert operations
+// automatically maintain underlying set-reconciliation state.
+type ReconcilableStore[T any] = reconcile.Store[T]
+
 var (
 	ErrNilHasher      = digestmaps.ErrNilHasher
 	ErrUnhashableType = digestmaps.ErrUnhashableType
@@ -289,18 +296,39 @@ func NewDigestSet[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol]) (
 	return digestmaps.NewDigestSet(hasher)
 }
 
+// NewReconcilableStore creates a new in-memory reconcilable store using the configured
+// reconciliation_strategy ("naive" or default ratelessIBLT). sketchSize is optional and
+// applies to ratelessIBLT (when omitted or <= 0, DefaultSketchSize is used).
+func NewReconcilableStore[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol], sketchSize ...int) (ReconcilableStore[T], error) {
+	return NewReconcilableStoreWithStrategy(viper.GetString("reconciliation_strategy"), hasher, sketchSize...)
+}
+
+// NewReconcilableStoreWithStrategy creates a reconcilable store for the given strategy
+// ("naive" or "riblt"/"rateless_iblt").
+func NewReconcilableStoreWithStrategy[T any](strategy string, hasher digestmaps.Hasher[T, digestmaps.DigestSymbol], sketchSize ...int) (ReconcilableStore[T], error) {
+	if strings.EqualFold(strings.TrimSpace(strategy), "naive") {
+		return naive.NewReconcilableStore(hasher)
+	}
+	return ratelessIBLT.NewReconcilableStore(hasher, sketchSize...)
+}
+
+// NewNaiveStore creates a new in-memory reconcilable store backed by full digest exchange.
+func NewNaiveStore[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol]) (ReconcilableStore[T], error) {
+	return naive.NewReconcilableStore(hasher)
+}
+
 // ItemCodec defines the serialization and deserialization contract for data items.
-type ItemCodec[T any] = core.ItemCodec[T]
+type ItemCodec[T any] = reconcile.ItemCodec[T]
 
 // DefaultItemCodec returns the default ItemCodec implementation for type T.
 func DefaultItemCodec[T any]() ItemCodec[T] {
-	return core.DefaultItemCodec[T]()
+	return reconcile.DefaultItemCodec[T]()
 }
 
-// SyncConfig defines streaming transfer limits and chunking parameters.
+// SyncConfig defines streaming transfer limits and timeouts.
 type SyncConfig = core.SyncConfig
 
-// DefaultSyncConfig returns standard streaming parameters.
+// DefaultSyncConfig returns standard reconciliation parameters.
 func DefaultSyncConfig() SyncConfig {
 	return core.DefaultSyncConfig()
 }
@@ -313,24 +341,16 @@ func (c *Client) SetSyncConfig(cfg SyncConfig) {
 	c.node.SetSyncConfig(cfg)
 }
 
-var (
-	ErrNilCodec       = core.ErrNilCodec
-	ErrDigestMismatch = core.ErrDigestMismatch
-	ErrDecodeFailed   = core.ErrDecodeFailed
-	ErrEncodeFailed   = core.ErrEncodeFailed
-)
-
-// RegisterDataStore registers an application's typed data store with the Ifrit client.
-// Ifrit selects and manages the underlying set reconciliation protocol.
-func RegisterDataStore[T any](c *Client, store ReverseIndexStore[T]) {
+// RegisterDataStore registers an application's typed reconcilable data store with the Ifrit client.
+func RegisterDataStore[T any](c *Client, store ReconcilableStore[T]) {
 	if c == nil || c.node == nil {
 		return
 	}
 	core.RegisterDataStore(c.node, store)
 }
 
-// RegisterDataStoreWithCodec registers an application's typed data store with the Ifrit client using a custom ItemCodec.
-func RegisterDataStoreWithCodec[T any](c *Client, store ReverseIndexStore[T], codec ItemCodec[T]) {
+// RegisterDataStoreWithCodec registers an application's typed reconcilable data store with a custom ItemCodec.
+func RegisterDataStoreWithCodec[T any](c *Client, store ReconcilableStore[T], codec ItemCodec[T]) {
 	if c == nil || c.node == nil {
 		return
 	}

@@ -6,11 +6,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
+	"github.com/eika123/ifrit/reconcile"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/workerpool"
 	"github.com/spf13/viper"
@@ -66,11 +68,15 @@ type Node struct {
 	streamHandler      streamMsg
 	streamHandlerMutex sync.RWMutex
 
-	reconProtocol      ProtocolDefinition
-	reconProtocolMutex sync.RWMutex
+	reconciliationStrategy string
+	dataStoreReconciler    reconcile.StoreReconciler
+	dataStoreFP            func() []byte
+	dataReconcilerMutex    sync.RWMutex
 
-	dataReconciler      DataReconciler
-	dataReconcilerMutex sync.RWMutex
+	certReconciler  reconcile.StoreReconciler
+	noteReconciler  reconcile.StoreReconciler
+	accReconciler   reconcile.StoreReconciler
+	bindStoreServer func(storeID string, handler any)
 
 	sessionManager *PeerSessionManager
 
@@ -106,7 +112,6 @@ type commService interface {
 	Gossip(string, *pb.State) (*pb.StateResponse, error)
 	Send(string, *pb.Msg) (*pb.MsgResponse, error)
 	StreamMessenger(string, chan []byte, chan []byte) error
-	OpenSyncStream(context.Context, string) (pb.Gossip_SyncClient, error)
 }
 
 type NodeIdentityCatalog interface {
@@ -125,7 +130,15 @@ type cryptoService interface {
 func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs cryptoService) (*Node, error) {
 	var perInterval int
 
-	v, err := discovery.NewView(idCatalog.NumRings(), idCatalog.Certificate(), comm, cs)
+	strategy := strings.ToLower(strings.TrimSpace(viper.GetString("reconciliation_strategy")))
+
+	viewStores, err := newControlViewStores(strategy)
+	if err != nil {
+		log.Error(err.Error())
+		return nil, err
+	}
+
+	v, err := discovery.NewView(idCatalog.NumRings(), idCatalog.Certificate(), comm, cs, viewStores)
 	if err != nil {
 		log.Error(err.Error())
 		return nil, err
@@ -146,9 +159,6 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		staleTimeout = 30 * time.Second
 	}
 
-	strategy := viper.GetString("reconciliation_strategy")
-	protoDef := ResolveProtocol(strategy)
-
 	n := &Node{
 		exitChan:       make(chan bool, 1),
 		startedChan:    make(chan struct{}),
@@ -167,9 +177,9 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		self:      v.Self(),
 		view:      v,
 
-		sessionManager: NewPeerSessionManager(staleTimeout),
-		reconProtocol:  protoDef,
-		syncConfig:     DefaultSyncConfig(),
+		reconciliationStrategy: strategy,
+		sessionManager:         NewPeerSessionManager(staleTimeout),
+		syncConfig:             DefaultSyncConfig(),
 
 		// Visualizer specific
 		useViz: viper.GetBool("use_viz"),
@@ -189,6 +199,7 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	}
 
 	n.comm.Register(n)
+	n.initControlReconcilers(n.defaultControlReconcilerHooks())
 
 	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintDataProvider(n.FingerprintData)
@@ -345,15 +356,11 @@ func (n *Node) Start() {
 				continue
 			}
 
-			n.mergeCertificates(reply.GetCertificates())
-			n.mergeNotes(reply.GetNotes())
-			n.mergeAccusations(reply.GetAccusations())
-
-			deltas := ExtractReconcileDeltas(reply)
-			if deltas.HasDeltas() {
-				if err := n.syncBootstrap(addr, deltas); err != nil {
-					log.Error("Bootstrap sync stream failed", "addr", addr, "err", err)
-				}
+			if accs := reply.GetAccusations(); len(accs) > 0 {
+				n.mergeAccusations(accs)
+			}
+			if err := n.reconcileBootstrapControl(addr); err != nil {
+				log.Error("Bootstrap control reconciliation failed", "addr", addr, "err", err)
 			}
 		}
 	}

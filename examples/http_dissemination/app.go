@@ -157,7 +157,7 @@ func NewApp(cfg *AppConfig) (*App, error) {
 		return nil, fmt.Errorf("create default hasher: %w", err)
 	}
 
-	store, err := ifrit.NewDigestSet[string](hasher)
+	store, err := ifrit.NewReconcilableStore[string](hasher)
 	if err != nil {
 		client.Stop()
 		if closeErr := httpListener.Close(); closeErr != nil {

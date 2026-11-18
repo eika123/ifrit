@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile"
 	"github.com/yangl1996/riblt"
 )
 
@@ -27,11 +28,21 @@ func NewRatelessIBLTStore[T any, S Symbol[S]](base digestmaps.ReverseIndexStore[
 	var sketch riblt.Sketch[S]
 	if sketchSize > 0 {
 		sketch = make(riblt.Sketch[S], sketchSize)
+		if base != nil {
+			for _, d := range base.DigestsCopy() {
+				sketch.AddSymbol(d)
+			}
+		}
 	}
 	return &Store[T, S]{
 		ReverseIndexStore: base,
 		sketch:            sketch,
 	}
+}
+
+// Base returns the underlying ReverseIndexStore wrapped by this Store.
+func (s *Store[T, S]) Base() digestmaps.ReverseIndexStore[T, S] {
+	return s.ReverseIndexStore
 }
 
 func (s *Store[T, S]) Insert(elem T) (S, bool) {
@@ -86,4 +97,38 @@ func (s *Store[T, S]) MakeDecoder() riblt.Decoder[S] {
 		dec.AddSymbol(d)
 	}
 	return dec
+}
+
+// ReconcilableStore implements reconcile.Store[T] over a ratelessIBLT-backed Store.
+// Callers interact with standard Insert/Contains/Fingerprint methods while incremental
+// sketch updates and snapshotting remain encapsulated inside ratelessIBLT.
+type ReconcilableStore[T any] struct {
+	*Store[T, digestmaps.DigestSymbol]
+}
+
+// NewReconcilableStore creates a new in-memory ratelessIBLT-backed reconcile.Store[T].
+// sketchSize is optional and defaults to DefaultSketchSize when omitted or <= 0.
+func NewReconcilableStore[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol], sketchSize ...int) (*ReconcilableStore[T], error) {
+	base, err := digestmaps.NewDigestSet(hasher)
+	if err != nil {
+		return nil, err
+	}
+	return WrapStore(base, sketchSize...), nil
+}
+
+// WrapStore wraps an existing ReverseIndexStore in a ReconcilableStore.
+// sketchSize is optional and defaults to DefaultSketchSize when omitted or <= 0.
+func WrapStore[T any](base digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol], sketchSize ...int) *ReconcilableStore[T] {
+	size := DefaultSketchSize
+	if len(sketchSize) > 0 && sketchSize[0] > 0 {
+		size = sketchSize[0]
+	}
+	return &ReconcilableStore[T]{
+		Store: NewRatelessIBLTStore(base, size),
+	}
+}
+
+// NewReconciler constructs a StoreReconciler bound to this store.
+func (s *ReconcilableStore[T]) NewReconciler(cfg reconcile.Config[T]) reconcile.StoreReconciler {
+	return NewReconciler(s.Store, cfg)
 }

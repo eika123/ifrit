@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
@@ -11,8 +12,12 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
+	"github.com/eika123/ifrit/reconcile"
+	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type recordingPingServer struct {
@@ -106,9 +111,9 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	initialDataFP := ps.fpDataProvider()
 	assert.Nil(t, initialDataFP, "data fingerprint should be nil when no data reconciler is registered")
 
-	// Register a typed data store with items
+	// Register a typed reconcilable data store with items
 	hasher := digestmaps.MustDefaultHasher[string]()
-	store, err := digestmaps.NewDigestSet[string, digestmaps.DigestSymbol](hasher)
+	store, err := ratelessIBLT.NewReconcilableStore[string](hasher)
 	require.NoError(t, err)
 
 	store.Insert("item-alpha")
@@ -218,6 +223,40 @@ func TestNode_AdversarySuppressesAccusation(t *testing.T) {
 	assert.Empty(t, accs, "adversary with 100% suppression must not emit accusation")
 }
 
+type stubStoreReconciler struct {
+	mu    sync.Mutex
+	addrs []string
+	fn    func(ctx context.Context, addr string) (reconcile.Summary, error)
+}
+
+func (s *stubStoreReconciler) ReconcileWithPeer(ctx context.Context, addr string) (reconcile.Summary, error) {
+	s.mu.Lock()
+	s.addrs = append(s.addrs, addr)
+	fn := s.fn
+	s.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, addr)
+	}
+	return reconcile.Summary{}, nil
+}
+
+func (s *stubStoreReconciler) takeAddrs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]string(nil), s.addrs...)
+	s.addrs = nil
+	return out
+}
+
+func installStubReconcilers(n *Node, cert, note, acc, data reconcile.StoreReconciler) {
+	n.certReconciler = cert
+	n.noteReconciler = note
+	n.accReconciler = acc
+	n.dataReconcilerMutex.Lock()
+	n.dataStoreReconciler = data
+	n.dataReconcilerMutex.Unlock()
+}
+
 func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 	priv, err := genKeys()
 	require.NoError(t, err)
@@ -228,6 +267,7 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 
 	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, cs)
 	require.NoError(t, err)
+	defer n.Stop()
 
 	p, _, err := createTestPeer()
 	require.NoError(t, err)
@@ -235,6 +275,27 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 	// Set divergent fingerprint so gossip triggers
 	p.SetFingerprintData([]byte("different-data"))
 	n.view.AddLive(p)
+
+	// Force PermissionDenied on first ReconcileWithPeer so gossip() falls back to thin Spread admission.
+	var attempts sync.Mutex
+	calls := 0
+	installStubReconcilers(n,
+		&stubStoreReconciler{
+			fn: func(context.Context, string) (reconcile.Summary, error) {
+				attempts.Lock()
+				calls++
+				c := calls
+				attempts.Unlock()
+				if c == 1 {
+					return reconcile.Summary{}, status.Error(codes.PermissionDenied, "unrecognized caller")
+				}
+				return reconcile.Summary{}, nil
+			},
+		},
+		&stubStoreReconciler{},
+		&stubStoreReconciler{},
+		&stubStoreReconciler{},
+	)
 
 	poisonedBytes := []byte("poisoned-fingerprint-data")
 	n.SetAdversarialPolicy(&AdversarialPolicy{
@@ -247,7 +308,7 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 
 	comm.mu.Lock()
 	defer comm.mu.Unlock()
-	require.NotEmpty(t, comm.sentStates, "gossip should have sent a State message")
+	require.NotEmpty(t, comm.sentStates, "gossip fallback must send a thin Spread State message")
 	assert.Equal(t, poisonedBytes, comm.sentStates[0].FingerprintData, "outbound State should carry poisoned fingerprint")
 }
 
@@ -279,9 +340,16 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	require.NoError(t, err)
 	cert := genCert(priv, 1)
 
-	comm := &recordingComm{}
-	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
 	require.NoError(t, err)
+	defer n.Stop()
+
+	rec := &stubStoreReconciler{
+		fn: func(_ context.Context, _ string) (reconcile.Summary, error) {
+			return reconcile.Summary{}, nil
+		},
+	}
+	installStubReconcilers(n, rec, &stubStoreReconciler{}, &stubStoreReconciler{}, &stubStoreReconciler{})
 
 	p1, _, err := createTestPeer()
 	require.NoError(t, err)
@@ -300,21 +368,14 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	n.view.AddLive(p1)
 	n.view.AddLive(p2)
 
-	// Initially, peers have matching empty fingerprints -> IsDivergent returns false
+	// Initially, peers have matching fingerprints -> IsDivergent returns false
 	n.gossip()
-
-	comm.mu.Lock()
-	assert.Empty(t, comm.gossipedAddrs, "In-sync peers should not be gossiped to")
-	comm.mu.Unlock()
+	assert.Empty(t, rec.takeAddrs(), "In-sync peers should not be reconciled")
 
 	// Make p1 divergent in Data
 	p1.SetFingerprintData([]byte("different-data"))
 	n.gossip()
-
-	comm.mu.Lock()
-	assert.Equal(t, []string{"peer1-addr"}, comm.gossipedAddrs, "Only divergent peer p1 should be gossiped to")
-	comm.gossipedAddrs = nil
-	comm.mu.Unlock()
+	assert.Equal(t, []string{"peer1-addr"}, rec.takeAddrs(), "Only divergent peer p1 should be reconciled")
 
 	// Bring p1 back into sync with local node
 	p1.SetFingerprintData(n.FingerprintData())
@@ -322,11 +383,7 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	// Make p2 divergent in Accusations
 	p2.SetFingerprintAccusations([]byte("different-acc"))
 	n.gossip()
-
-	comm.mu.Lock()
-	assert.Equal(t, []string{"peer2-addr"}, comm.gossipedAddrs, "Only divergent peer p2 should be gossiped to")
-	comm.gossipedAddrs = nil
-	comm.mu.Unlock()
+	assert.Equal(t, []string{"peer2-addr"}, rec.takeAddrs(), "Only divergent peer p2 should be reconciled")
 
 	// Bring p2 back into sync with local node
 	p2.SetFingerprintAccusations(n.AccusationFingerprintBytes())
@@ -334,10 +391,7 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	// Make p2 divergent in View
 	p2.SetFingerprintView([]byte("different-view"))
 	n.gossip()
-
-	comm.mu.Lock()
-	assert.Equal(t, []string{"peer2-addr"}, comm.gossipedAddrs, "Only divergent peer p2 should be gossiped to")
-	comm.mu.Unlock()
+	assert.Equal(t, []string{"peer2-addr"}, rec.takeAddrs(), "Only divergent peer p2 should be reconciled")
 }
 
 func TestNode_GossipConvergenceClearsDivergence(t *testing.T) {
@@ -345,44 +399,61 @@ func TestNode_GossipConvergenceClearsDivergence(t *testing.T) {
 	require.NoError(t, err)
 	cert := genCert(priv, 1)
 
-	comm := &recordingComm{}
-	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
 	require.NoError(t, err)
+	defer n.Stop()
 
-	localFp := []byte("converged-data-fp")
-	n.SetFingerprintData(localFp)
+	store, err := ratelessIBLT.NewReconcilableStore[string](digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	store.Insert("converged-item")
+	RegisterDataStore(n, store)
+
+	// Seed view fingerprints matching n's local cert ^ note.
+	localCertFP := n.CertFingerprintBytes()
+	localNoteFP := make([]byte, 8)
+	binary.BigEndian.PutUint64(localNoteFP, uint64(n.view.NoteStore().Fingerprint()))
+	localAccFP := n.AccusationFingerprintBytes()
+	localDataFP := n.FingerprintData()
+
+	certRec := &stubStoreReconciler{
+		fn: func(context.Context, string) (reconcile.Summary, error) {
+			return reconcile.Summary{RemoteFingerprint: localCertFP}, nil
+		},
+	}
+	noteRec := &stubStoreReconciler{
+		fn: func(context.Context, string) (reconcile.Summary, error) {
+			return reconcile.Summary{RemoteFingerprint: localNoteFP}, nil
+		},
+	}
+	accRec := &stubStoreReconciler{
+		fn: func(context.Context, string) (reconcile.Summary, error) {
+			return reconcile.Summary{RemoteFingerprint: localAccFP}, nil
+		},
+	}
+	dataRec := &stubStoreReconciler{
+		fn: func(context.Context, string) (reconcile.Summary, error) {
+			return reconcile.Summary{RemoteFingerprint: localDataFP}, nil
+		},
+	}
+	installStubReconcilers(n, certRec, noteRec, accRec, dataRec)
 
 	p, _, err := createTestPeer()
 	require.NoError(t, err)
 	p.Addr = "peer-addr"
 	p.SetFingerprintData([]byte("initial-diff"))
-	p.SetFingerprintAccusations(n.AccusationFingerprintBytes())
+	p.SetFingerprintAccusations(localAccFP)
 	p.SetFingerprintView(n.ViewFingerprintBytes())
 	n.view.AddLive(p)
 
-	// Server returns updated fingerprints matching local node
-	comm.response = &pb.StateResponse{
-		FingerprintData:         localFp,
-		FingerprintAccusations:  n.AccusationFingerprintBytes(),
-		FingerprintView:         n.ViewFingerprintBytes(),
-		FingerprintCertificates: n.CertFingerprintBytes(),
-	}
-
 	n.gossip()
-
-	comm.mu.Lock()
-	assert.Equal(t, []string{"peer-addr"}, comm.gossipedAddrs)
-	comm.gossipedAddrs = nil
-	comm.mu.Unlock()
+	assert.Equal(t, []string{"peer-addr"}, dataRec.takeAddrs())
 
 	// Fingerprint on peer should now be updated to local
-	assert.False(t, n.IsDivergent(p), "Peer should no longer be divergent after reply fingerprints are stored")
+	assert.False(t, n.IsDivergent(p), "Peer should no longer be divergent after summary fingerprints are stored")
 
-	// Next gossip tick should NOT send any messages
+	// Next gossip tick should NOT trigger reconciliation
 	n.gossip()
-	comm.mu.Lock()
-	assert.Empty(t, comm.gossipedAddrs, "Converged peer should not receive further gossip messages")
-	comm.mu.Unlock()
+	assert.Empty(t, dataRec.takeAddrs(), "Converged peer should not be reconciled again")
 }
 
 func TestNode_GossipPeerReconcileSessionFlow(t *testing.T) {
@@ -390,58 +461,44 @@ func TestNode_GossipPeerReconcileSessionFlow(t *testing.T) {
 	require.NoError(t, err)
 	cert := genCert(priv, 1)
 
-	comm := &recordingComm{}
-	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
+	n, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert}, &cryptoStub{priv: priv})
 	require.NoError(t, err)
+	defer n.Stop()
 
 	p, _, err := createTestPeer()
 	require.NoError(t, err)
 	p.Addr = "peer-divergent-addr"
-	// Ensure peer is divergent
 	p.SetFingerprintData([]byte("diff-data"))
 	n.view.AddLive(p)
 
-	// Case 1: RPC returns divergent deltas -> session transitions to SessionTransferring
-	comm.response = &pb.StateResponse{
-		AvailableCertificateDigests: []uint64{0x12345},
-		RequestedDataDigests:        []uint64{0x99999},
+	var recErr error
+	certRec := &stubStoreReconciler{
+		fn: func(context.Context, string) (reconcile.Summary, error) {
+			if recErr != nil {
+				return reconcile.Summary{}, recErr
+			}
+			return reconcile.Summary{}, nil
+		},
 	}
+	installStubReconcilers(n, certRec, &stubStoreReconciler{}, &stubStoreReconciler{}, &stubStoreReconciler{})
+
+	// 1. Concurrency guard: while session is already OutboundReconciling, gossip tick skips peer.
+	sess := n.SessionManager().GetOrCreate(p.Id)
+	_, ok := sess.TryStartOutboundReconciling()
+	require.True(t, ok)
+
 	n.gossip()
-
-	sess := n.SessionManager().Get(p.Id)
-	require.NotNil(t, sess)
-	assert.Equal(t, SessionTransferring, sess.State())
-	assert.True(t, sess.HasDeltas())
-	assert.Equal(t, []uint64{0x12345}, sess.Deltas().AvailableCertificates)
-	assert.Equal(t, []uint64{0x99999}, sess.Deltas().RequestedData)
-	assert.Equal(t, []uint64{0x12345}, sess.Deltas().IngressCertificates(true))
-	assert.Equal(t, []uint64{0x99999}, sess.Deltas().EgressData(true))
-
-	// Case 2: Concurrency guard - while session is in SessionTransferring, next Gossip tick skips peer
-	comm.mu.Lock()
-	comm.gossipedAddrs = nil
-	comm.mu.Unlock()
-	n.gossip()
-	comm.mu.Lock()
-	assert.Empty(t, comm.gossipedAddrs, "Peer must be skipped while session is busy transferring")
-	comm.mu.Unlock()
-
-	// Finish or reset session to test next case
+	assert.Empty(t, certRec.takeAddrs(), "Peer must be skipped while session is busy")
 	sess.ResetToIdle()
 
-	// Case 3: RPC returns empty deltas -> session transitions to SessionIdle, fingerprints updated
-	newFpData := []byte("converged-data-fp")
-	comm.response = &pb.StateResponse{
-		FingerprintData: newFpData,
-	}
+	// 2. Normal gossip completes and resets session back to SessionIdle.
 	n.gossip()
+	assert.Equal(t, []string{"peer-divergent-addr"}, certRec.takeAddrs())
 	assert.Equal(t, SessionIdle, sess.State())
-	assert.False(t, sess.HasDeltas())
-	assert.Equal(t, newFpData, p.FingerprintData())
 
-	// Case 4: RPC error -> session resets to SessionIdle
+	// 3. Reconciler error also resets session cleanly back to SessionIdle.
 	p.SetFingerprintData([]byte("diverged-again"))
-	comm.err = errors.New("network dial failure")
+	recErr = errors.New("network dial failure")
 	n.gossip()
 	assert.Equal(t, SessionIdle, sess.State())
 }

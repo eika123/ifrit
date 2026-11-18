@@ -18,6 +18,7 @@ import (
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/digestmaps"
 	reconpb_riblt "github.com/eika123/ifrit/reconcile/ratelessIBLT/proto"
+	transferpb "github.com/eika123/ifrit/reconcile/transfer/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -165,9 +166,7 @@ func TestReconciler_MTLSOverCommAndMux(t *testing.T) {
 	muxB := NewReconcilerMux()
 	muxB.RegisterStore("certs", recCertB)
 	muxB.RegisterStore("data", recDataB)
-	commB.RegisterGRPC(func(s *grpc.Server) {
-		reconpb_riblt.RegisterReconcilerServer(s, muxB)
-	})
+	commB.RegisterGRPC(muxB.RegisterGRPC)
 	go commB.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -179,7 +178,15 @@ func TestReconciler_MTLSOverCommAndMux(t *testing.T) {
 	assert.Equal(t, 1, summaryCert.ItemsSent)
 	assert.Equal(t, 1, summaryCert.ItemsReceived)
 	assert.Equal(t, storeCertA.Fingerprint(), storeCertB.Fingerprint())
+	assert.Equal(t, digestmaps.EncodeDigestSymbol(storeCertB.Fingerprint()), summaryCert.RemoteFingerprint)
 	assert.Equal(t, 30, storeDataB.Size())
+
+	// 1b. Second pass with zero diff still populates RemoteFingerprint from Phase 1.
+	summaryZero, err := recCertA.ReconcileWithPeer(ctx, addrB)
+	require.NoError(t, err)
+	assert.Equal(t, 0, summaryZero.DigestsRequested)
+	assert.Equal(t, 0, summaryZero.DigestsAvailable)
+	assert.Equal(t, digestmaps.EncodeDigestSymbol(storeCertB.Fingerprint()), summaryZero.RemoteFingerprint)
 
 	// 2. Reconcile "data" with > sketch capacity (triggers UsedFallback).
 	summaryData, err := recDataA.ReconcileWithPeer(ctx, addrB)
@@ -229,9 +236,7 @@ func TestReconciler_AuthRejectionAndItemApplier(t *testing.T) {
 
 	mux := NewReconcilerMux()
 	mux.RegisterStore("notes", recBReject)
-	commB.RegisterGRPC(func(s *grpc.Server) {
-		reconpb_riblt.RegisterReconcilerServer(s, mux)
-	})
+	commB.RegisterGRPC(mux.RegisterGRPC)
 	go commB.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -287,14 +292,12 @@ func TestReconciler_Phase2SecurityAndFramingGuards(t *testing.T) {
 	})
 	mux := NewReconcilerMux()
 	mux.RegisterStore("data", recB)
-	commB.RegisterGRPC(func(s *grpc.Server) {
-		reconpb_riblt.RegisterReconcilerServer(s, mux)
-	})
+	commB.RegisterGRPC(mux.RegisterGRPC)
 	go commB.Start()
 
 	cc, err := commA.ClientConn(addrB)
 	require.NoError(t, err)
-	client := reconpb_riblt.NewReconcilerClient(cc)
+	client := transferpb.NewItemTransferClient(cc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -303,9 +306,9 @@ func TestReconciler_Phase2SecurityAndFramingGuards(t *testing.T) {
 	// 1. Unsolicited DataHeader (zero items negotiated via Sync without WantDigests / ReconcileDigests)
 	stream1, err := client.Sync(outCtx)
 	require.NoError(t, err)
-	require.NoError(t, stream1.Send(&reconpb_riblt.SyncFrame{
-		Payload: &reconpb_riblt.SyncFrame_DataHeader{
-			DataHeader: &reconpb_riblt.DataItemHeader{
+	require.NoError(t, stream1.Send(&transferpb.SyncFrame{
+		Payload: &transferpb.SyncFrame_DataHeader{
+			DataHeader: &transferpb.DataItemHeader{
 				Digest:    digestmaps.EncodeDigestSymbol(12345),
 				TotalSize: 4,
 			},
@@ -317,9 +320,9 @@ func TestReconciler_Phase2SecurityAndFramingGuards(t *testing.T) {
 	// 2. DataChunk without DataHeader (framing violation)
 	stream2, err := client.Sync(outCtx)
 	require.NoError(t, err)
-	require.NoError(t, stream2.Send(&reconpb_riblt.SyncFrame{
-		Payload: &reconpb_riblt.SyncFrame_DataChunk{
-			DataChunk: &reconpb_riblt.DataItemChunk{Data: []byte("orphan-chunk")},
+	require.NoError(t, stream2.Send(&transferpb.SyncFrame{
+		Payload: &transferpb.SyncFrame_DataChunk{
+			DataChunk: &transferpb.DataItemChunk{Data: []byte("orphan-chunk")},
 		},
 	}))
 	_, err = stream2.Recv()
@@ -340,4 +343,57 @@ func TestReconciler_Phase2SecurityAndFramingGuards(t *testing.T) {
 	_, err = recA.ReconcileWithPeer(ctx, addrB)
 	require.Error(t, err)
 	assert.GreaterOrEqual(t, det.count(), 3)
+}
+
+func TestReconciler_AuthEnforcedBeforeDataExchange(t *testing.T) {
+	commA, commB, addrB := setupCommPair(t)
+
+	baseB, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	storeB := NewRatelessIBLTStore(baseB, 64)
+	storeB.Insert("secret-server-item")
+
+	recB := NewReconciler(storeB, Config[string]{
+		Auth: func(context.Context) error {
+			return status.Error(codes.PermissionDenied, "unauthorized peer")
+		},
+	})
+	mux := NewReconcilerMux()
+	mux.RegisterStore("data", recB)
+	commB.RegisterGRPC(mux.RegisterGRPC)
+	go commB.Start()
+
+	cc, err := commA.ClientConn(addrB)
+	require.NoError(t, err)
+	client := reconpb_riblt.NewReconcilerClient(cc)
+	transferClient := transferpb.NewItemTransferClient(cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	outCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("store-id", "data"))
+
+	// 1. ReconcileDigests must reject with PermissionDenied and leak no fingerprint or digests.
+	digStream, err := client.ReconcileDigests(outCtx)
+	require.NoError(t, err)
+	_ = digStream.Send(&reconpb_riblt.ReconcileRequest{})
+	_ = digStream.CloseSend()
+	resp, err := digStream.Recv()
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+	assert.Nil(t, resp)
+
+	// 2. Direct Sync stream must reject with PermissionDenied before any frame is exchanged.
+	stream, err := transferClient.Sync(outCtx)
+	require.NoError(t, err)
+	_ = stream.Send(&transferpb.SyncFrame{
+		Payload: &transferpb.SyncFrame_WantDigests{
+			WantDigests: &transferpb.WantDigests{
+				Digests: [][]byte{digestmaps.EncodeDigestSymbol(storeB.Digest("secret-server-item"))},
+			},
+		},
+	})
+	frame, err := stream.Recv()
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+	assert.Nil(t, frame)
 }

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	pb "github.com/eika123/ifrit/protobuf"
+	transferpb "github.com/eika123/ifrit/reconcile/transfer/proto"
 	log "github.com/inconshreveable/log15"
 	_ "github.com/mattn/go-sqlite3" // needed for sqlite3 driver
 	"golang.org/x/net/context"
@@ -168,18 +169,6 @@ func logSpreadExchange(
 			Epoch:      acc.GetEpoch(),
 		})
 	}
-
-	for _, note := range stateResp.GetNotes() {
-		telemetryLogger.OnNote(NoteEvent{
-			Timestamp:  now,
-			Direction:  responseDir,
-			Host:       host,
-			RemoteHost: remoteHost,
-			NodeID:     hex.EncodeToString(note.GetId()),
-			Epoch:      note.GetEpoch(),
-			Mask:       note.GetMask(),
-		})
-	}
 }
 
 // Client Interceptor factory: returns a unary client interceptor.
@@ -248,44 +237,15 @@ func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryS
 	}
 }
 
-// logSyncFrame dispatches events from a SyncFrame to the TelemetryLogger.
-func logSyncFrame(telemetryLogger TelemetryLogger, frame *pb.SyncFrame, localHost, remoteHost, remotePort, dir string) {
+// logSyncFrame dispatches events from a reconciler SyncFrame to the TelemetryLogger.
+func logSyncFrame(telemetryLogger TelemetryLogger, frame *transferpb.SyncFrame, localHost, remoteHost, remotePort, dir string) {
 	if telemetryLogger == nil || frame == nil {
 		return
 	}
 	now := time.Now()
 
 	switch p := frame.Payload.(type) {
-	case *pb.SyncFrame_Accusations:
-		if p.Accusations != nil {
-			for _, acc := range p.Accusations.GetItems() {
-				telemetryLogger.OnAccusation(AccusationEvent{
-					Timestamp:  now,
-					Direction:  dir,
-					Host:       localHost,
-					RemoteHost: remoteHost,
-					Accuser:    hex.EncodeToString(acc.GetAccuser()),
-					Accused:    hex.EncodeToString(acc.GetAccused()),
-					RingNum:    acc.GetRingNum(),
-					Epoch:      acc.GetEpoch(),
-				})
-			}
-		}
-	case *pb.SyncFrame_Notes:
-		if p.Notes != nil {
-			for _, note := range p.Notes.GetItems() {
-				telemetryLogger.OnNote(NoteEvent{
-					Timestamp:  now,
-					Direction:  dir,
-					Host:       localHost,
-					RemoteHost: remoteHost,
-					NodeID:     hex.EncodeToString(note.GetId()),
-					Epoch:      note.GetEpoch(),
-					Mask:       note.GetMask(),
-				})
-			}
-		}
-	case *pb.SyncFrame_DataChunk:
+	case *transferpb.SyncFrame_DataChunk:
 		if p.DataChunk != nil && len(p.DataChunk.GetData()) > 0 {
 			telemetryLogger.OnGossipExchange(GossipEvent{
 				Timestamp:       now,
@@ -321,7 +281,7 @@ func (s *telemetryClientStream) getRemote() (string, string) {
 func (s *telemetryClientStream) SendMsg(m any) error {
 	err := s.ClientStream.SendMsg(m)
 	if err == nil {
-		if frame, ok := m.(*pb.SyncFrame); ok {
+		if frame, ok := m.(*transferpb.SyncFrame); ok {
 			remoteH, remoteP := s.getRemote()
 			logSyncFrame(s.logger, frame, s.localHost, remoteH, remoteP, "OUTGOING")
 		}
@@ -332,7 +292,7 @@ func (s *telemetryClientStream) SendMsg(m any) error {
 func (s *telemetryClientStream) RecvMsg(m any) error {
 	err := s.ClientStream.RecvMsg(m)
 	if err == nil {
-		if frame, ok := m.(*pb.SyncFrame); ok {
+		if frame, ok := m.(*transferpb.SyncFrame); ok {
 			remoteH, remoteP := s.getRemote()
 			logSyncFrame(s.logger, frame, s.localHost, remoteH, remoteP, "INCOMING")
 		}
@@ -356,7 +316,7 @@ func gossipStreamClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.
 			return nil, err
 		}
 
-		if method == "/proto.gossip/Sync" {
+		if method == "/reconcile.transfer.ItemTransfer/Sync" {
 			remoteAddr := ""
 			if cc != nil {
 				remoteAddr = cc.Target()
@@ -389,7 +349,7 @@ type telemetryServerStream struct {
 func (s *telemetryServerStream) SendMsg(m any) error {
 	err := s.ServerStream.SendMsg(m)
 	if err == nil {
-		if frame, ok := m.(*pb.SyncFrame); ok {
+		if frame, ok := m.(*transferpb.SyncFrame); ok {
 			logSyncFrame(s.logger, frame, s.localHost, s.remoteHost, s.remotePort, "OUTGOING")
 		}
 	}
@@ -399,7 +359,7 @@ func (s *telemetryServerStream) SendMsg(m any) error {
 func (s *telemetryServerStream) RecvMsg(m any) error {
 	err := s.ServerStream.RecvMsg(m)
 	if err == nil {
-		if frame, ok := m.(*pb.SyncFrame); ok {
+		if frame, ok := m.(*transferpb.SyncFrame); ok {
 			logSyncFrame(s.logger, frame, s.localHost, s.remoteHost, s.remotePort, "INCOMING")
 		}
 	}
@@ -408,7 +368,7 @@ func (s *telemetryServerStream) RecvMsg(m any) error {
 
 func gossipStreamServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if info.FullMethod == "/proto.gossip/Sync" {
+		if info.FullMethod == "/reconcile.transfer.ItemTransfer/Sync" {
 			remoteAddr := "unknown"
 			if p, ok := peer.FromContext(ss.Context()); ok && p.Addr != nil {
 				remoteAddr = p.Addr.String()

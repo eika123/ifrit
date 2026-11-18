@@ -15,6 +15,7 @@ import (
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	proto "github.com/eika123/ifrit/protobuf"
+	"github.com/eika123/ifrit/reconcile"
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	"github.com/spf13/viper"
@@ -94,6 +95,14 @@ type signer interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
+// ViewStores supplies optional pre-built reconcilable control stores for a View.
+// Any nil field falls back to a default in-memory DigestSet.
+type ViewStores struct {
+	Certs       reconcile.Store[*pki.Certificate]
+	Notes       reconcile.Store[*Note]
+	Accusations reconcile.Store[*Accusation]
+}
+
 // NewView initializes and returns a new View instance, configuring the local peer,
 // multi-ring overlay topology, timeout settings, and signing an initial local note (epoch 1).
 //
@@ -102,7 +111,11 @@ type signer interface {
 //   - Requires a cryptoService / signer capable of signing protobuf Notes.
 //   - Requires a connectionManager / commService to manage connection lifecycles.
 //   - Viper configuration must be loaded (keys: "removal_timeout", "view_update_interval").
-func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer) (*View, error) {
+func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer, stores ...*ViewStores) (*View, error) {
+	var vs *ViewStores
+	if len(stores) > 0 {
+		vs = stores[0]
+	}
 	if numRings == 0 || numRings > 32 {
 		return nil, errInvalidRingNum
 	}
@@ -151,19 +164,34 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	accusationStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Accusation]())
-	if err != nil {
-		return nil, err
+	var accusationStore digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
+	if vs != nil && vs.Accusations != nil {
+		accusationStore = vs.Accusations
+	} else {
+		accusationStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Accusation]())
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	noteStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Note]())
-	if err != nil {
-		return nil, err
+	var noteStore digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
+	if vs != nil && vs.Notes != nil {
+		noteStore = vs.Notes
+	} else {
+		noteStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Note]())
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	certStore, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
-	if err != nil {
-		return nil, err
+	var certStore digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
+	if vs != nil && vs.Certs != nil {
+		certStore = vs.Certs
+	} else {
+		certStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if cert != nil && len(cert.Raw) > 0 {
@@ -1382,6 +1410,11 @@ func (v *View) ClearTestNote(p *Peer) {
 }
 
 func mustMutableStore[T any, S digestmaps.Symbol[S]](name string, store digestmaps.ReverseIndexStore[T, S]) digestmaps.MutableReverseIndexStore[T, S] {
+	if wrapped, ok := store.(interface {
+		Base() digestmaps.ReverseIndexStore[T, S]
+	}); ok {
+		store = wrapped.Base()
+	}
 	m, ok := store.(digestmaps.MutableReverseIndexStore[T, S])
 	if !ok {
 		panic(fmt.Sprintf("%s does not implement MutableReverseIndexStore", name))
