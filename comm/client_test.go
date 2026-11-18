@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eika123/ifrit/crypto/identity"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto/identity"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )

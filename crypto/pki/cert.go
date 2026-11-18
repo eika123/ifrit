@@ -5,7 +5,7 @@ import (
 	"crypto/x509"
 	"errors"
 
-	pb "github.com/joonnna/ifrit/protobuf"
+	pb "github.com/eika123/ifrit/protobuf"
 )
 
 var (

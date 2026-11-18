@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/eika123/ifrit/digestmaps"
 	"github.com/golang/protobuf/proto"
-	"github.com/joonnna/ifrit/digestmaps"
 )
 
 var (

@@ -3,9 +3,9 @@ package core
 import (
 	"encoding/json"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/digestmaps"
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/digestmaps"
 )
 
 type NaiveSessionFactory[T any, S Symbol[S]] struct{}

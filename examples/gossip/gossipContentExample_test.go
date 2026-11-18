@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/joonnna/ifrit"
+	"github.com/eika123/ifrit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

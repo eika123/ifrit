@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/digestmaps"
-	pb "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/digestmaps"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

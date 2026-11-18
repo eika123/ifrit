@@ -8,8 +8,8 @@ import (
 	"errors"
 	"net"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"

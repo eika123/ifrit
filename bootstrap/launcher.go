@@ -11,8 +11,8 @@ import (
 
 	_ "net/http/pprof"
 
-	"github.com/joonnna/ifrit/crypto/cauth"
-	"github.com/joonnna/ifrit/worm"
+	"github.com/eika123/ifrit/crypto/cauth"
+	"github.com/eika123/ifrit/worm"
 
 	log "github.com/inconshreveable/log15"
 )

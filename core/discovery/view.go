@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eika123/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/digestmaps"
+	pb "github.com/eika123/ifrit/protobuf"
+	proto "github.com/eika123/ifrit/protobuf"
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/digestmaps"
-	pb "github.com/joonnna/ifrit/protobuf"
-	proto "github.com/joonnna/ifrit/protobuf"
 	"github.com/spf13/viper"
 )
 

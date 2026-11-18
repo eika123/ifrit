@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package proto;
-option go_package = "github.com/joonnna/ifrit/protobuf;proto";
+option go_package = "github.com/eika123/ifrit/protobuf;proto";
 
 service gossip {
     rpc Spread (State) returns (StateResponse) {}

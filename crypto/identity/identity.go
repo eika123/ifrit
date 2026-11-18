@@ -11,9 +11,9 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/eika123/ifrit/crypto"
+	"github.com/eika123/ifrit/crypto/pki"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto"
-	"github.com/joonnna/ifrit/crypto/pki"
 )
 
 var (

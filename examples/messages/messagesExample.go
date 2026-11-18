@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/joonnna/ifrit"
-	"github.com/joonnna/ifrit/core"
+	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/core"
 )
 
 // Mockup application

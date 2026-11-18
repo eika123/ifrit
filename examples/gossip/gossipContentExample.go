@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/eika123/ifrit"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit"
 )
 
 // User representation where all fields are comparable.

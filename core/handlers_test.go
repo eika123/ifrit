@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/core/discovery"
+	proto "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/core/discovery"
-	proto "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/net/context"

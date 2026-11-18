@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit/comm"
-	"github.com/joonnna/ifrit/digestmaps"
-	reconpb_riblt "github.com/joonnna/ifrit/reconcile/ratelessIBLT/proto"
+	"github.com/eika123/ifrit/comm"
+	"github.com/eika123/ifrit/digestmaps"
+	reconpb_riblt "github.com/eika123/ifrit/reconcile/ratelessIBLT/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"

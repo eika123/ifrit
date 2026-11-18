@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/eika123/ifrit/crypto"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
-	"github.com/joonnna/ifrit/crypto"
-	pb "github.com/joonnna/ifrit/protobuf"
 )
 
 var (

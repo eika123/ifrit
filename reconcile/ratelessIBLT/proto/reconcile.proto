@@ -2,7 +2,7 @@
 syntax = "proto3";
 
 package recon;
-option go_package = "github.com/joonnna/ifrit/reconcile/proto/reconcile.proto;reconpb_riblt";
+option go_package = "github.com/eika123/ifrit/reconcile/proto/reconcile.proto;reconpb_riblt";
 
 service Reconciler {
   // Phase 1: Exchange only RIBLT coded symbols and compute A\B and B\A digests.

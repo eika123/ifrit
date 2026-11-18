@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	pb "github.com/joonnna/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3" // needed for sqlite3 driver
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"

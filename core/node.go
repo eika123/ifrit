@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eika123/ifrit/core/discovery"
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/core/discovery"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/joonnna/workerpool"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"

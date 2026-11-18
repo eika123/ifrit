@@ -5,10 +5,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/digestmaps"
-	proto "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/digestmaps"
+	proto "github.com/eika123/ifrit/protobuf"
 )
 
 func (suite *HandlerTestSuite) TestSpread_InSyncAccusationsReturnsZeroAccusations() {

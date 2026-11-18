@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/joonnna/ifrit/comm"
+	"github.com/eika123/ifrit/comm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

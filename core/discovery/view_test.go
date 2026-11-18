@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/digestmaps"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

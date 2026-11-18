@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/digestmaps"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/digestmaps"
 )
 
 func (n *Node) SetFingerprint(fp []byte) {

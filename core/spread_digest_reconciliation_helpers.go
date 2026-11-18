@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/digestmaps"
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/digestmaps"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

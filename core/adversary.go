@@ -3,8 +3,8 @@ package core
 import (
 	"math/rand"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	pb "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	pb "github.com/eika123/ifrit/protobuf"
 )
 
 // BasisPointMax represents 100.00% in integer basis points (bps).

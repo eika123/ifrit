@@ -6,8 +6,8 @@ import (
 	"time"
 	"unsafe"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
-	pb "github.com/joonnna/ifrit/protobuf"
 )
 
 // TestHostEndianness checks the memory layout of the host machine.

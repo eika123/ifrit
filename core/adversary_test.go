@@ -3,8 +3,8 @@ package core
 import (
 	"testing"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	pb "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

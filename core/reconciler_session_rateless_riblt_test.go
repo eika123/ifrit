@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/joonnna/ifrit/digestmaps"
+	"github.com/eika123/ifrit/digestmaps"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

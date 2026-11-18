@@ -11,12 +11,12 @@ import (
 	"crypto/x509"
 	"errors"
 
+	"github.com/eika123/ifrit/comm"
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/crypto/pki"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/comm"
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/crypto/pki"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"golang.org/x/net/context"
 )
 

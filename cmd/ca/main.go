@@ -12,8 +12,8 @@ import (
 
 	"github.com/jinzhu/configor"
 
+	"github.com/eika123/ifrit/crypto/cauth"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto/cauth"
 )
 
 var DefaultPermission = os.FileMode(0750)

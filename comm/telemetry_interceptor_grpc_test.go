@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"

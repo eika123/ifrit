@@ -11,9 +11,9 @@ import (
 
 	_ "net/http/pprof"
 
+	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/bootstrap"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit"
-	"github.com/joonnna/ifrit/bootstrap"
 )
 
 type EnvConfig struct {

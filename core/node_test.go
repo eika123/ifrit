@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/crypto"
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"

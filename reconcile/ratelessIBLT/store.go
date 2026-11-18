@@ -4,7 +4,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/joonnna/ifrit/digestmaps"
+	"github.com/eika123/ifrit/digestmaps"
 	"github.com/yangl1996/riblt"
 )
 

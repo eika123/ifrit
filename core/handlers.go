@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/eika123/ifrit/core/discovery"
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/core/discovery"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

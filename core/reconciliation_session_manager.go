@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	"github.com/joonnna/ifrit/crypto/pki"
-	"github.com/joonnna/ifrit/digestmaps"
-	pb "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/digestmaps"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/spf13/viper"
 )
 

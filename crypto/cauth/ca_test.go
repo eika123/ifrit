@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	gossip "github.com/joonnna/ifrit/protobuf"
+	gossip "github.com/eika123/ifrit/protobuf"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"

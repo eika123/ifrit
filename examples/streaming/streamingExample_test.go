@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joonnna/ifrit"
-	"github.com/joonnna/ifrit/crypto/cauth"
+	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/crypto/cauth"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )

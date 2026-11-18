@@ -6,8 +6,8 @@ import (
 	"crypto/rand"
 	"testing"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"

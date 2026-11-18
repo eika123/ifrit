@@ -12,7 +12,7 @@ import (
 
 	_ "net/http/pprof"
 
-	"github.com/joonnna/ifrit"
+	"github.com/eika123/ifrit"
 
 	log "github.com/inconshreveable/log15"
 )

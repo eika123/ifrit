@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
+	"github.com/eika123/ifrit/core"
+	"github.com/eika123/ifrit/crypto/identity"
+	"github.com/eika123/ifrit/digestmaps"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/comm"
-	"github.com/joonnna/ifrit/core"
-	"github.com/joonnna/ifrit/crypto/identity"
-	"github.com/joonnna/ifrit/digestmaps"
 	"github.com/spf13/viper"
 )
 

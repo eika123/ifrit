@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eika123/ifrit"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit"
 	"github.com/spf13/viper"
 )
 

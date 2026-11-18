@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/joonnna/ifrit/protobuf"
+	pb "github.com/eika123/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

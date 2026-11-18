@@ -5,8 +5,8 @@ import (
 	"crypto/x509"
 	"math"
 
-	"github.com/joonnna/ifrit/core/discovery"
-	proto "github.com/joonnna/ifrit/protobuf"
+	"github.com/eika123/ifrit/core/discovery"
+	proto "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/credentials"

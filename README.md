@@ -3,7 +3,7 @@ Go library implementing the Fireflies protocol, https://dl.acm.org/citation.cfm?
 Ifrit provides a membership, message, signature, and gossip service.
 Applications have a full membership view and can send messages directly to their destination.
 
-[![GoDoc](https://godoc.org/github.com/joonnna/ifrit?status.svg)](https://godoc.org/github.com/joonnna/ifrit)
+[![GoDoc](https://godoc.org/github.com/eika123/ifrit?status.svg)](https://godoc.org/github.com/eika123/ifrit)
 
 ### Starting a Ifrit network
 To start an Ifrit network, you need to deploy the Ifrit certificate authority, responsible for signing certificates and acting as an entry point into the network.
@@ -13,7 +13,7 @@ To start a network, simply deploy it.
 
 Firstly, import the certificate authority package:
 ```go
-"github.com/joonnna/ifrit/crypto/cauth"
+"github.com/eika123/ifrit/crypto/cauth"
 ```
 Then create and start a CA instance:
 ```go
@@ -50,7 +50,7 @@ For standalone distributed deployments, place `ifrit_config.yaml` in `/var/tmp/i
 
 Now you'll want to import the library:
 ```go
-"github.com/joonnna/ifrit"
+"github.com/eika123/ifrit"
 ```
 Now you can create and start a client:
 ```go

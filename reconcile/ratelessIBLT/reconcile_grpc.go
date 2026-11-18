@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/joonnna/ifrit/digestmaps"
-	reconpb_riblt "github.com/joonnna/ifrit/reconcile/ratelessIBLT/proto"
+	"github.com/eika123/ifrit/digestmaps"
+	reconpb_riblt "github.com/eika123/ifrit/reconcile/ratelessIBLT/proto"
 	"github.com/yangl1996/riblt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

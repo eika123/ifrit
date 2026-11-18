@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joonnna/ifrit/crypto/pki"
+	"github.com/eika123/ifrit/crypto/pki"
 )
 
 type certResponse struct {

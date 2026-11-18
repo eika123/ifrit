@@ -1,4 +1,4 @@
-module github.com/joonnna/ifrit
+module github.com/eika123/ifrit
 
 go 1.25.0
 

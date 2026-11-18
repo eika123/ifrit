@@ -24,8 +24,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
-	pb "github.com/joonnna/ifrit/protobuf"
 	_ "github.com/mattn/go-sqlite3"
 )
 

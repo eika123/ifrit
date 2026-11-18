@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	pb "github.com/joonnna/ifrit/protobuf"
 )
 
 // udpBufferSize defines the maximum UDP receive buffer size for ping/pong datagrams.

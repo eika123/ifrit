@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/gorilla/mux"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/ifrit/crypto/pki"
 )
 
 var (
