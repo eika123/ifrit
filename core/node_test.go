@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"google.golang.org/grpc"
 )
 
 // Define the suite, and absorb the built-in basic suite
@@ -155,6 +156,16 @@ func (cs *commStub) StreamMessenger(string, chan []byte, chan []byte) error {
 }
 
 func (cs *commStub) Register(p pb.GossipServer) {
+}
+
+func (cs *commStub) RegisterService(*grpc.ServiceDesc, interface{}) {
+}
+
+func (cs *commStub) RegisterGRPC(func(*grpc.Server)) {
+}
+
+func (cs *commStub) ClientConn(string) (grpc.ClientConnInterface, error) {
+	return nil, nil
 }
 
 func (cs *commStub) CloseConn(addr string) {

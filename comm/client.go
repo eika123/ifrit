@@ -102,6 +102,16 @@ func (c *gRPCClient) OpenSyncStream(ctx context.Context, addr string) (pb.Gossip
 	return conn.Sync(ctx)
 }
 
+// ClientConn returns a pooled, mTLS-authenticated gRPC ClientConnInterface for addr.
+// Callers must not close the returned connection; lifecycle is managed by Comm.
+func (c *gRPCClient) ClientConn(addr string) (grpc.ClientConnInterface, error) {
+	conn, err := c.connection(addr)
+	if err != nil {
+		return nil, err
+	}
+	return conn.cc, nil
+}
+
 func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) error {
 	conn, err := c.connection(addr)
 	if err != nil {

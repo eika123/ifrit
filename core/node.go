@@ -14,6 +14,7 @@ import (
 	pb "github.com/joonnna/ifrit/protobuf"
 	"github.com/joonnna/workerpool"
 	"github.com/spf13/viper"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -94,6 +95,9 @@ type Node struct {
 
 type commService interface {
 	Register(pb.GossipServer)
+	RegisterService(*grpc.ServiceDesc, interface{})
+	RegisterGRPC(func(*grpc.Server))
+	ClientConn(string) (grpc.ClientConnInterface, error)
 	CloseConn(string)
 	Addr() string
 	Start()

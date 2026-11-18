@@ -1,0 +1,69 @@
+
+syntax = "proto3";
+
+package recon;
+option go_package = "github.com/joonnna/ifrit/reconcile/proto/reconcile.proto;reconpb_riblt";
+
+service Reconciler {
+  // Phase 1: Exchange only RIBLT coded symbols and compute A\B and B\A digests.
+  rpc ReconcileDigests(stream ReconcileRequest) returns (stream ReconcileResponse);
+
+  // Phase 2: Bidirectional chunked transfer of missing items (triggered only if diffs != empty).
+  rpc Sync(stream SyncFrame) returns (stream SyncFrame);
+}
+
+// --- Phase 1: RIBLT Digest Reconciliation ---
+
+message ReconcileRequest {
+  bytes fingerprint = 1; // Optional fast-path check on first message
+  repeated CodedSymbol symbols = 2;
+}
+
+
+message HashedSymbol {
+  bytes symbol = 1;
+  uint64 hash = 2;
+}
+// CodedSymbol from Practical Rateless Set Reconciliation paper
+message CodedSymbol {
+  HashedSymbol hashed_symbol = 1;
+  int64 count = 2;
+}
+message ReconcileResponse {
+  bool decoded = 1;
+  repeated HashedSymbol requested_digests = 2; // A \ B: responder wants from caller
+  repeated HashedSymbol available_digests = 3; // B \ A: caller wants from responder
+}
+
+// --- Phase 2: Chunked Data Transfer (mirrors ifrit SyncFrame) ---
+
+message SyncFrame {
+  oneof payload {
+    WantDigests want_digests   = 1;
+    DataItemHeader data_header = 2;
+    DataItemChunk data_chunk   = 3;
+    DataItemEnd data_end       = 4;
+    SyncComplete complete      = 5;
+  }
+}
+
+message WantDigests {
+  repeated bytes digests = 1;
+}
+
+message DataItemHeader {
+  bytes digest      = 1;
+  int64 total_size  = 2;
+}
+
+message DataItemChunk {
+  bytes data = 1;
+}
+
+message DataItemEnd {
+  bytes digest = 1;
+}
+
+message SyncComplete {
+  bytes fingerprint = 1;
+}

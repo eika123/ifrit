@@ -1,6 +1,7 @@
 package comm
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -9,11 +10,17 @@ import (
 
 	log "github.com/inconshreveable/log15"
 	pb "github.com/joonnna/ifrit/protobuf"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	grpcPeer "google.golang.org/grpc/peer"
 )
 
 var (
-	errNilCert = errors.New("Given certificate was nil")
-	errNilPriv = errors.New("Given private key was nil")
+	errNilCert     = errors.New("Given certificate was nil")
+	errNilPriv     = errors.New("Given private key was nil")
+	ErrNoPeerInCtx = errors.New("no peer information found in context")
+	ErrNoTLSInfo   = errors.New("no TLS info provided in peer context")
+	ErrNoCert      = errors.New("no peer certificate present in TLS context")
 )
 
 type Comm struct {
@@ -63,6 +70,35 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 
 func (c *Comm) Register(p pb.GossipServer) {
 	pb.RegisterGossipServer(c.s.rpcServer, p)
+}
+
+// RegisterService registers an arbitrary gRPC service implementation on the node's mTLS server.
+func (c *Comm) RegisterService(desc *grpc.ServiceDesc, impl interface{}) {
+	c.s.rpcServer.RegisterService(desc, impl)
+}
+
+// RegisterGRPC invokes register against the underlying mTLS gRPC server, allowing
+// generated Register*Server helpers to attach additional services without exposing *grpc.Server directly.
+func (c *Comm) RegisterGRPC(register func(*grpc.Server)) {
+	if register != nil {
+		register(c.s.rpcServer)
+	}
+}
+
+// PeerCertFromContext extracts the leaf client certificate from an incoming gRPC mTLS context.
+func PeerCertFromContext(ctx context.Context) (*x509.Certificate, error) {
+	p, ok := grpcPeer.FromContext(ctx)
+	if !ok {
+		return nil, ErrNoPeerInCtx
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return nil, ErrNoTLSInfo
+	}
+	if len(tlsInfo.State.PeerCertificates) < 1 {
+		return nil, ErrNoCert
+	}
+	return tlsInfo.State.PeerCertificates[0], nil
 }
 
 func (c *Comm) Start() {

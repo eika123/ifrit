@@ -13,12 +13,11 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
+	"github.com/joonnna/ifrit/comm"
 	"github.com/joonnna/ifrit/core/discovery"
 	"github.com/joonnna/ifrit/crypto/pki"
 	pb "github.com/joonnna/ifrit/protobuf"
 	"golang.org/x/net/context"
-	"google.golang.org/grpc/credentials"
-	grpcPeer "google.golang.org/grpc/peer"
 )
 
 func (n *Node) mergeNotes(notes []*pb.Note) {
@@ -414,23 +413,20 @@ func (n *Node) validateCertificate(cert *x509.Certificate) error {
 }
 
 func (n *Node) validateCtx(ctx context.Context) (*x509.Certificate, error) {
-	var tlsInfo credentials.TLSInfo
-	var ok bool
-
-	peer, ok := grpcPeer.FromContext(ctx)
-	if !ok {
-		return nil, errNoPeerInCtx
+	cert, err := comm.PeerCertFromContext(ctx)
+	if err != nil {
+		switch {
+		case errors.Is(err, comm.ErrNoPeerInCtx):
+			return nil, errNoPeerInCtx
+		case errors.Is(err, comm.ErrNoTLSInfo):
+			return nil, errNoTLSInfo
+		case errors.Is(err, comm.ErrNoCert):
+			return nil, errNoCert
+		default:
+			return nil, err
+		}
 	}
-
-	if tlsInfo, ok = peer.AuthInfo.(credentials.TLSInfo); !ok {
-		return nil, errNoTLSInfo
-	}
-
-	if len(tlsInfo.State.PeerCertificates) < 1 {
-		return nil, errNoCert
-	}
-
-	return tlsInfo.State.PeerCertificates[0], nil
+	return cert, nil
 }
 
 // validateRemoteAccusation verifies that an accusation against a remote peer matches the peer's
