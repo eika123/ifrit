@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -22,7 +23,6 @@ import (
 	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"
 )

@@ -77,7 +77,6 @@ func (d *recordingDetector[T]) count() int {
 
 func setupCommPair(t *testing.T) (*comm.Comm, *comm.Comm, string) {
 	t.Helper()
-	t.Setenv("IFRIT_TELEMETRY_DB", fmt.Sprintf("%s/telemetry.db", t.TempDir()))
 
 	caPriv, caCert := genMTLSKeyAndCert(t, nil, nil, []byte("ca"))
 	privA, certA := genMTLSKeyAndCert(t, caCert, caPriv, []byte("peer-a"))

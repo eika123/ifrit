@@ -23,13 +23,77 @@ var (
 	ErrNoCert      = errors.New("no peer certificate present in TLS context")
 )
 
+type commOptions struct {
+	advertisedAddr           string
+	unaryClientInterceptors  []grpc.UnaryClientInterceptor
+	streamClientInterceptors []grpc.StreamClientInterceptor
+	unaryServerInterceptors  []grpc.UnaryServerInterceptor
+	streamServerInterceptors []grpc.StreamServerInterceptor
+	closeHooks               []func() error
+}
+
+// Option configures optional Comm transport behavior (advertised address, gRPC interceptors, close hooks).
+type Option func(*commOptions)
+
+// WithAdvertisedAddr overrides the address returned by Comm.Addr().
+func WithAdvertisedAddr(addr string) Option {
+	return func(o *commOptions) {
+		o.advertisedAddr = addr
+	}
+}
+
+// WithUnaryClientInterceptor appends a unary client interceptor to the gRPC client pool.
+func WithUnaryClientInterceptor(i grpc.UnaryClientInterceptor) Option {
+	return func(o *commOptions) {
+		if i != nil {
+			o.unaryClientInterceptors = append(o.unaryClientInterceptors, i)
+		}
+	}
+}
+
+// WithStreamClientInterceptor appends a stream client interceptor to the gRPC client pool.
+func WithStreamClientInterceptor(i grpc.StreamClientInterceptor) Option {
+	return func(o *commOptions) {
+		if i != nil {
+			o.streamClientInterceptors = append(o.streamClientInterceptors, i)
+		}
+	}
+}
+
+// WithUnaryServerInterceptor appends a unary server interceptor to the gRPC server.
+func WithUnaryServerInterceptor(i grpc.UnaryServerInterceptor) Option {
+	return func(o *commOptions) {
+		if i != nil {
+			o.unaryServerInterceptors = append(o.unaryServerInterceptors, i)
+		}
+	}
+}
+
+// WithStreamServerInterceptor appends a stream server interceptor to the gRPC server.
+func WithStreamServerInterceptor(i grpc.StreamServerInterceptor) Option {
+	return func(o *commOptions) {
+		if i != nil {
+			o.streamServerInterceptors = append(o.streamServerInterceptors, i)
+		}
+	}
+}
+
+// WithCloseHook registers a cleanup callback invoked during Comm.Stop().
+func WithCloseHook(fn func() error) Option {
+	return func(o *commOptions) {
+		if fn != nil {
+			o.closeHooks = append(o.closeHooks, fn)
+		}
+	}
+}
+
 type Comm struct {
 	s *gRPCServer
 	*gRPCClient
-	telemetryLogger TelemetryLogger
+	closeHooks []func() error
 }
 
-func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Listener, advertisedAddr ...string) (*Comm, error) {
+func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Listener, opts ...Option) (*Comm, error) {
 	if cert == nil {
 		return nil, errNilCert
 	}
@@ -38,33 +102,31 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 		return nil, errNilPriv
 	}
 
-	var telemetryLogger TelemetryLogger
-	if dbPath := getTelemetryDBPath(); dbPath != "" {
-		var err error
-		telemetryLogger, err = NewRPCInterfaceLogger(dbPath)
-		if err != nil {
-			log.Error("Failed to initialize telemetry logger: " + err.Error())
+	var cfg commOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
 		}
 	}
 
 	serverConf := serverConfig(cert, caCert, priv)
 
-	server, err := newServer(serverConf, l, telemetryLogger, advertisedAddr...)
+	server, err := newServer(serverConf, l, cfg.unaryServerInterceptors, cfg.streamServerInterceptors, cfg.advertisedAddr)
 	if err != nil {
 		return nil, err
 	}
 
 	clientConf := clientConfig(cert, caCert, priv)
 
-	client, err := newClient(clientConf, telemetryLogger)
+	client, err := newClient(clientConf, cfg.unaryClientInterceptors, cfg.streamClientInterceptors)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Comm{
-		s:               server,
-		gRPCClient:      client,
-		telemetryLogger: telemetryLogger,
+		s:          server,
+		gRPCClient: client,
+		closeHooks: cfg.closeHooks,
 	}, nil
 }
 
@@ -106,11 +168,13 @@ func (c *Comm) Start() {
 }
 
 func (c *Comm) Stop() {
-
 	c.s.stop()
+	c.gRPCClient.CloseAll()
 
-	if c.telemetryLogger != nil {
-		_ = c.telemetryLogger.Close()
+	for _, hook := range c.closeHooks {
+		if err := hook(); err != nil {
+			log.Error("failed to close comm hook", "err", err)
+		}
 	}
 }
 

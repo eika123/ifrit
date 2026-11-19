@@ -7,16 +7,13 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"database/sql"
 	"math/big"
 	"net"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	pb "github.com/eika123/ifrit/protobuf"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -75,14 +72,26 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 	lisA, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	dbPath := filepath.Join(t.TempDir(), "telemetry.db")
-	t.Setenv("IFRIT_TELEMETRY_DB", dbPath)
+	var clientIntercepted atomic.Int32
+	var serverIntercepted atomic.Int32
 
-	commA, err := NewComm(certA, caCert, privA, lisA)
+	commA, err := NewComm(
+		certA, caCert, privA, lisA,
+		WithUnaryClientInterceptor(func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			clientIntercepted.Add(1)
+			return invoker(ctx, method, req, reply, cc, opts...)
+		}),
+	)
 	require.NoError(t, err)
 	defer commA.Stop()
 
-	commB, err := NewComm(certB, caCert, privB, lisB)
+	commB, err := NewComm(
+		certB, caCert, privB, lisB,
+		WithUnaryServerInterceptor(func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+			serverIntercepted.Add(1)
+			return handler(ctx, req)
+		}),
+	)
 	require.NoError(t, err)
 	defer commB.Stop()
 
@@ -121,13 +130,9 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 	require.NotNil(t, seenCert)
 	assert.Equal(t, []byte("peer-a-id"), seenCert.SubjectKeyId)
 
-	// Verify telemetry interceptor recorded the RPC made over ClientConn.
-	db, err := sql.Open("sqlite3", dbPath)
-	require.NoError(t, err)
-	defer db.Close()
-	var count int
-	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM gossip_exchange`).Scan(&count))
-	assert.GreaterOrEqual(t, count, 1)
+	// Verify injected client and server interceptors were invoked for the ClientConn RPC.
+	assert.Equal(t, int32(1), clientIntercepted.Load())
+	assert.Equal(t, int32(1), serverIntercepted.Load())
 }
 
 func TestPeerCertFromContext_Errors(t *testing.T) {
@@ -148,8 +153,6 @@ func TestComm_RegisterServiceAndUntrustedCARejection(t *testing.T) {
 	addrB := lisB.Addr().String()
 	lisRogue, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-
-	t.Setenv("IFRIT_TELEMETRY_DB", filepath.Join(t.TempDir(), "telemetry.db"))
 
 	commB, err := NewComm(certB, caCert, privB, lisB)
 	require.NoError(t, err)

@@ -2,12 +2,24 @@ package digestmaps
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type testEntity struct {
+	ID      string
+	Payload string
+}
+
+func testHasher(vItem VersionedItem[testEntity]) DigestSymbol {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(fmt.Sprintf("%s:%s:%d", vItem.Item.ID, vItem.Item.Payload, vItem.Version)))
+	return DigestSymbol(h.Sum64())
+}
 
 func testMutableKeyFunc(item testEntity) DigestSymbol {
 	return DigestSymbol(testHasher(VersionedItem[testEntity]{Item: testEntity{ID: item.ID}, Version: 0}))

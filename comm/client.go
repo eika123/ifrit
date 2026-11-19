@@ -1,9 +1,9 @@
 package comm
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
-	_ "fmt"
 	"io"
 	"sync"
 	"time"
@@ -11,12 +11,13 @@ import (
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
 	"github.com/spf13/viper"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/keepalive"
 )
+
+const defaultRPCTimeout = 10 * time.Second
 
 var (
 	errReachable = errors.New("Remote entity not reachable")
@@ -35,19 +36,23 @@ type conn struct {
 	cc *grpc.ClientConn
 }
 
-func newClient(config *tls.Config, telemetryLogger TelemetryLogger) (*gRPCClient, error) {
+func newClient(
+	config *tls.Config,
+	unaryInterceptors []grpc.UnaryClientInterceptor,
+	streamInterceptors []grpc.StreamClientInterceptor,
+) (*gRPCClient, error) {
 	var dialOptions []grpc.DialOption
 
 	if config == nil {
 		return nil, errNilConfig
 	}
 
-	// --------------------------------- Telemetry logging ------------------------------------
-	if telemetryLogger != nil {
-		dialOptions = append(dialOptions, grpc.WithUnaryInterceptor(gossipClientInterceptorFactory(telemetryLogger)))
-		dialOptions = append(dialOptions, grpc.WithStreamInterceptor(gossipStreamClientInterceptorFactory(telemetryLogger)))
+	if len(unaryInterceptors) > 0 {
+		dialOptions = append(dialOptions, grpc.WithChainUnaryInterceptor(unaryInterceptors...))
 	}
-	// -----------------------------------------------------------------------------------------
+	if len(streamInterceptors) > 0 {
+		dialOptions = append(dialOptions, grpc.WithChainStreamInterceptor(streamInterceptors...))
+	}
 
 	creds := credentials.NewTLS(config)
 	dialOptions = append(dialOptions, grpc.WithTransportCredentials(creds))
@@ -75,8 +80,11 @@ func (c *gRPCClient) Gossip(addr string, args *pb.State) (*pb.StateResponse, err
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
+	defer cancel()
+
 	// rpc call on remote connection peer.
-	reply, err := conn.Spread(context.Background(), args)
+	reply, err := conn.Spread(ctx, args)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +98,10 @@ func (c *gRPCClient) Send(addr string, args *pb.Msg) (*pb.MsgResponse, error) {
 		return nil, err
 	}
 
-	return conn.Messenger(context.Background(), args)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
+	defer cancel()
+
+	return conn.Messenger(ctx, args)
 }
 
 // ClientConn returns a pooled, mTLS-authenticated gRPC ClientConnInterface for addr.
@@ -185,6 +196,19 @@ func (c *gRPCClient) CloseConn(addr string) {
 
 	if conn, ok := c.allConnections[addr]; ok {
 		conn.cc.Close()
+		delete(c.allConnections, addr)
+	}
+}
+
+// CloseAll closes and removes all pooled gRPC client connections.
+func (c *gRPCClient) CloseAll() {
+	c.connectionMutex.Lock()
+	defer c.connectionMutex.Unlock()
+
+	for addr, conn := range c.allConnections {
+		if conn != nil && conn.cc != nil {
+			_ = conn.cc.Close()
+		}
 		delete(c.allConnections, addr)
 	}
 }

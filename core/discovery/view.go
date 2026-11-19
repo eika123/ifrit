@@ -22,16 +22,14 @@ import (
 )
 
 var (
-	errInvalidNeighbours   = errors.New("Neighbours are nil ?!")
-	errPeerAlreadyExists   = errors.New("Peer id already exists in the full view")
-	errAlreadyDeactivated  = errors.New("Ring was already deactivated")
-	errZeroDeactivate      = errors.New("No ring can be deactivated, maxbyz is 0")
-	errNoNote              = errors.New("Note was nil.")
-	errAccusedIsNil        = errors.New("Accused was nil.")
-	errObsIsNil            = errors.New("Observer was nil")
-	errWrongNote           = errors.New("Note does not belong to accused.")
-	ErrNotesNotInitialized = errors.New("Note store is not initialized")
-	ErrCertsNotInitialized = errors.New("Certificate store is not initialized")
+	errInvalidNeighbours  = errors.New("Neighbours are nil ?!")
+	errPeerAlreadyExists  = errors.New("Peer id already exists in the full view")
+	errAlreadyDeactivated = errors.New("Ring was already deactivated")
+	errZeroDeactivate     = errors.New("No ring can be deactivated, maxbyz is 0")
+	errNoNote             = errors.New("Note was nil.")
+	errAccusedIsNil       = errors.New("Accused was nil.")
+	errObsIsNil           = errors.New("Observer was nil")
+	errWrongNote          = errors.New("Note does not belong to accused.")
 )
 
 func accusationRingKey(accused string, ringNum uint32) string {
@@ -360,24 +358,15 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 
 // Fingerprint returns the commutative XOR fingerprint of the view,
 // combining the note store fingerprint and certificate store fingerprint (XOR).
-// Returns ErrNotesNotInitialized if noteStore is uninitialized, or ErrCertsNotInitialized if certStore is uninitialized.
-func (v *View) Fingerprint() (digestmaps.DigestSymbol, error) {
-	if v.noteStore == nil {
-		return 0, ErrNotesNotInitialized
-	}
-	if v.certStore == nil {
-		return 0, ErrCertsNotInitialized
-	}
-	return v.noteStore.Fingerprint().XOR(v.certStore.Fingerprint()), nil
+// Panics if v, noteStore, or certStore is nil (i.e. View was not constructed via NewView).
+func (v *View) Fingerprint() digestmaps.DigestSymbol {
+	return v.noteStore.Fingerprint().XOR(v.certStore.Fingerprint())
 }
 
 // NoteFingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteFingerprint() (digestmaps.DigestSymbol, error) {
-	if v.noteStore == nil {
-		return 0, ErrNotesNotInitialized
-	}
-	return v.noteStore.Fingerprint(), nil
+// Panics if v or noteStore is nil (i.e. View was not constructed via NewView).
+func (v *View) NoteFingerprint() digestmaps.DigestSymbol {
+	return v.noteStore.Fingerprint()
 }
 
 // CertStore returns the underlying ReverseIndexStore backing peer certificates.
@@ -386,41 +375,27 @@ func (v *View) CertStore() digestmaps.ReverseIndexStore[*pki.Certificate, digest
 }
 
 // CertFingerprint returns the commutative XOR fingerprint of all peer certificates in the view (including self).
-// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertFingerprint() (digestmaps.DigestSymbol, error) {
-	if v.certStore == nil {
-		return 0, ErrCertsNotInitialized
-	}
-	return v.certStore.Fingerprint(), nil
+// Panics if v or certStore is nil (i.e. View was not constructed via NewView).
+func (v *View) CertFingerprint() digestmaps.DigestSymbol {
+	return v.certStore.Fingerprint()
 }
 
 // CertDigests returns the digests of all certificates currently in the cert store.
-// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertDigests() ([]digestmaps.DigestSymbol, error) {
-	if v.certStore == nil {
-		return nil, ErrCertsNotInitialized
-	}
-	return v.certStore.DigestsCopy(), nil
+// Panics if v or certStore is nil (i.e. View was not constructed via NewView).
+func (v *View) CertDigests() []digestmaps.DigestSymbol {
+	return v.certStore.DigestsCopy()
 }
 
 // CertByDigest retrieves a Certificate by its digest symbol from the cert store.
-// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertByDigest(d digestmaps.DigestSymbol) (*pki.Certificate, bool, error) {
-	if v.certStore == nil {
-		return nil, false, ErrCertsNotInitialized
-	}
-	cert, found := v.certStore.GetByDigest(d)
-	return cert, found, nil
+// Panics if v or certStore is nil (i.e. View was not constructed via NewView).
+func (v *View) CertByDigest(d digestmaps.DigestSymbol) (*pki.Certificate, bool) {
+	return v.certStore.GetByDigest(d)
 }
 
 // CertsByDigests retrieves multiple Certificates by their digests from the cert store in a single operation.
-// Returns ErrCertsNotInitialized if the underlying certStore has not been initialized.
-func (v *View) CertsByDigests(digests []digestmaps.DigestSymbol) ([]*pki.Certificate, bool, error) {
-	if v.certStore == nil {
-		return nil, false, ErrCertsNotInitialized
-	}
-	certs, found := v.certStore.GetByDigests(digests)
-	return certs, found, nil
+// Panics if v or certStore is nil (i.e. View was not constructed via NewView).
+func (v *View) CertsByDigests(digests []digestmaps.DigestSymbol) ([]*pki.Certificate, bool) {
+	return v.certStore.GetByDigests(digests)
 }
 
 // NoteStore returns the underlying ReverseIndexStore backing peer notes.
@@ -429,32 +404,21 @@ func (v *View) NoteStore() digestmaps.ReverseIndexStore[*Note, digestmaps.Digest
 }
 
 // NoteDigests returns the digests of all notes currently contributing to the view fingerprint.
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteDigests() ([]digestmaps.DigestSymbol, error) {
-	if v.noteStore == nil {
-		return nil, ErrNotesNotInitialized
-	}
-	return v.noteStore.DigestsCopy(), nil
+// Panics if v or noteStore is nil (i.e. View was not constructed via NewView).
+func (v *View) NoteDigests() []digestmaps.DigestSymbol {
+	return v.noteStore.DigestsCopy()
 }
 
 // NoteByDigest retrieves a Note by its digest symbol from the note store.
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NoteByDigest(d digestmaps.DigestSymbol) (*Note, bool, error) {
-	if v.noteStore == nil {
-		return nil, false, ErrNotesNotInitialized
-	}
-	note, found := v.noteStore.GetByDigest(d)
-	return note, found, nil
+// Panics if v or noteStore is nil (i.e. View was not constructed via NewView).
+func (v *View) NoteByDigest(d digestmaps.DigestSymbol) (*Note, bool) {
+	return v.noteStore.GetByDigest(d)
 }
 
 // NotesByDigests retrieves multiple Notes by their digests from the note store in a single operation.
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
-func (v *View) NotesByDigests(digests []digestmaps.DigestSymbol) ([]*Note, bool, error) {
-	if v.noteStore == nil {
-		return nil, false, ErrNotesNotInitialized
-	}
-	notes, found := v.noteStore.GetByDigests(digests)
-	return notes, found, nil
+// Panics if v or noteStore is nil (i.e. View was not constructed via NewView).
+func (v *View) NotesByDigests(digests []digestmaps.DigestSymbol) ([]*Note, bool) {
+	return v.noteStore.GetByDigests(digests)
 }
 
 // HasNote checks if an active note with the given ID and an equal or newer epoch exists in the view.
@@ -597,11 +561,7 @@ func (v *View) RecordedEpochs() map[string][]uint64 {
 }
 
 // AddNote records a verified note into both the view's active indirection layer and the grow-only Note store.
-// Returns ErrNotesNotInitialized if the underlying noteStore has not been initialized.
 func (v *View) AddNote(p *Peer, mask uint32, epoch uint64, r, s []byte) (bool, error) {
-	if v.noteStore == nil {
-		return false, ErrNotesNotInitialized
-	}
 	if p == nil {
 		return false, errors.New("peer is nil")
 	}
@@ -1055,9 +1015,6 @@ func (v *View) signLocalNote(n *Note) error {
 		s: s,
 	}
 
-	if v.noteStore == nil {
-		return ErrNotesNotInitialized
-	}
 	v.recordNote(n)
 
 	return nil
@@ -1327,12 +1284,6 @@ func (v *View) RemoveTestFull(id string) error {
 	v.viewMutex.Lock()
 	defer v.viewMutex.Unlock()
 
-	if v.noteStore == nil {
-		return ErrNotesNotInitialized
-	}
-	if v.certStore == nil {
-		return ErrCertsNotInitialized
-	}
 	if p, ok := v.viewStore.Contains(&Peer{Id: id}); ok && p.Id == id {
 		mustMutableStore("viewStore", v.viewStore).Remove(p)
 		if p.cert != nil && len(p.cert.Raw) > 0 {

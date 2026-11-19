@@ -208,19 +208,6 @@ func (us *UDPServer) getFingerprintView() []byte {
 	return nil
 }
 
-// Backwards-compatible aliases:
-func (us *UDPServer) SetFingerprintProvider(f func() []byte) {
-	us.SetFingerprintDataProvider(f)
-}
-
-func (us *UDPServer) SetFingerprint(fp []byte) {
-	us.SetFingerprintData(fp)
-}
-
-func (us *UDPServer) getFingerprint() []byte {
-	return us.getFingerprintData()
-}
-
 func (us *UDPServer) Addr() string {
 	return us.addr
 }

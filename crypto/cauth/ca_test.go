@@ -1,6 +1,7 @@
 package cauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	gossip "github.com/eika123/ifrit/protobuf"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )

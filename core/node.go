@@ -203,8 +203,6 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 
 	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
 		fpSetter.SetFingerprintDataProvider(n.FingerprintData)
-	} else if fpSetter, ok := ps.(interface{ SetFingerprintProvider(func() []byte) }); ok {
-		fpSetter.SetFingerprintProvider(n.self.FingerprintData)
 	}
 
 	if fpAccSetter, ok := ps.(interface{ SetFingerprintAccusationsProvider(func() []byte) }); ok {
@@ -392,27 +390,10 @@ func (n *Node) IdToAddr(id []byte) (string, error) {
 	return peer.Addr, nil
 }
 
-func (n *Node) SendMessages(dest []string, ch chan *Message, data []byte) {
-	msg := &pb.Msg{
-		Content: data,
-	}
-
-	for _, addr := range dest {
-		a := addr
-		n.dispatcher.Submit(func() {
-			n.sendMsg(a, ch, msg)
-		})
-	}
-}
-
 func (n *Node) OpenStream(dest string, input, reply chan []byte) {
 	n.dispatcher.Submit(func() {
 		n.openStream(dest, input, reply)
 	})
-}
-
-func (n *Node) SendStream(ch chan<- []byte, data []byte) {
-	ch <- data
 }
 
 func (n *Node) openStream(dest string, input, reply chan []byte) {
@@ -422,12 +403,12 @@ func (n *Node) openStream(dest string, input, reply chan []byte) {
 }
 
 func (n *Node) sendMsg(dest string, ch chan *Message, msg *pb.Msg) {
-	//defer close(ch)
+	defer close(ch)
 	reply, err := n.comm.Send(dest, msg)
 	if err != nil {
 		log.Error(err.Error())
 		ch <- nil
-		//	return
+		return
 	}
 
 	if reply.GetError() == "" {

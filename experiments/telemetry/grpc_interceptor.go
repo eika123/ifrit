@@ -1,16 +1,13 @@
-package comm
+package telemetry
 
 /*
-	Provides functionality to log RPC messages while unencrypted. Use the factory NewRPCInterfaceLogger to create a logger.
-	The logger must be passed to the NewClient and NewServer functions, this is done in the comm/comm.go NewComm factory method.
-	If no logger is passed (a nil), no interceptor is attached and logging of gRPCs is effectively disabled.
-
-	The TelemetryLogger's OnGossipExchange method is called by the interceptors before and after the RPC call.
-	In principle, the TelemetryLogger's OnGossipExchange method can do what it wants with the event data.
-	Our implementation of the TelemetryLogger interface below writes it to a local SQLite3 database.
+	Provides functionality to log RPC messages while unencrypted. Use CommOptionsFromEnv()
+	or CommOptions(dbPath) to attach telemetry interceptors to comm.NewComm.
+	If no interceptors are passed, logging of gRPCs is disabled.
 */
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
@@ -21,11 +18,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	pb "github.com/eika123/ifrit/protobuf"
 	transferpb "github.com/eika123/ifrit/reconcile/transfer/proto"
 	log "github.com/inconshreveable/log15"
 	_ "github.com/mattn/go-sqlite3" // needed for sqlite3 driver
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"
 )
@@ -88,7 +85,7 @@ type NoteEvent struct {
 }
 
 func getLocalHostIdentifier() string {
-	if ip := GetLocalIP(); ip != "" {
+	if ip := comm.GetLocalIP(); ip != "" {
 		return ip
 	}
 	if h := os.Getenv("HOSTNAME"); h != "" {
@@ -264,17 +261,20 @@ type telemetryClientStream struct {
 	grpc.ClientStream
 	logger     TelemetryLogger
 	localHost  string
+	remoteOnce sync.Once
 	remoteHost string
 	remotePort string
 }
 
 func (s *telemetryClientStream) getRemote() (string, string) {
-	if s.remoteHost != "" && s.remoteHost != "unknown" {
-		return s.remoteHost, s.remotePort
-	}
-	if p, ok := peer.FromContext(s.ClientStream.Context()); ok && p.Addr != nil {
-		s.remoteHost, s.remotePort = splitHostAndPort(p.Addr.String())
-	}
+	s.remoteOnce.Do(func() {
+		if s.remoteHost != "" && s.remoteHost != "unknown" {
+			return
+		}
+		if p, ok := peer.FromContext(s.ClientStream.Context()); ok && p.Addr != nil {
+			s.remoteHost, s.remotePort = splitHostAndPort(p.Addr.String())
+		}
+	})
 	return s.remoteHost, s.remotePort
 }
 
@@ -387,10 +387,35 @@ func gossipStreamServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.
 	}
 }
 
+// CommOptions returns comm.Option values that attach SQLite RPC telemetry
+// interceptors backed by dbPath and close the logger when Comm.Stop() runs.
+func CommOptions(dbPath string) ([]comm.Option, error) {
+	logger, err := NewRPCInterfaceLogger(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return []comm.Option{
+		comm.WithUnaryClientInterceptor(gossipClientInterceptorFactory(logger)),
+		comm.WithStreamClientInterceptor(gossipStreamClientInterceptorFactory(logger)),
+		comm.WithUnaryServerInterceptor(gossipServerInterceptorFactory(logger)),
+		comm.WithStreamServerInterceptor(gossipStreamServerInterceptorFactory(logger)),
+		comm.WithCloseHook(logger.Close),
+	}, nil
+}
+
+// CommOptionsFromEnv returns comm.Option values if IFRIT_TELEMETRY_DB is set to an
+// enabled path; otherwise it returns nil, nil so telemetry remains opt-in.
+func CommOptionsFromEnv() ([]comm.Option, error) {
+	dbPath := getTelemetryDBPath()
+	if dbPath == "" {
+		return nil, nil
+	}
+	return CommOptions(dbPath)
+}
+
 func getTelemetryDBPath() string {
-	customPath := os.Getenv("IFRIT_TELEMETRY_DB")
-	// If explicitly set to empty or "disabled", disable logging
-	if customPath == "disabled" || customPath == "off" {
+	customPath := strings.TrimSpace(os.Getenv("IFRIT_TELEMETRY_DB"))
+	if customPath == "" || customPath == "disabled" || customPath == "off" {
 		return ""
 	}
 	hostname := getLocalHostIdentifier()
@@ -401,21 +426,10 @@ func getTelemetryDBPath() string {
 			hostname = "node"
 		}
 	}
-	// If explicit path was provided:
-	if customPath != "" {
-		fi, err := os.Stat(customPath)
-		if err == nil && fi.IsDir() {
-			return filepath.Join(customPath, fmt.Sprintf("telemetry_%s.db", hostname))
-		}
-		return customPath
+	if fi, err := os.Stat(customPath); err == nil && fi.IsDir() {
+		return filepath.Join(customPath, fmt.Sprintf("telemetry_%s.db", hostname))
 	}
-	// Default fallback: /tmp/<username>/ifrit-experiments/telemetry_<hostname>.db
-	username := os.Getenv("USER")
-	if username == "" {
-		username = "ifrit"
-	}
-	dir := filepath.Join(os.TempDir(), username, "ifrit-experiments")
-	return filepath.Join(dir, fmt.Sprintf("telemetry_%s.db", hostname))
+	return customPath
 }
 
 // implements the TelemtryLogger interface

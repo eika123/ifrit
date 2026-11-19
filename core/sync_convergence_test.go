@@ -18,6 +18,7 @@ import (
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/experiments/telemetry"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/stretchr/testify/assert"
@@ -99,7 +100,10 @@ func createTestNodeWithComm(t *testing.T, caCert *x509.Certificate, caPriv *ecds
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	c, err := comm.NewComm(cert, caCert, priv, l)
+	commOpts, err := telemetry.CommOptionsFromEnv()
+	require.NoError(t, err)
+
+	c, err := comm.NewComm(cert, caCert, priv, l, commOpts...)
 	require.NoError(t, err)
 
 	n, err := NewNode(c, &pingStub{}, &cmStub{cert: cert, caCert: caCert}, &cryptoStub{priv: priv})

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/experiments/telemetry"
 	log "github.com/inconshreveable/log15"
 )
 
@@ -60,11 +61,17 @@ func newApp() (*application, error) {
 		}
 	}
 
+	commOpts, err := telemetry.CommOptionsFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("init telemetry options: %w", err)
+	}
+
 	c, err := ifrit.NewClient(&ifrit.Config{
-		New:      true,
-		Hostname: hostname,
-		TCPPort:  tcpPort,
-		UDPPort:  udpPort,
+		New:         true,
+		Hostname:    hostname,
+		TCPPort:     tcpPort,
+		UDPPort:     udpPort,
+		CommOptions: commOpts,
 	})
 	if err != nil {
 		return nil, err

@@ -42,6 +42,9 @@ type Config struct {
 
 	// The directory of the cryptographic resources.
 	CertPath string
+
+	// Optional transport options (e.g. gRPC interceptors or close hooks) passed to comm.NewComm.
+	CommOptions []comm.Option
 }
 
 var (
@@ -137,7 +140,8 @@ func NewClient(config *Config) (*Client, error) {
 		}
 	}
 
-	commService, err := comm.NewComm(id.Certificate(), id.CaCertificate(), id.Priv(), l, tcpAddr)
+	commOpts := append([]comm.Option{comm.WithAdvertisedAddr(tcpAddr)}, config.CommOptions...)
+	commService, err := comm.NewComm(id.Certificate(), id.CaCertificate(), id.Priv(), l, commOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -421,8 +425,6 @@ func readConfig() error {
 
 	// Visualizer specific
 	viper.SetDefault("viz_update_interval", 10)
-
-	viper.SafeWriteConfig()
 
 	return nil
 }

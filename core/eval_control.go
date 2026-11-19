@@ -7,35 +7,17 @@ package core
 // Validators:  check (and sign) singatures for certificats, notes and accusations
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
-	"github.com/eika123/ifrit/crypto/pki"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	"golang.org/x/net/context"
 )
-
-func (n *Node) mergeNotes(notes []*pb.Note) {
-	if notes == nil {
-		return
-	}
-
-	for _, newNote := range notes {
-		if n.self.Id == string(newNote.GetId()) {
-			continue
-		}
-
-		err := n.evalNote(newNote)
-		if err != nil && err != errOldNote {
-			log.Debug(err.Error())
-		}
-	}
-}
 
 func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 	if accusations == nil {
@@ -84,48 +66,6 @@ func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 		err := n.evalAccusation(acc, accuser, accused)
 		if err != nil {
 			log.Debug(err.Error(), "ringNum", acc.GetRingNum(), "epoch", acc.GetEpoch(), "accused", accused.Addr, "accuser", accuser.Addr)
-		}
-	}
-}
-
-func (n *Node) mergeCertificates(certs []*pb.Certificate) {
-	if certs == nil {
-		return
-	}
-	for _, b := range certs {
-		if b == nil || len(b.GetRaw()) == 0 {
-			continue
-		}
-
-		cert, err := x509.ParseCertificate(b.GetRaw())
-		if err != nil {
-			log.Error(err.Error())
-			continue
-		}
-
-		if n.self.Id == string(cert.SubjectKeyId) {
-			continue
-		}
-
-		if err := n.validateCertificate(cert); err != nil {
-			log.Debug("mergeCertificates: rejected invalid certificate", "err", err)
-			continue
-		}
-
-		// Valid certificate enters certStore
-		if n.view.CertStore() != nil {
-			n.view.CertStore().Insert(pki.CertificateFromPb(b))
-		}
-
-		// Skip expensive evalCertificate if peer already exists in full view
-		if n.view.Exists(string(cert.SubjectKeyId)) {
-			continue
-		}
-
-		// Adds a valid certificate to the full view if not already present.
-		err = n.evalValidCertificate(cert)
-		if err != nil {
-			log.Debug(err.Error())
 		}
 	}
 }
@@ -261,7 +201,6 @@ func (n *Node) evalValidCertificate(cert *x509.Certificate) error {
 			log.Error("Failed to add peer certificate to full view", "err", err)
 			return err
 		}
-		n.promotePendingNotesForPeer(id)
 		n.promotePendingAccusationsForPeer(id)
 	}
 	return nil
@@ -344,15 +283,6 @@ func (n *Node) promotePendingAccusationsForPeer(id string) {
 			log.Debug("Failed to promote pending accusation", "err", err, "accused", accId, "accuser", accuserId)
 		}
 	}
-}
-
-// promotePendingNotesForPeer is a hook/stub for future work.
-// Since notes require the peer's certificate for signature verification before entering NoteStore,
-// no notes for unknown peers exist in NoteStore. If an unverified ingress note ring-buffer / cache
-// is introduced in the future (e.g. a bounded FIFO buffer holding notes pending certificate arrival),
-// this function would drain and evaluate matching notes when the certificate arrives.
-func (n *Node) promotePendingNotesForPeer(id string) {
-	// TODO: Drain bounded unverified note ingress cache when implemented.
 }
 
 // handleSelfAccusation validates and responds to an incoming accusation against the local node.

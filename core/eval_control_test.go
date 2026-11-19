@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"math"
@@ -8,12 +9,11 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	proto "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/credentials"
 	grpcPeer "google.golang.org/grpc/peer"
 )
 
-func (suite *HandlerTestSuite) TestMergeNotes() {
+func (suite *HandlerTestSuite) TestEvalNotes() {
 	node := suite.n
 	p := node.view.Live()[0]
 	priv := suite.privMap[p.Id]
@@ -22,7 +22,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	// 1. Valid Note (higher epoch)
 	validPb := discovery.NewNote(p.Id, 2, math.MaxUint32, priv)
-	node.mergeNotes([]*proto.Note{validPb})
+	require.NoError(suite.T(), node.evalNote(validPb))
 
 	rawValid := discovery.NoteFromPb(validPb)
 	stored, found := node.view.NoteStore().Contains(rawValid)
@@ -37,7 +37,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 	// 2. Note with invalid signature: MUST NOT be stored in NoteStore, and peer active note MUST NOT update
 	badSigPb := discovery.NewNote(p.Id, 3, math.MaxUint32, priv)
 	badSigPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
-	node.mergeNotes([]*proto.Note{badSigPb})
+	require.Error(suite.T(), node.evalNote(badSigPb))
 
 	rawBadSig := discovery.NoteFromPb(badSigPb)
 	_, found = node.view.NoteStore().Contains(rawBadSig)
@@ -48,7 +48,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	// 3. Note from completely unknown peer: MUST NOT be stored in NoteStore
 	unknownPb := discovery.NewNote("unknown-peer-id-999", 5, math.MaxUint32, priv)
-	node.mergeNotes([]*proto.Note{unknownPb})
+	require.Error(suite.T(), node.evalNote(unknownPb))
 
 	rawUnknown := discovery.NoteFromPb(unknownPb)
 	_, found = node.view.NoteStore().Contains(rawUnknown)
@@ -56,7 +56,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	// 4. Note with invalid mask (violates Byzantine threshold): MUST NOT be stored in NoteStore
 	badMaskPb := discovery.NewNote(p.Id, 4, 0, priv)
-	node.mergeNotes([]*proto.Note{badMaskPb})
+	require.Error(suite.T(), node.evalNote(badMaskPb))
 
 	rawBadMask := discovery.NoteFromPb(badMaskPb)
 	_, found = node.view.NoteStore().Contains(rawBadMask)
@@ -64,7 +64,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	// 5. Stale / Older epoch note with VALID signature: MUST be stored in NoteStore, but peer active note stays at epoch 2
 	stalePb := discovery.NewNote(p.Id, 1, math.MaxUint32, priv)
-	node.mergeNotes([]*proto.Note{stalePb})
+	require.ErrorIs(suite.T(), node.evalNote(stalePb), errOldNote)
 
 	rawStale := discovery.NoteFromPb(stalePb)
 	_, found = node.view.NoteStore().Contains(rawStale)
@@ -79,7 +79,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 		Epoch: 100,
 		Mask:  1,
 	}
-	node.mergeNotes([]*proto.Note{unsignedPb})
+	require.Error(suite.T(), node.evalNote(unsignedPb))
 
 	rawUnsigned := discovery.NoteFromPb(unsignedPb)
 	_, found = node.view.NoteStore().Contains(rawUnsigned)
@@ -87,7 +87,7 @@ func (suite *HandlerTestSuite) TestMergeNotes() {
 
 	// 7. Idempotence: Duplicate note insertion preserves NoteStore fingerprint
 	fpBeforeDup := node.view.NoteStore().Fingerprint()
-	node.mergeNotes([]*proto.Note{validPb})
+	require.ErrorIs(suite.T(), node.evalNote(validPb), errOldNote)
 	require.Equal(suite.T(), fpBeforeDup, node.view.NoteStore().Fingerprint(), "Duplicate note must preserve XOR fingerprint")
 }
 
@@ -509,20 +509,20 @@ func (suite *HandlerTestSuite) TestSpread_NotesRequireCertificate() {
 
 	note := discovery.NewNote(peerId, 1, math.MaxUint32, priv)
 
-	// Step 1: Attempt to merge note before certificate is known: must be rejected because peer cert is missing
-	node.mergeNotes([]*proto.Note{note})
+	// Step 1: Attempt to evaluate note before certificate is known: must be rejected because peer cert is missing
+	require.Error(suite.T(), node.evalNote(note))
 	rawNote := discovery.NoteFromPb(note)
 	_, found := node.view.NoteStore().Contains(rawNote)
 	require.False(suite.T(), found, "Note for unknown peer must not enter NoteStore without certificate")
 	_, hasActiveNote := node.view.ActiveNote(peerId)
 	require.False(suite.T(), hasActiveNote, "Peer must not have an active note before cert is known")
 
-	// Step 2: Certificate arrives via mergeCertificates
-	node.mergeCertificates([]*proto.Certificate{{Raw: cert.Raw}})
+	// Step 2: Certificate arrives via evalValidCertificate
+	require.NoError(suite.T(), node.evalValidCertificate(cert))
 	require.True(suite.T(), node.view.Exists(peerId), "Peer must now exist in full view")
 
 	// Step 3: Now note arrives with peer certificate known
-	node.mergeNotes([]*proto.Note{note})
+	require.NoError(suite.T(), node.evalNote(note))
 	_, found = node.view.NoteStore().Contains(rawNote)
 	require.True(suite.T(), found, "Note must enter NoteStore now that certificate is known")
 	promotedNote, hasActiveNote := node.view.ActiveNote(peerId)
@@ -555,9 +555,9 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerNoteArrivesLater()
 	require.True(suite.T(), found, "Accusation must be persisted in Tier 1 AccusationStore")
 	require.False(suite.T(), node.view.IsAccused(succ), "Succ must not be marked accused before note arrives")
 
-	// Step 3: Now succ's active note arrives via mergeNotes
+	// Step 3: Now succ's active note arrives via evalNote
 	succNote := discovery.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
-	node.mergeNotes([]*proto.Note{succNote})
+	require.NoError(suite.T(), node.evalNote(succNote))
 
 	// Verify note was promoted AND orphaned accusation was automatically promoted
 	_, hasNote = node.view.ActiveNote(succ.Id)
@@ -595,11 +595,13 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerCertificateArrives
 	require.True(suite.T(), found, "Accusation must be persisted in Tier 1 AccusationStore")
 	require.False(suite.T(), node.view.IsAccused(succ), "Succ must not be marked accused before succ cert arrives")
 
-	// Step 3: Now accused peer's certificate arrives via mergeCertificates
-	node.mergeCertificates([]*proto.Certificate{{Raw: succCertBytes}})
+	// Step 3: Now accused peer's certificate arrives via evalValidCertificate
+	succCert, err := x509.ParseCertificate(succCertBytes)
+	require.NoError(suite.T(), err)
+	require.NoError(suite.T(), node.evalValidCertificate(succCert))
 	// Since note arrival requires the peer's certificate to verify signature,
 	// notes for a peer arrive with or after the peer's certificate:
-	node.mergeNotes([]*proto.Note{succNote.ToPbMsg()})
+	require.NoError(suite.T(), node.evalNote(succNote.ToPbMsg()))
 
 	// Verify succ peer is back in full view AND orphaned accusation was promoted
 	require.True(suite.T(), node.view.Exists(succId), "Succ must now be in full view")

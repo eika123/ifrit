@@ -176,8 +176,7 @@ func (suite *ViewTestSuite) TestAddFull() {
 
 	assert.NoError(suite.T(), suite.v.AddFull(certId, cert), "Should not return error with valid parameters.")
 	assert.True(suite.T(), suite.v.Exists(certId), "Peer not added to map.")
-	fp, err := suite.v.Fingerprint()
-	require.NoError(suite.T(), err)
+	fp := suite.v.Fingerprint()
 	assert.NotZero(suite.T(), fp, "View fingerprint should be non-zero.")
 	assert.Equal(suite.T(), 2, suite.v.ViewStore().Size(), "ViewStore should contain added peers.")
 }
@@ -1150,8 +1149,7 @@ func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
 
 func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity() {
 	v := suite.v
-	initialFP, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	initialFP := v.Fingerprint()
 	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), initialFP, "Initial fingerprint must include self note")
 
 	// Create a test peer
@@ -1160,24 +1158,21 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), applied)
 
-	fpAfterNote1, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	fpAfterNote1 := v.Fingerprint()
 	assert.NotEqual(suite.T(), initialFP, fpAfterNote1, "Adding a note must alter view fingerprint")
 
 	// Adding older or equal epoch must be rejected and preserve fingerprint
 	appliedStale, err := v.AddNote(p, 1, 1, []byte("r1"), []byte("s1"))
 	require.NoError(suite.T(), err)
 	assert.False(suite.T(), appliedStale, "Equal epoch note must be rejected")
-	fpDuplicate, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	fpDuplicate := v.Fingerprint()
 	assert.Equal(suite.T(), fpAfterNote1, fpDuplicate, "Fingerprint must not change on duplicate note")
 
 	// Adding newer epoch (rebuttal) must advance version vector and alter fingerprint
 	appliedNewer, err := v.AddNote(p, 1, 2, []byte("r2"), []byte("s2"))
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), appliedNewer, "Higher epoch note must be accepted")
-	fpAfterNote2, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	fpAfterNote2 := v.Fingerprint()
 	assert.NotEqual(suite.T(), fpAfterNote1, fpAfterNote2, "Rebuttal epoch must alter view fingerprint")
 
 	// Verify retrieval from NoteStore
@@ -1196,13 +1191,11 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	assert.Equal(suite.T(), uint64(1), note1.Epoch())
 
 	// Test NoteByDigest and NotesByDigests
-	singleNote, foundSingle, err := v.NoteByDigest(d2)
-	require.NoError(suite.T(), err)
+	singleNote, foundSingle := v.NoteByDigest(d2)
 	assert.True(suite.T(), foundSingle)
 	assert.NotNil(suite.T(), singleNote)
 
-	batchNotes, allFound, err := v.NotesByDigests([]digestmaps.DigestSymbol{d1, d2})
-	require.NoError(suite.T(), err)
+	batchNotes, allFound := v.NotesByDigests([]digestmaps.DigestSymbol{d1, d2})
 	assert.True(suite.T(), allFound)
 	assert.Len(suite.T(), batchNotes, 2)
 
@@ -1220,26 +1213,6 @@ func (suite *ViewTestSuite) TestViewNotesVersionVectorFingerprintAndMonotonicity
 	assert.NotNil(suite.T(), retrievedNote)
 	assert.Equal(suite.T(), uint64(2), retrievedNote.Epoch())
 	assert.Nil(suite.T(), v.Note("test-peer-1", 3))
-
-	// Test uninitialized view errors
-	uninitV := &View{}
-	_, err = uninitV.Fingerprint()
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
-	_, err = uninitV.NoteDigests()
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
-	_, _, err = uninitV.NoteByDigest(123)
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
-	_, _, err = uninitV.NotesByDigests([]digestmaps.DigestSymbol{123})
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
-	_, err = uninitV.AddNote(p, 1, 1, []byte("r"), []byte("s"))
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
-
-	err = uninitV.RemoveTestFull("test")
-	assert.Equal(suite.T(), ErrNotesNotInitialized, err)
 }
 
 func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
@@ -1249,17 +1222,14 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 	require.NotNil(suite.T(), v.CertStore())
 	assert.Equal(suite.T(), 1, v.CertStore().Size())
 
-	certFP, err := v.CertFingerprint()
-	require.NoError(suite.T(), err)
+	certFP := v.CertFingerprint()
 	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), certFP)
 
-	noteFP, err := v.NoteFingerprint()
-	require.NoError(suite.T(), err)
+	noteFP := v.NoteFingerprint()
 	assert.NotEqual(suite.T(), digestmaps.DigestSymbol(0), noteFP)
 
 	// Combined view fingerprint equals NoteFP ^ CertFP
-	combinedFP, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	combinedFP := v.Fingerprint()
 	assert.Equal(suite.T(), noteFP^certFP, combinedFP)
 
 	// Add a new peer with certificate via AddFull
@@ -1272,26 +1242,21 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 
 	assert.Equal(suite.T(), 2, v.CertStore().Size())
 
-	newCertFP, err := v.CertFingerprint()
-	require.NoError(suite.T(), err)
+	newCertFP := v.CertFingerprint()
 	assert.NotEqual(suite.T(), certFP, newCertFP, "Adding certificate must alter cert fingerprint")
 
-	newCombinedFP, err := v.Fingerprint()
-	require.NoError(suite.T(), err)
+	newCombinedFP := v.Fingerprint()
 	assert.Equal(suite.T(), noteFP^newCertFP, newCombinedFP)
 
 	// Verify retrieval by digest
-	digests, err := v.CertDigests()
-	require.NoError(suite.T(), err)
+	digests := v.CertDigests()
 	require.Len(suite.T(), digests, 2)
 
-	certObj, found, err := v.CertByDigest(digests[0])
-	require.NoError(suite.T(), err)
+	certObj, found := v.CertByDigest(digests[0])
 	assert.True(suite.T(), found)
 	assert.NotNil(suite.T(), certObj)
 
-	batchCerts, allFound, err := v.CertsByDigests(digests)
-	require.NoError(suite.T(), err)
+	batchCerts, allFound := v.CertsByDigests(digests)
 	assert.True(suite.T(), allFound)
 	assert.Len(suite.T(), batchCerts, 2)
 
@@ -1300,21 +1265,6 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 1, v.CertStore().Size())
 
-	restoredCertFP, err := v.CertFingerprint()
-	require.NoError(suite.T(), err)
+	restoredCertFP := v.CertFingerprint()
 	assert.Equal(suite.T(), certFP, restoredCertFP, "Removing peer must restore initial cert fingerprint")
-
-	// Uninitialized view errors
-	uninitV := &View{}
-	_, err = uninitV.CertFingerprint()
-	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
-
-	_, err = uninitV.CertDigests()
-	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
-
-	_, _, err = uninitV.CertByDigest(123)
-	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
-
-	_, _, err = uninitV.CertsByDigests([]digestmaps.DigestSymbol{123})
-	assert.Equal(suite.T(), ErrCertsNotInitialized, err)
 }

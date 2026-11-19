@@ -1,13 +1,13 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"io"
 
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"golang.org/x/net/context"
 )
 
 var (

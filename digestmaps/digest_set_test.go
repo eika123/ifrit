@@ -374,22 +374,25 @@ func TestCollectionHasher_EmptyAndNonLinear(t *testing.T) {
 		return digestmaps.DigestSymbol(h.Sum64() + vi.Version)
 	}
 
-	emptyVV := digestmaps.NewVersionVectorImmutable(extractor, itemHasher)
+	emptyVV := digestmaps.NewVersionVectorMutable[string, string, digestmaps.DigestSymbol](extractor, itemHasher)
 	assert.Equal(t, digestmaps.DigestSymbol(0), emptyVV.Fingerprint())
 
-	colHasher := digestmaps.CollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]()
+	colHasher := digestmaps.CollectionHasher[digestmaps.VersionVectorMutable[string, string, digestmaps.DigestSymbol]]()
 	emptyDigest := colHasher(emptyVV)
 
 	// An empty collection must have a deterministic non-zero digest in the outer store
 	assert.NotEqual(t, digestmaps.DigestSymbol(0), emptyDigest)
 
 	// Add an item to create VV with element "x"
-	vv1, added := emptyVV.AddItem(digestmaps.VersionedItem[string]{Item: "x", Version: 1})
+	vv1 := digestmaps.NewVersionVectorMutable[string, string, digestmaps.DigestSymbol](extractor, itemHasher)
+	_, added := vv1.AddItem(digestmaps.VersionedItem[string]{Item: "x", Version: 1})
 	require.True(t, added)
 	d1 := colHasher(vv1)
 
 	// Add another item "y"
-	vv2, added := vv1.AddItem(digestmaps.VersionedItem[string]{Item: "y", Version: 1})
+	vv2 := digestmaps.NewVersionVectorMutable[string, string, digestmaps.DigestSymbol](extractor, itemHasher)
+	_, _ = vv2.AddItem(digestmaps.VersionedItem[string]{Item: "x", Version: 1})
+	_, added = vv2.AddItem(digestmaps.VersionedItem[string]{Item: "y", Version: 1})
 	require.True(t, added)
 	d2 := colHasher(vv2)
 
@@ -419,11 +422,11 @@ func TestCryptographicCollectionHasher_DomainSeparation(t *testing.T) {
 		return digestmaps.DigestSymbol(vi.Version)
 	}
 
-	vv := digestmaps.NewVersionVectorImmutable(extractor, itemHasher)
-	vv, _ = vv.AddItem(digestmaps.VersionedItem[string]{Item: "node1", Version: 10})
+	vv := digestmaps.NewVersionVectorMutable[string, string, digestmaps.DigestSymbol](extractor, itemHasher)
+	vv.AddItem(digestmaps.VersionedItem[string]{Item: "node1", Version: 10})
 
-	hasherA := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]("domain-a")
-	hasherB := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorImmutable[string, string, digestmaps.DigestSymbol]]("domain-b")
+	hasherA := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorMutable[string, string, digestmaps.DigestSymbol]]("domain-a")
+	hasherB := digestmaps.CryptographicCollectionHasher[digestmaps.VersionVectorMutable[string, string, digestmaps.DigestSymbol]]("domain-b")
 
 	digestA := hasherA(vv)
 	digestB := hasherB(vv)
