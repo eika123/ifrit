@@ -45,13 +45,13 @@ func seedBenchmarkStores(
 	}
 
 	shared := make([]string, sharedCount)
-	for i := 0; i < sharedCount; i++ {
+	for i := range sharedCount {
 		shared[i] = fmt.Sprintf("shared-item-%06d", i)
 	}
 	storeA.InsertBatch(shared...)
 	storeB.InsertBatch(shared...)
 
-	for i := 0; i < diffCount; i++ {
+	for i := range diffCount {
 		storeA.Insert(fmt.Sprintf("diff-a-%06d", i))
 		storeB.Insert(fmt.Sprintf("diff-b-%06d", i))
 	}
