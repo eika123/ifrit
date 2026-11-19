@@ -1,11 +1,11 @@
 module github.com/eika123/ifrit
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/dchest/siphash v1.2.3
-	github.com/golang/protobuf v1.4.2
+	github.com/golang/protobuf v1.5.4
 	github.com/gorilla/mux v1.7.4
 	github.com/inconshreveable/log15 v0.0.0-20200109203555-b30bc20e4fd1
 	github.com/jinzhu/configor v1.2.0
@@ -15,9 +15,9 @@ require (
 	github.com/spf13/viper v1.7.0
 	github.com/stretchr/testify v1.11.1
 	github.com/yangl1996/riblt v0.1.2
-	golang.org/x/net v0.48.0
-	google.golang.org/grpc v1.29.1
-	google.golang.org/protobuf v1.23.0
+	golang.org/x/net v0.61.0
+	google.golang.org/grpc v1.85.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -37,9 +37,9 @@ require (
 	github.com/spf13/jwalterweatherman v1.0.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.2.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
-	google.golang.org/genproto v0.0.0-20191108220845-16a3f7862a1a // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261118221215-c8830f628b3f // indirect
 	gopkg.in/ini.v1 v1.51.0 // indirect
 	gopkg.in/yaml.v2 v2.2.4 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
