@@ -11,7 +11,7 @@ import (
 
 const (
 	DefaultSketchSize      = 4096
-	DefaultSymbolBatchSize = 48 // ~1.35 KB protobuf payload; fits in one 1500-byte Ethernet MTU frame
+	DefaultSymbolBatchSize = 48 // ~1.15 KB binary payload; fits in one 1500-byte Ethernet MTU frame
 )
 
 type Symbol[S any] digestmaps.Symbol[S]
@@ -40,11 +40,6 @@ func NewRatelessIBLTStore[T any, S Symbol[S]](base digestmaps.ReverseIndexStore[
 	}
 }
 
-// Base returns the underlying ReverseIndexStore wrapped by this Store.
-func (s *Store[T, S]) Base() digestmaps.ReverseIndexStore[T, S] {
-	return s.ReverseIndexStore
-}
-
 func (s *Store[T, S]) Insert(elem T) (S, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,6 +66,17 @@ func (s *Store[T, S]) InsertBatch(elems ...T) int {
 		}
 	}
 	return addedCount
+}
+
+// Copy returns an independent deep clone preserving both the underlying set and the RIBLT sketch.
+func (s *Store[T, S]) Copy() digestmaps.ReverseIndexStore[T, S] {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return &Store[T, S]{
+		ReverseIndexStore: s.ReverseIndexStore.Copy(),
+		sketch:            slices.Clone(s.sketch),
+	}
 }
 
 func (s *Store[T, S]) SnapshotSketch() riblt.Sketch[S] {
@@ -128,7 +134,63 @@ func WrapStore[T any](base digestmaps.ReverseIndexStore[T, digestmaps.DigestSymb
 	}
 }
 
-// NewReconciler constructs a StoreReconciler bound to this store.
-func (s *ReconcilableStore[T]) NewReconciler(cfg reconcile.Config[T]) reconcile.StoreReconciler {
-	return NewReconciler(s.Store, cfg)
+// Negotiator returns the default RIBLT Phase 1 Negotiator.
+func (s *ReconcilableStore[T]) Negotiator() reconcile.Negotiator {
+	return NewNegotiator()
 }
+
+// Copy returns an independent deep clone wrapped in a ReconcilableStore.
+func (s *ReconcilableStore[T]) Copy() digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol] {
+	s.Store.mu.RLock()
+	defer s.Store.mu.RUnlock()
+
+	return &ReconcilableStore[T]{
+		Store: &Store[T, digestmaps.DigestSymbol]{
+			ReverseIndexStore: s.Store.ReverseIndexStore.Copy(),
+			sketch:            slices.Clone(s.Store.sketch),
+		},
+	}
+}
+
+//////// 	Needed for future implementation of					///////////////////
+//////// 	compaction/garbage collecting the grow-only stores  ///////////////////
+//////// 	Also used in core/discovery/view.go for testing 	///////////////////
+
+// Remove deletes elem from the underlying store (if mutable) and updates the RIBLT sketch.
+func (s *Store[T, S]) Remove(elem T) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	m, ok := s.ReverseIndexStore.(digestmaps.MutableReverseIndexStore[T, S])
+	if !ok {
+		return false
+	}
+	digest := s.ReverseIndexStore.Digest(elem)
+	if !m.Remove(elem) {
+		return false
+	}
+	if len(s.sketch) > 0 {
+		s.sketch.RemoveSymbol(digest)
+	}
+	return true
+}
+
+// RemoveByDigest deletes the item matching digest (if mutable) and updates the RIBLT sketch.
+func (s *Store[T, S]) RemoveByDigest(digest S) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	m, ok := s.ReverseIndexStore.(digestmaps.MutableReverseIndexStore[T, S])
+	if !ok {
+		return false
+	}
+	if !m.RemoveByDigest(digest) {
+		return false
+	}
+	if len(s.sketch) > 0 {
+		s.sketch.RemoveSymbol(digest)
+	}
+	return true
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////

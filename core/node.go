@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/eika123/ifrit/reconcile"
 	log "github.com/inconshreveable/log15"
 	"github.com/joonnna/workerpool"
-	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 )
 
@@ -73,17 +71,18 @@ type Node struct {
 	dataStoreFP            func() []byte
 	dataReconcilerMutex    sync.RWMutex
 
-	certReconciler  reconcile.StoreReconciler
-	noteReconciler  reconcile.StoreReconciler
-	accReconciler   reconcile.StoreReconciler
-	bindStoreServer func(storeID string, handler any)
+	certReconciler    reconcile.StoreReconciler
+	noteReconciler    reconcile.StoreReconciler
+	accReconciler     reconcile.StoreReconciler
+	reconcileRegistry *reconcile.Registry
+	defaultNegotiator reconcile.Negotiator
+	reconcileMux      *reconcile.Mux
 
-	sessionManager *PeerSessionManager
+	peerGate *PeerGate
 
-	syncConfig      SyncConfig
-	syncConfigMutex sync.RWMutex
-	syncCtx         context.Context
-	syncCancel      context.CancelFunc
+	syncConfig SyncConfig
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
 
 	dispatcher *workerpool.Dispatcher
 
@@ -101,8 +100,7 @@ type Node struct {
 
 type commService interface {
 	Register(pb.GossipServer)
-	RegisterService(*grpc.ServiceDesc, interface{})
-	RegisterGRPC(func(*grpc.Server))
+	RegisterService(*grpc.ServiceDesc, any)
 	ClientConn(string) (grpc.ClientConnInterface, error)
 	CloseConn(string)
 	Addr() string
@@ -127,16 +125,19 @@ type cryptoService interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
-func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs cryptoService) (*Node, error) {
-	var perInterval int
+func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs cryptoService, opts ...Options) (*Node, error) {
+	cfg := DefaultOptions()
+	if len(opts) > 0 {
+		cfg = opts[0].withDefaults()
+	}
 
-	strategy := strings.ToLower(strings.TrimSpace(viper.GetString("reconciliation_strategy")))
-
-	viewStores, err := newControlViewStores(strategy)
+	viewStores, err := newControlViewStores(cfg.ReconciliationStrategy)
 	if err != nil {
 		log.Error(err.Error())
 		return nil, err
 	}
+	viewStores.RemovalTimeout = cfg.RemovalTimeout
+	viewStores.UpdateInterval = cfg.ViewUpdateInterval
 
 	v, err := discovery.NewView(idCatalog.NumRings(), idCatalog.Certificate(), comm, cs, viewStores)
 	if err != nil {
@@ -144,45 +145,35 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		return nil, err
 	}
 
-	num := viper.GetInt("pings_per_interval")
-	if num == 0 {
-		perInterval = 1
-	} else if rings := int(v.NumRings()); num > rings {
+	perInterval := cfg.PingsPerInterval
+	if rings := int(v.NumRings()); perInterval > rings {
 		perInterval = rings
-	} else {
-		perInterval = num
 	}
 	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
-	staleTimeout := time.Second * time.Duration(viper.GetInt32("session_timeout"))
-	if staleTimeout <= 0 {
-		staleTimeout = 30 * time.Second
-	}
-
 	n := &Node{
-		exitChan:       make(chan bool, 1),
-		startedChan:    make(chan struct{}),
-		wg:             &sync.WaitGroup{},
-		gossipTimeout:  time.Second * time.Duration(viper.GetInt32("gossip_interval")),
-		monitorTimeout: time.Second * time.Duration(viper.GetInt32("monitor_interval")),
-		dispatcher: workerpool.NewDispatcher(uint32(viper.
-			GetInt32("max_concurrent_messages"))),
-		entryAddrs:             viper.GetStringSlice("entry_addrs"),
+		exitChan:               make(chan bool, 1),
+		startedChan:            make(chan struct{}),
+		wg:                     &sync.WaitGroup{},
+		gossipTimeout:          cfg.GossipInterval,
+		monitorTimeout:         cfg.MonitorInterval,
+		dispatcher:             workerpool.NewDispatcher(cfg.MaxConcurrentMessages),
+		entryAddrs:             append([]string(nil), cfg.EntryAddrs...),
 		ringsPingedPerInterval: perInterval,
 
-		fd:        newFd(ps, cs, uint32(viper.GetInt32("ping_limit"))),
+		fd:        newFd(ps, cs, cfg.PingLimit),
 		idCatalog: idCatalog,
 		cs:        cs,
 		comm:      comm,
 		self:      v.Self(),
 		view:      v,
 
-		reconciliationStrategy: strategy,
-		sessionManager:         NewPeerSessionManager(staleTimeout),
-		syncConfig:             DefaultSyncConfig(),
+		reconciliationStrategy: cfg.ReconciliationStrategy,
+		peerGate:               NewPeerGate(),
+		syncConfig:             cfg.SyncConfig,
 
 		// Visualizer specific
-		useViz: viper.GetBool("use_viz"),
+		useViz: cfg.UseViz,
 	}
 
 	syncCtx, syncCancel := context.WithCancel(context.Background())
@@ -190,8 +181,7 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	n.syncCancel = syncCancel
 
 	if n.useViz {
-		interval := time.Second * time.Duration(viper.GetInt32("viz_update_interval"))
-		viz, err := newViz(n, viper.GetString("viz_addr"), interval, idCatalog.Trusted())
+		viz, err := newViz(n, cfg.VizAddr, cfg.VizUpdateInterval, idCatalog.Trusted())
 		if err != nil {
 			return nil, err
 		}
@@ -199,19 +189,11 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	}
 
 	n.comm.Register(n)
-	n.initControlReconcilers(n.defaultControlReconcilerHooks())
-
-	if fpSetter, ok := ps.(interface{ SetFingerprintDataProvider(func() []byte) }); ok {
-		fpSetter.SetFingerprintDataProvider(n.FingerprintData)
+	if err := n.initControlReconcilers(n.defaultControlReconcilerHooks()); err != nil {
+		return nil, err
 	}
 
-	if fpAccSetter, ok := ps.(interface{ SetFingerprintAccusationsProvider(func() []byte) }); ok {
-		fpAccSetter.SetFingerprintAccusationsProvider(n.AccusationFingerprintBytes)
-	}
-
-	if fpViewSetter, ok := ps.(interface{ SetFingerprintViewProvider(func() []byte) }); ok {
-		fpViewSetter.SetFingerprintViewProvider(n.ViewFingerprintBytes)
-	}
+	ps.SetFingerprintsProvider(n.Fingerprints)
 
 	if n.idCatalog.CaCertificate() != nil {
 		for _, c := range n.idCatalog.ContactList() {

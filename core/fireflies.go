@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
@@ -27,7 +28,8 @@ func (n *Node) rebuttal() {
 	noteMsg := selfNote.ToPbMsg()
 
 	baseMsg := &pb.State{
-		OwnNote: noteMsg,
+		OwnNote:    noteMsg,
+		IsRebuttal: true,
 	}
 
 	adv := n.AdversarialPolicy()
@@ -113,9 +115,6 @@ func (n *Node) gossipLoop() {
 			log.Info("Exiting gossiping")
 			return
 		case <-time.After(n.getGossipTimeout()):
-			if n.sessionManager != nil {
-				n.sessionManager.SweepStaleSessions()
-			}
 			n.gossip()
 		}
 	}
@@ -166,6 +165,7 @@ type pingService interface {
 	Start()
 	Stop()
 	PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte
+	SetFingerprintsProvider(func() comm.Fingerprints)
 }
 
 func newFd(ps pingService, cs cryptoService, maxPing uint32) *failureDetector {

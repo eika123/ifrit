@@ -25,6 +25,7 @@ var (
 
 type commOptions struct {
 	advertisedAddr           string
+	compression              bool
 	unaryClientInterceptors  []grpc.UnaryClientInterceptor
 	streamClientInterceptors []grpc.StreamClientInterceptor
 	unaryServerInterceptors  []grpc.UnaryServerInterceptor
@@ -32,13 +33,20 @@ type commOptions struct {
 	closeHooks               []func() error
 }
 
-// Option configures optional Comm transport behavior (advertised address, gRPC interceptors, close hooks).
+// Option configures optional Comm transport behavior (advertised address, compression, gRPC interceptors, close hooks).
 type Option func(*commOptions)
 
 // WithAdvertisedAddr overrides the address returned by Comm.Addr().
 func WithAdvertisedAddr(addr string) Option {
 	return func(o *commOptions) {
 		o.advertisedAddr = addr
+	}
+}
+
+// WithCompression enables or disables gzip compression on outgoing gRPC calls (enabled by default).
+func WithCompression(enabled bool) Option {
+	return func(o *commOptions) {
+		o.compression = enabled
 	}
 }
 
@@ -102,7 +110,9 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 		return nil, errNilPriv
 	}
 
-	var cfg commOptions
+	cfg := commOptions{
+		compression: true,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -118,7 +128,7 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 
 	clientConf := clientConfig(cert, caCert, priv)
 
-	client, err := newClient(clientConf, cfg.unaryClientInterceptors, cfg.streamClientInterceptors)
+	client, err := newClient(clientConf, cfg.compression, cfg.unaryClientInterceptors, cfg.streamClientInterceptors)
 	if err != nil {
 		return nil, err
 	}
@@ -134,17 +144,10 @@ func (c *Comm) Register(p pb.GossipServer) {
 	pb.RegisterGossipServer(c.s.rpcServer, p)
 }
 
-// RegisterService registers an arbitrary gRPC service implementation on the node's mTLS server.
-func (c *Comm) RegisterService(desc *grpc.ServiceDesc, impl interface{}) {
+// RegisterService registers an arbitrary gRPC service implementation on the node's mTLS server,
+// satisfying grpc.ServiceRegistrar.
+func (c *Comm) RegisterService(desc *grpc.ServiceDesc, impl any) {
 	c.s.rpcServer.RegisterService(desc, impl)
-}
-
-// RegisterGRPC invokes register against the underlying mTLS gRPC server, allowing
-// generated Register*Server helpers to attach additional services without exposing *grpc.Server directly.
-func (c *Comm) RegisterGRPC(register func(*grpc.Server)) {
-	if register != nil {
-		register(c.s.rpcServer)
-	}
 }
 
 // PeerCertFromContext extracts the leaf client certificate from an incoming gRPC mTLS context.

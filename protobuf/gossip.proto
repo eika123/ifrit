@@ -11,12 +11,7 @@ service gossip {
 
 message State {
     Note ownNote = 1;
-    bytes fingerprint_data = 2;
-    bytes fingerprint_accusations = 3;
-
-    // fingerprint_view is an xor of notes and certificates fingerprints
-    bytes fingerprint_view = 4;
-    bytes fingerprint_certificates = 5;
+    bool is_rebuttal = 2;
 }
 
 // Application message
@@ -32,10 +27,6 @@ message MsgResponse {
 
 message StateResponse {
     repeated Accusation accusations = 1;
-    bytes fingerprint_data = 2;
-    bytes fingerprint_accusations = 3;
-    bytes fingerprint_view = 4;
-    bytes fingerprint_certificates = 5;
 }
 
 // Raw certificate

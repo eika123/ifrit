@@ -25,12 +25,28 @@ func WrapStore[T any](base digestmaps.ReverseIndexStore[T, digestmaps.DigestSymb
 	return &ReconcilableStore[T]{ReverseIndexStore: base}
 }
 
-// Base returns the underlying ReverseIndexStore wrapped by this ReconcilableStore.
-func (s *ReconcilableStore[T]) Base() digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol] {
-	return s.ReverseIndexStore
+// Negotiator returns the default naive Phase 1 Negotiator.
+func (s *ReconcilableStore[T]) Negotiator() reconcile.Negotiator {
+	return NewNegotiator()
 }
 
-// NewReconciler constructs a naive StoreReconciler bound to this store.
-func (s *ReconcilableStore[T]) NewReconciler(cfg reconcile.Config[T]) reconcile.StoreReconciler {
-	return NewReconciler(s.ReverseIndexStore, cfg)
+// Copy returns an independent clone wrapped in a naive ReconcilableStore.
+func (s *ReconcilableStore[T]) Copy() digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol] {
+	return &ReconcilableStore[T]{ReverseIndexStore: s.ReverseIndexStore.Copy()}
+}
+
+// Remove delegates to the underlying store if it implements MutableReverseIndexStore.
+func (s *ReconcilableStore[T]) Remove(elem T) bool {
+	if m, ok := s.ReverseIndexStore.(digestmaps.MutableReverseIndexStore[T, digestmaps.DigestSymbol]); ok {
+		return m.Remove(elem)
+	}
+	return false
+}
+
+// RemoveByDigest delegates to the underlying store if it implements MutableReverseIndexStore.
+func (s *ReconcilableStore[T]) RemoveByDigest(digest digestmaps.DigestSymbol) bool {
+	if m, ok := s.ReverseIndexStore.(digestmaps.MutableReverseIndexStore[T, digestmaps.DigestSymbol]); ok {
+		return m.RemoveByDigest(digest)
+	}
+	return false
 }

@@ -53,13 +53,13 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 	reply := n.newStateResponse()
 
 	if !n.view.ShouldBeNeighbour(remoteId) {
-		return n.handleNonNeighbourSpread(remoteId, peer, wasObserved, wasAccused, args, reply)
+		return n.handleNonNeighbourSpread(peer, wasObserved, wasAccused, reply)
 	}
 
 	return reply, nil
 }
 
-func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, wasObserved bool, wasAccused bool, args *pb.State, reply *pb.StateResponse) (*pb.StateResponse, error) {
+func (n *Node) handleNonNeighbourSpread(peer *discovery.Peer, wasObserved bool, wasAccused bool, reply *pb.StateResponse) (*pb.StateResponse, error) {
 	if wasObserved {
 		if !wasAccused {
 			return nil, errNotMyNeighbour
@@ -73,28 +73,11 @@ func (n *Node) handleNonNeighbourSpread(remoteId string, peer *discovery.Peer, w
 		return reply, nil
 	}
 
-	// priority reconciliation: certs, notes and accusations first.
-	// Trigger applicaiton data reconciliation on next round when the remote peer
-	// is integrated into the correct fireflies ring
-
-	// fingerpints
-	reply.FingerprintCertificates = n.CertFingerprintBytes()
-	reply.FingerprintView = n.ViewFingerprintBytes()
-	reply.FingerprintAccusations = n.AccusationFingerprintBytes()
-
-	// Force data recon after integration.
-	reply.FingerprintData = args.FingerprintData
-
 	return reply, nil
 }
 
 func (n *Node) newStateResponse() *pb.StateResponse {
-	return &pb.StateResponse{
-		FingerprintData:         n.FingerprintData(),
-		FingerprintAccusations:  n.AccusationFingerprintBytes(),
-		FingerprintView:         n.ViewFingerprintBytes(),
-		FingerprintCertificates: n.CertFingerprintBytes(),
-	}
+	return &pb.StateResponse{}
 }
 
 func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, error) {

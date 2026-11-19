@@ -77,8 +77,8 @@ func newApp() (*application, error) {
 		return nil, err
 	}
 
-	// Create thread-safe reconcilable store and register it with the client.
-	store, err := ifrit.NewReconcilableStore[user](ifrit.MustDefaultHasher[user]())
+	// Create thread-safe reconcilable store matching the client's strategy and register it.
+	store, err := ifrit.NewReconcilableStoreWithStrategy[user](c.Strategy(), ifrit.MustDefaultHasher[user]())
 	if err != nil {
 		return nil, err
 	}

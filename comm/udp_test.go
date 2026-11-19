@@ -3,6 +3,7 @@ package comm
 import (
 	"crypto/rand"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,12 +13,21 @@ import (
 )
 
 type recordingSigner struct {
+	mu         sync.Mutex
 	lastSigned []byte
 }
 
 func (d *recordingSigner) Sign(data []byte) ([]byte, []byte, error) {
+	d.mu.Lock()
 	d.lastSigned = append([]byte(nil), data...)
+	d.mu.Unlock()
 	return []byte("dummy-r"), []byte("dummy-s"), nil
+}
+
+func (d *recordingSigner) last() []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]byte(nil), d.lastSigned...)
 }
 
 func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
@@ -31,9 +41,11 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	expectedFPData := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x12, 0x34}
 	expectedFPAcc := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	expectedFPView := []byte{0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
-	server.SetFingerprintData(expectedFPData)
-	server.SetFingerprintAccusations(expectedFPAcc)
-	server.SetFingerprintView(expectedFPView)
+	server.SetFingerprints(Fingerprints{
+		Data:        expectedFPData,
+		Accusations: expectedFPAcc,
+		View:        expectedFPView,
+	})
 
 	go server.Start()
 	defer server.Stop()
@@ -52,7 +64,30 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	assert.Equal(t, expectedFPData, pong.GetFingerprintData())
 	assert.Equal(t, expectedFPAcc, pong.GetFingerprintAccusations())
 	assert.Equal(t, expectedFPView, pong.GetFingerprintView())
-	assert.Equal(t, PongContent(nonce, expectedFPData, expectedFPAcc, expectedFPView), signer.lastSigned, "signature must cover PongContent(nonce, fpData, fpAcc, fpView)")
+	assert.Equal(t, PongContent(nonce, expectedFPData, expectedFPAcc, expectedFPView), signer.last(), "signature must cover PongContent(nonce, fpData, fpAcc, fpView)")
+
+	// Verify dynamic provider updates are reflected on subsequent pings without races.
+	var fpMu sync.RWMutex
+	dynamicFP := Fingerprints{
+		Data:        []byte{1, 2, 3, 4, 5, 6, 7, 8},
+		Accusations: []byte{8, 7, 6, 5, 4, 3, 2, 1},
+		View:        []byte{9, 9, 9, 9, 9, 9, 9, 9},
+	}
+	server.SetFingerprintsProvider(func() Fingerprints {
+		fpMu.RLock()
+		defer fpMu.RUnlock()
+		return dynamicFP
+	})
+	pong2, err := server.Ping(conn.LocalAddr().String(), ping)
+	require.NoError(t, err)
+	assert.Equal(t, []byte{1, 2, 3, 4, 5, 6, 7, 8}, pong2.GetFingerprintData())
+
+	fpMu.Lock()
+	dynamicFP.Data = []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}
+	fpMu.Unlock()
+	pong3, err := server.Ping(conn.LocalAddr().String(), ping)
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11}, pong3.GetFingerprintData())
 }
 
 func TestPongContent_FieldBoundaryShifting(t *testing.T) {

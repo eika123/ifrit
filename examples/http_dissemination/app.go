@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/eika123/ifrit"
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/viper"
 )
 
 // AppConfig contains configuration parameters for the HTTP dissemination node.
@@ -77,23 +75,6 @@ func NewApp(cfg *AppConfig) (*App, error) {
 
 	var cleanupDirs []string
 
-	if cfg.CaAddr != "" {
-		viper.Set("ca_addr", cfg.CaAddr)
-	}
-	if cfg.GossipInterval > 0 {
-		viper.Set("gossip_interval", cfg.GossipInterval)
-	}
-
-	cfgPath := os.Getenv("IFRIT_CONFIG")
-	if cfgPath == "" {
-		cfgDir, err := os.MkdirTemp("", "ifrit-http-cfg-*")
-		if err != nil {
-			return nil, fmt.Errorf("create temp cfg dir: %w", err)
-		}
-		cleanupDirs = append(cleanupDirs, cfgDir)
-		cfgPath = filepath.Join(cfgDir, "ifrit_config.yaml")
-	}
-
 	gInterval := cfg.GossipInterval
 	if gInterval <= 0 {
 		gInterval = 1
@@ -101,13 +82,6 @@ func NewApp(cfg *AppConfig) (*App, error) {
 	caAddr := cfg.CaAddr
 	if caAddr == "" {
 		caAddr = "127.0.0.1:8321"
-	}
-	cfgContent := fmt.Sprintf("ca_addr: %q\ngossip_interval: %d\n", caAddr, gInterval)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
-		return nil, fmt.Errorf("write ifrit config: %w", err)
-	}
-	if err := os.Setenv("IFRIT_CONFIG", cfgPath); err != nil {
-		return nil, fmt.Errorf("set IFRIT_CONFIG: %w", err)
 	}
 
 	if cfg.CertPath == "" {
@@ -135,11 +109,13 @@ func NewApp(cfg *AppConfig) (*App, error) {
 	}
 
 	client, err := ifrit.NewClient(&ifrit.Config{
-		New:      cfg.NewCrypto,
-		Hostname: hostname,
-		TCPPort:  cfg.TCPPort,
-		UDPPort:  cfg.UDPPort,
-		CertPath: cfg.CertPath,
+		New:            cfg.NewCrypto,
+		Hostname:       hostname,
+		TCPPort:        cfg.TCPPort,
+		UDPPort:        cfg.UDPPort,
+		CertPath:       cfg.CertPath,
+		CAAddr:         caAddr,
+		GossipInterval: time.Duration(gInterval) * time.Second,
 	})
 	if err != nil {
 		if closeErr := httpListener.Close(); closeErr != nil {

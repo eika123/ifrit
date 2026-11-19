@@ -15,7 +15,7 @@ import (
 	"github.com/eika123/ifrit/crypto"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
@@ -33,9 +33,6 @@ func TestNodeTestSuite(t *testing.T) {
 	r := log.Root()
 
 	r.SetHandler(log.CallerFileHandler(log.StreamHandler(os.Stdout, log.TerminalFormat())))
-
-	viper.Set("use_ca", false)
-	viper.Set("use_viz", false)
 
 	suite.Run(t, new(NodeTestSuite))
 }
@@ -172,10 +169,7 @@ func (cs *commStub) StreamMessenger(string, chan []byte, chan []byte) error {
 func (cs *commStub) Register(p pb.GossipServer) {
 }
 
-func (cs *commStub) RegisterService(*grpc.ServiceDesc, interface{}) {
-}
-
-func (cs *commStub) RegisterGRPC(func(*grpc.Server)) {
+func (cs *commStub) RegisterService(*grpc.ServiceDesc, any) {
 }
 
 func (cs *commStub) ClientConn(string) (grpc.ClientConnInterface, error) {
@@ -227,6 +221,46 @@ func (ps *pingStub) Ping(addr string, m *pb.Ping) (*pb.Pong, error) {
 
 func (ps *pingStub) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
 	return nil
+}
+
+func (ps *pingStub) SetFingerprintsProvider(func() comm.Fingerprints) {
+}
+
+func TestNewNode_ParallelDistinctOptions(t *testing.T) {
+	priv1, err := genKeys()
+	require.NoError(t, err)
+	cert1 := genCert(priv1, 10)
+
+	priv2, err := genKeys()
+	require.NoError(t, err)
+	cert2 := genCert(priv2, 10)
+
+	opts1 := Options{
+		GossipInterval:         2 * time.Second,
+		ReconciliationStrategy: "naive",
+		SyncConfig:             SyncConfig{MaxItemBytes: 1024, Timeout: 5 * time.Second},
+	}
+	opts2 := Options{
+		GossipInterval:         15 * time.Second,
+		ReconciliationStrategy: "riblt",
+		SyncConfig:             SyncConfig{MaxItemBytes: 4096, Timeout: 12 * time.Second},
+	}
+
+	n1, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert1}, &cryptoStub{priv: priv1}, opts1)
+	require.NoError(t, err)
+	defer n1.Stop()
+
+	n2, err := NewNode(&commStub{}, &pingStub{}, &cmStub{cert: cert2}, &cryptoStub{priv: priv2}, opts2)
+	require.NoError(t, err)
+	defer n2.Stop()
+
+	assert.Equal(t, 2*time.Second, n1.getGossipTimeout())
+	assert.Equal(t, "naive", n1.reconciliationStrategy)
+	assert.Equal(t, int64(1024), n1.SyncConfig().MaxItemBytes)
+
+	assert.Equal(t, 15*time.Second, n2.getGossipTimeout())
+	assert.Equal(t, "riblt", n2.reconciliationStrategy)
+	assert.Equal(t, int64(4096), n2.SyncConfig().MaxItemBytes)
 }
 
 // TODO we need to decide upon stubs or not stubs etc, not just copy stuff, this is really ugly

@@ -49,27 +49,17 @@ check: fmt vet build test test-race
 
 # Recompile all protobuf definitions
 [group('protobuf')]
-proto: proto-gossip proto-transfer proto-reconcile proto-naive
+proto: proto-gossip proto-reconcile
 
 # Recompile core gossip protobuf definitions
 [group('protobuf')]
 proto-gossip:
     protoc -I protobuf --go_out=plugins=grpc,paths=source_relative:protobuf protobuf/gossip.proto
 
-# Recompile shared item-transfer protobuf definitions
-[group('protobuf')]
-proto-transfer:
-    protoc --go_out=plugins=grpc,paths=source_relative:. reconcile/transfer/proto/transfer.proto
-
-# Recompile ratelessIBLT reconciliation protobuf definitions
+# Recompile unified set-reconciliation protobuf definitions
 [group('protobuf')]
 proto-reconcile:
-    protoc --go_out=plugins=grpc,paths=source_relative:. reconcile/ratelessIBLT/proto/reconcile.proto
-
-# Recompile naive reconciliation protobuf definitions
-[group('protobuf')]
-proto-naive:
-    protoc --go_out=plugins=grpc,paths=source_relative:. reconcile/naive/proto/naive.proto
+    protoc --go_out=paths=source_relative:. --go-grpc_out=paths=source_relative:. reconcile/proto/reconcile.proto
 
 [group('local')]
 tui-gossip *args:

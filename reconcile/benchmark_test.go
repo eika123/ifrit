@@ -70,26 +70,23 @@ func benchmarkStrategy(b *testing.B, strategy string, sharedCount, diffCount int
 	srv := grpc.NewServer()
 	storeA, storeB := seedBenchmarkStores(b, strategy, sharedCount, diffCount)
 
-	var registerMux func(storeID string, rec reconcile.StoreReconciler)
-	if strategy == "naive" {
-		mux := naive.NewReconcilerMux()
-		mux.RegisterGRPC(srv)
-		registerMux = func(storeID string, rec reconcile.StoreReconciler) {
-			mux.RegisterStore(storeID, rec)
-		}
-	} else {
-		mux := ratelessIBLT.NewReconcilerMux()
-		mux.RegisterGRPC(srv)
-		registerMux = func(storeID string, rec reconcile.StoreReconciler) {
-			mux.RegisterStore(storeID, rec)
-		}
-	}
+	mux := reconcile.NewMux()
+	mux.Register(srv)
 
-	recB := storeB.NewReconciler(reconcile.Config[string]{
-		StoreID: "data",
-		Applier: func(context.Context, string) error { return nil }, // keep storeB diff intact across iterations
+	recB, err := reconcile.NewEngine(storeB, reconcile.Config[string]{
+		Negotiator: storeB.Negotiator(),
+		Codec:      reconcile.DefaultItemCodec[string](),
+		Auth:       reconcile.NoopAuthenticator,
+		Detector:   reconcile.AcceptAll[string](),
+		StoreID:    "data",
+		Applier:    reconcile.NoopApplier[string], // keep storeB diff intact across iterations
 	})
-	registerMux("data", recB)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := mux.RegisterStore("data", recB); err != nil {
+		b.Fatal(err)
+	}
 
 	go func() { _ = srv.Serve(lis) }()
 	b.Cleanup(srv.Stop)
@@ -100,11 +97,17 @@ func benchmarkStrategy(b *testing.B, strategy string, sharedCount, diffCount int
 	}
 	b.Cleanup(func() { _ = cc.Close() })
 
-	recA := storeA.NewReconciler(reconcile.Config[string]{
+	recA, err := reconcile.NewEngine(storeA, reconcile.Config[string]{
+		Negotiator:   storeA.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
 		ConnProvider: func(context.Context, string) (grpc.ClientConnInterface, error) { return cc, nil },
+		Detector:     reconcile.AcceptAll[string](),
 		StoreID:      "data",
-		Applier:      func(context.Context, string) error { return nil },
+		Applier:      reconcile.NoopApplier[string],
 	})
+	if err != nil {
+		b.Fatal(err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()

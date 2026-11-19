@@ -2,9 +2,12 @@ package core
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"math"
+	"sync"
+	"sync/atomic"
 
 	"github.com/eika123/ifrit/core/discovery"
 	proto "github.com/eika123/ifrit/protobuf"
@@ -742,4 +745,65 @@ func (suite *HandlerTestSuite) TestValidateCtx() {
 		require.Equalf(suite.T(), t.out, err, "Invalid output for test %d.", i)
 		require.Equalf(suite.T(), t.cert, c, "Invalid output for test %d.", i)
 	}
+}
+
+type countingCrypto struct {
+	inner    cryptoService
+	verifies atomic.Int64
+}
+
+func (c *countingCrypto) Verify(data, r, s []byte, pub *ecdsa.PublicKey) bool {
+	c.verifies.Add(1)
+	return c.inner.Verify(data, r, s, pub)
+}
+
+func (c *countingCrypto) Sign(data []byte) ([]byte, []byte, error) {
+	return c.inner.Sign(data)
+}
+
+func (suite *HandlerTestSuite) TestVerifySignedMessage_ConcurrentRaceFree() {
+	node := suite.n
+	p := node.view.Live()[0]
+	priv := suite.privMap[p.Id]
+	succ, _ := node.view.MyRingNeighbours(1)
+	require.NotNil(suite.T(), succ)
+
+	note := discovery.NewNote(p.Id, 2, math.MaxUint32, priv)
+	acc := discovery.NewAccusation(1, succ.Id, node.self.Id, 1, suite.priv)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			require.NoError(suite.T(), node.verifySignedMessage(note, note.GetSignature(), p))
+			require.NoError(suite.T(), node.verifySignedMessage(acc, acc.GetSignature(), node.self))
+		}()
+	}
+	wg.Wait()
+}
+
+func (suite *HandlerTestSuite) TestAccusation_DeferredPromotionSkipsRedundantVerify() {
+	node := suite.n
+	succ, _ := node.view.MyRingNeighbours(1)
+	require.NotNil(suite.T(), succ)
+
+	counter := &countingCrypto{inner: node.cs}
+	node.cs = counter
+
+	node.view.ClearTestNote(succ)
+	accEpoch := uint64(2)
+	acc := discovery.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
+
+	// 1. Ingest accusation before succ's note arrives: verified once on ingress.
+	node.mergeAccusations([]*proto.Accusation{acc})
+	require.Equal(suite.T(), int64(1), counter.verifies.Load())
+	require.False(suite.T(), node.view.IsAccused(succ))
+
+	// 2. Succ's note arrives and triggers promotePendingAccusationsForPeer:
+	// only the note itself should be verified (1 verify), 0 extra verifies for the accusation.
+	succNote := discovery.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
+	require.NoError(suite.T(), node.evalNote(succNote))
+	require.Equal(suite.T(), int64(2), counter.verifies.Load())
+	require.True(suite.T(), node.view.IsAccused(succ))
 }

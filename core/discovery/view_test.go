@@ -15,7 +15,6 @@ import (
 
 	"github.com/eika123/ifrit/digestmaps"
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -842,24 +841,21 @@ func (suite *ViewTestSuite) TestHasBit() {
 }
 
 func (suite *ViewTestSuite) TestRemovalTimeoutConfiguration() {
-	defer viper.Reset()
-
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
 	require.NoError(suite.T(), err)
 	cert := validCert("timeoutPeer", privKey.Public())
 
 	// 1. Default when unset should be 60.0 and 10s interval
-	viper.Reset()
 	vDefault, err := NewView(10, cert, &cmStub{}, &signerStub{})
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 60.0, vDefault.removalTimeout)
 	assert.Equal(suite.T(), 10*time.Second, vDefault.updateTimeout)
 
-	// 2. Configured removal_timeout
-	viper.Reset()
-	viper.Set("removal_timeout", 45.0)
-	viper.Set("view_update_interval", 15)
-	vRemoval, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	// 2. Configured removal_timeout and update_interval via ViewStores
+	vRemoval, err := NewView(10, cert, &cmStub{}, &signerStub{}, &ViewStores{
+		RemovalTimeout: 45 * time.Second,
+		UpdateInterval: 15 * time.Second,
+	})
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 45.0, vRemoval.removalTimeout)
 	assert.Equal(suite.T(), 15*time.Second, vRemoval.updateTimeout)

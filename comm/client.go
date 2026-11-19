@@ -10,7 +10,6 @@ import (
 
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/encoding/gzip"
@@ -38,6 +37,7 @@ type conn struct {
 
 func newClient(
 	config *tls.Config,
+	useCompression bool,
 	unaryInterceptors []grpc.UnaryClientInterceptor,
 	streamInterceptors []grpc.StreamClientInterceptor,
 ) (*gRPCClient, error) {
@@ -63,7 +63,7 @@ func newClient(
 		PermitWithoutStream: true,
 	}))
 
-	if compress := viper.GetBool("use_compression"); compress {
+	if useCompression {
 		dialOptions = append(dialOptions,
 			grpc.WithDefaultCallOptions(grpc.UseCompressor(gzip.Name)))
 	}

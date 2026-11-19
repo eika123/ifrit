@@ -3,129 +3,95 @@ package core
 import (
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestPeerReconcileSession_LifecycleAndConcurrency(t *testing.T) {
-	s := NewPeerReconcileSession("peer-1")
-	assert.Equal(t, "peer-1", s.PeerID())
-	assert.Equal(t, SessionIdle, s.State())
+func TestPeerGate_OutboundLifecycleAndPruning(t *testing.T) {
+	g := NewPeerGate()
+	assert.True(t, g.IsIdle("peer-1"))
+	assert.Equal(t, 0, g.Len())
 
-	// Acquire outbound lock
-	seq, ok := s.TryStartOutboundReconciling()
-	require.True(t, ok)
-	assert.Equal(t, SessionOutboundReconciling, s.State())
+	require.True(t, g.TryStartOutbound("peer-1"))
+	assert.False(t, g.IsIdle("peer-1"))
+	assert.Equal(t, 1, g.Len())
 
-	// Mutual exclusion: simultaneous outbound initiation attempt returns false
-	_, ok = s.TryStartOutboundReconciling()
-	assert.False(t, ok)
+	// Mutual exclusion: simultaneous outbound initiation is rejected.
+	assert.False(t, g.TryStartOutbound("peer-1"))
 
-	// ResetIfSeq returns to Idle when seq matches
-	assert.True(t, s.ResetIfSeq(seq))
-	assert.Equal(t, SessionIdle, s.State())
-
-	// ResetToIdle increments seq and returns to Idle
-	seq2, ok := s.TryStartOutboundReconciling()
-	require.True(t, ok)
-	assert.Greater(t, seq2, seq)
-	s.ResetToIdle()
-	assert.Equal(t, SessionIdle, s.State())
-	assert.False(t, s.ResetIfSeq(seq2))
+	// Release prunes the idle entry back to Len() == 0.
+	g.ReleaseOutbound("peer-1")
+	assert.True(t, g.IsIdle("peer-1"))
+	assert.Equal(t, 0, g.Len())
 }
 
-func TestPeerReconcileSession_InboundRefCountForConcurrentSubStores(t *testing.T) {
-	s := NewPeerReconcileSession("peer-inbound")
+func TestPeerGate_InboundRefCountForConcurrentSubStores(t *testing.T) {
+	g := NewPeerGate()
 
-	// Control stream ("certs") acquires inbound session
-	seq1, ok, err := s.TryStartInboundReconciling("self-node", "peer-inbound")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, SessionInboundReconciling, s.State())
+	require.NoError(t, g.TryStartInbound("self-node", "peer-inbound"))
+	assert.False(t, g.IsIdle("peer-inbound"))
 
-	// Concurrent "data" sub-store stream from the SAME winning peer shares the inbound session
-	seq2, ok, err := s.TryStartInboundReconciling("self-node", "peer-inbound")
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Equal(t, seq1, seq2)
-	assert.Equal(t, SessionInboundReconciling, s.State())
+	// Concurrent "data" sub-store stream from the SAME winning peer shares the inbound gate.
+	require.NoError(t, g.TryStartInbound("self-node", "peer-inbound"))
 
-	// Outbound initiation is blocked while inbound streams are active
-	_, outOK := s.TryStartOutboundReconciling()
-	assert.False(t, outOK)
+	// Outbound initiation is blocked while inbound streams are active.
+	assert.False(t, g.TryStartOutbound("peer-inbound"))
 
-	// Releasing first stream leaves session in InboundReconciling until second stream finishes
-	assert.True(t, s.ReleaseInbound(seq1))
-	assert.Equal(t, SessionInboundReconciling, s.State())
+	// Releasing first stream keeps gate active until second stream finishes.
+	g.ReleaseInbound("peer-inbound")
+	assert.False(t, g.IsIdle("peer-inbound"))
+	assert.False(t, g.TryStartOutbound("peer-inbound"))
 
-	// Releasing second stream transitions back to SessionIdle
-	assert.True(t, s.ReleaseInbound(seq2))
-	assert.Equal(t, SessionIdle, s.State())
+	// Releasing second stream returns to idle and prunes entry.
+	g.ReleaseInbound("peer-inbound")
+	assert.True(t, g.IsIdle("peer-inbound"))
+	assert.Equal(t, 0, g.Len())
 }
 
-func TestPeerReconcileSession_TieBreaker_HigherPeerYieldsToLowerPeer(t *testing.T) {
+func TestPeerGate_TieBreaker_HigherPeerYieldsToLowerPeer(t *testing.T) {
 	idA := "0001"
 	idB := "0002"
 
-	// SCENARIO 1: Node B (higher ID) is dialing A (lower ID) when inbound from A arrives.
-	// Higher peer B must yield to lower peer A!
-	sessOnB := NewPeerReconcileSession(idA)
-	seqOutB, ok := sessOnB.TryStartOutboundReconciling()
-	require.True(t, ok)
-	assert.Equal(t, SessionOutboundReconciling, sessOnB.State())
+	// SCENARIO 1a: Node B (higher ID) dialing A (lower ID); B yields to A, outbound exits first.
+	gateB := NewPeerGate()
+	require.True(t, gateB.TryStartOutbound(idA))
+	require.NoError(t, gateB.TryStartInbound(idB, idA))
 
-	seqInA, ok, err := sessOnB.TryStartInboundReconciling(idB, idA)
-	require.NoError(t, err)
-	assert.True(t, ok)
-	assert.Greater(t, seqInA, seqOutB)
-	assert.Equal(t, SessionInboundReconciling, sessOnB.State())
+	// B's aborted outbound goroutine exits first: must NOT disturb A's active inbound stream.
+	gateB.ReleaseOutbound(idA)
+	assert.False(t, gateB.IsIdle(idA))
+	assert.False(t, gateB.TryStartOutbound(idA))
 
-	// Stale outbound goroutine finishing on B with seqOutB must NOT clobber A's inbound session.
-	assert.False(t, sessOnB.ResetIfSeq(seqOutB))
-	assert.Equal(t, SessionInboundReconciling, sessOnB.State())
+	// A's inbound stream completes -> gate returns to idle and prunes.
+	gateB.ReleaseInbound(idA)
+	assert.True(t, gateB.IsIdle(idA))
+	assert.Equal(t, 0, gateB.Len())
 
-	// Releasing inbound finishes cleanly to Idle.
-	assert.True(t, sessOnB.ReleaseInbound(seqInA))
-	assert.Equal(t, SessionIdle, sessOnB.State())
+	// SCENARIO 1b: Node B yields to A, inbound finishes BEFORE B's yielded outbound exits.
+	require.True(t, gateB.TryStartOutbound(idA))
+	require.NoError(t, gateB.TryStartInbound(idB, idA))
+	gateB.ReleaseInbound(idA)
+	// No second outbound may overlap the still-exiting outbound goroutine.
+	assert.False(t, gateB.TryStartOutbound(idA))
+	gateB.ReleaseOutbound(idA)
+	assert.True(t, gateB.IsIdle(idA))
+	assert.Equal(t, 0, gateB.Len())
 
-	// SCENARIO 2: Node A (lower ID) is dialing B (higher ID) when inbound from B arrives.
-	// Lower peer A holds priority and rejects B with ErrSessionBusy!
-	sessOnA := NewPeerReconcileSession(idB)
-	seqOutA, ok := sessOnA.TryStartOutboundReconciling()
-	require.True(t, ok)
-	assert.Equal(t, SessionOutboundReconciling, sessOnA.State())
-
-	_, ok, err = sessOnA.TryStartInboundReconciling(idA, idB)
-	assert.False(t, ok)
+	// SCENARIO 2: Node A (lower ID) dialing B (higher ID); A holds priority and rejects B.
+	gateA := NewPeerGate()
+	require.True(t, gateA.TryStartOutbound(idB))
+	err := gateA.TryStartInbound(idA, idB)
 	assert.ErrorIs(t, err, ErrSessionBusy)
-	assert.Equal(t, SessionOutboundReconciling, sessOnA.State())
+	assert.False(t, gateA.IsIdle(idB))
 
-	assert.True(t, sessOnA.ResetIfSeq(seqOutA))
-	assert.Equal(t, SessionIdle, sessOnA.State())
+	gateA.ReleaseOutbound(idB)
+	assert.True(t, gateA.IsIdle(idB))
+	assert.Equal(t, 0, gateA.Len())
 }
 
-func TestPeerReconcileSession_StaleSeqRejection(t *testing.T) {
-	s := NewPeerReconcileSession("peer-stale")
-
-	seq1, ok := s.TryStartOutboundReconciling()
-	require.True(t, ok)
-	assert.Equal(t, uint64(1), seq1)
-
-	// Sweep invalidates seq1 by incrementing seq
-	swept := s.SweepIfStale(0)
-	assert.True(t, swept)
-	assert.Equal(t, SessionIdle, s.State())
-	assert.Equal(t, uint64(2), s.Seq())
-
-	// Old goroutine waking up with seq1 cannot reset or release newer generation
-	assert.False(t, s.ResetIfSeq(seq1))
-	assert.False(t, s.ReleaseInbound(seq1))
-}
-
-func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
-	s := NewPeerReconcileSession("peer-2")
+func TestPeerGate_ConcurrentAcquisitionRace(t *testing.T) {
+	g := NewPeerGate()
 
 	const numGoroutines = 50
 	var wg sync.WaitGroup
@@ -133,10 +99,10 @@ func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
 	var mu sync.Mutex
 
 	wg.Add(numGoroutines)
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			if _, ok := s.TryStartOutboundReconciling(); ok {
+			if g.TryStartOutbound("peer-2") {
 				mu.Lock()
 				acquiredCount++
 				mu.Unlock()
@@ -145,30 +111,8 @@ func TestPeerReconcileSession_ConcurrentAcquisitionRace(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Exactly one goroutine should win the race
 	assert.Equal(t, 1, acquiredCount)
-	assert.Equal(t, SessionOutboundReconciling, s.State())
-}
-
-func TestPeerSessionManager_StaleSweep(t *testing.T) {
-	mgr := NewPeerSessionManager(50 * time.Millisecond)
-
-	s1 := mgr.GetOrCreate("peer-a")
-	s2 := mgr.GetOrCreate("peer-b")
-
-	seq1, ok1 := s1.TryStartOutboundReconciling()
-	assert.True(t, ok1)
-	_, ok2 := s2.TryStartOutboundReconciling()
-	assert.True(t, ok2)
-
-	// s1 finishes normally
-	assert.True(t, s1.ResetIfSeq(seq1))
-	assert.Equal(t, SessionIdle, s1.State())
-
-	// s2 remains stuck in OutboundReconciling until swept
-	time.Sleep(70 * time.Millisecond)
-
-	swept := mgr.SweepStaleSessions()
-	assert.Equal(t, 1, swept)
-	assert.Equal(t, SessionIdle, s2.State())
+	assert.False(t, g.IsIdle("peer-2"))
+	g.ReleaseOutbound("peer-2")
+	assert.Equal(t, 0, g.Len())
 }

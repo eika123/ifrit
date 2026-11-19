@@ -239,13 +239,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			require.ElementsMatchf(suite.T(), t.accs, accs,
 				"Invalid accusation output for test %d.", i)
 		} else {
-			// Fingerprints must be populated and non-empty for control state reconciliation
-			require.NotEmptyf(suite.T(), reply.GetFingerprintCertificates(),
-				"SpreadResponse must include non-empty certificate fingerprint in test %d.", i)
-			require.NotEmptyf(suite.T(), reply.GetFingerprintView(),
-				"SpreadResponse must include non-empty view fingerprint in test %d.", i)
-			require.NotEmptyf(suite.T(), reply.GetFingerprintAccusations(),
-				"SpreadResponse must include non-empty accusations fingerprint in test %d.", i)
+			require.NotNilf(suite.T(), reply, "SpreadResponse must be non-nil in test %d.", i)
 		}
 	}
 }
@@ -564,12 +558,7 @@ func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	rebuttalMsg := trackingComm.gossipedStates[0]
 
 	// Verify message matches the telemetry rebuttal rule:
-	// isRebuttal := !hasFingerprints && stateReq.GetOwnNote() != nil
-	hasFingerprints := rebuttalMsg.GetFingerprintView() != nil ||
-		rebuttalMsg.GetFingerprintAccusations() != nil ||
-		rebuttalMsg.GetFingerprintData() != nil ||
-		rebuttalMsg.GetFingerprintCertificates() != nil
-	isRebuttal := !hasFingerprints && rebuttalMsg.GetOwnNote() != nil
+	isRebuttal := rebuttalMsg.GetIsRebuttal() && rebuttalMsg.GetOwnNote() != nil
 	require.True(suite.T(), isRebuttal, "Outbound message must be classified as a Rebuttal by telemetry interceptor")
 
 	// Verify epoch was advanced in the rebuttal message

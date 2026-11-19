@@ -10,7 +10,7 @@ import (
 	"time"
 
 	pb "github.com/eika123/ifrit/protobuf"
-	transferpb "github.com/eika123/ifrit/reconcile/transfer/proto"
+	reconpb "github.com/eika123/ifrit/reconcile/proto"
 	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,8 +174,9 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	rec := &recordingLogger{}
 	interceptor := gossipClientInterceptorFactory(rec)
 
-	// 1. Rebuttal message (no fingerprints, OwnNote != nil)
+	// 1. Rebuttal message (IsRebuttal: true, OwnNote != nil)
 	rebuttalReq := &pb.State{
+		IsRebuttal: true,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
 			Epoch: 10,
@@ -196,9 +197,9 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	assert.Equal(t, uint64(10), rec.rebuttalEvents[0].Epoch)
 	assert.Equal(t, uint32(3), rec.rebuttalEvents[0].Mask)
 
-	// 2. Regular Gossip message (has fingerprints and OwnNote; must NOT be classified as rebuttal)
+	// 2. Thin Spread admission message (OwnNote != nil, IsRebuttal: false; must NOT be classified as rebuttal)
 	gossipReq := &pb.State{
-		FingerprintView: []byte("fp-view"),
+		IsRebuttal: false,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
 			Epoch: 10,
@@ -231,8 +232,9 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 	rec := &recordingLogger{}
 	interceptor := gossipServerInterceptorFactory(rec)
 
-	// 1. Incoming Rebuttal message (no fingerprints, OwnNote != nil)
+	// 1. Incoming Rebuttal message (IsRebuttal: true, OwnNote != nil)
 	rebuttalReq := &pb.State{
+		IsRebuttal: true,
 		OwnNote: &pb.Note{
 			Id:    []byte("rebutting-peer"),
 			Epoch: 8,
@@ -263,9 +265,7 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	clientRec := &recordingLogger{}
 	clientInterceptor := gossipClientInterceptorFactory(clientRec)
 
-	req := &pb.State{
-		FingerprintView: []byte("fp-view"),
-	}
+	req := &pb.State{}
 	resp := &pb.StateResponse{}
 
 	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
@@ -327,8 +327,8 @@ func (m *mockClientStream) RecvMsg(target any) error {
 	}
 	src := m.recvMsgs[m.recvIdx]
 	m.recvIdx++
-	if frameSrc, ok := src.(*transferpb.SyncFrame); ok {
-		if frameDst, ok := target.(*transferpb.SyncFrame); ok {
+	if frameSrc, ok := src.(*reconpb.Frame); ok {
+		if frameDst, ok := target.(*reconpb.Frame); ok {
 			proto.Merge(frameDst, frameSrc)
 			return nil
 		}
@@ -362,8 +362,8 @@ func (m *mockServerStream) RecvMsg(target any) error {
 	}
 	src := m.recvMsgs[m.recvIdx]
 	m.recvIdx++
-	if frameSrc, ok := src.(*transferpb.SyncFrame); ok {
-		if frameDst, ok := target.(*transferpb.SyncFrame); ok {
+	if frameSrc, ok := src.(*reconpb.Frame); ok {
+		if frameDst, ok := target.(*reconpb.Frame); ok {
 			proto.Merge(frameDst, frameSrc)
 			return nil
 		}
@@ -372,7 +372,7 @@ func (m *mockServerStream) RecvMsg(target any) error {
 }
 
 func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
-	// Verify that client and server stream interceptors intercept /recon.Reconciler/Sync
+	// Verify that client and server stream interceptors intercept /reconcile.ReconcileService/Reconcile
 	// DataChunk payloads and record byte accounting into TelemetryLogger.
 	clientRec := &recordingLogger{}
 	clientInterceptor := gossipStreamClientInterceptorFactory(clientRec)
@@ -380,9 +380,9 @@ func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
 	inData := make([]byte, 1024)
 	mockCS := &mockClientStream{
 		recvMsgs: []any{
-			&transferpb.SyncFrame{
-				Payload: &transferpb.SyncFrame_DataChunk{
-					DataChunk: &transferpb.DataItemChunk{Data: inData},
+			&reconpb.Frame{
+				Payload: &reconpb.Frame_DataChunk{
+					DataChunk: &reconpb.DataItemChunk{Data: inData},
 				},
 			},
 		},
@@ -392,14 +392,14 @@ func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
 		return mockCS, nil
 	}
 
-	wrappedClientStream, err := clientInterceptor(context.Background(), &grpc.StreamDesc{}, nil, "/reconcile.transfer.ItemTransfer/Sync", streamer)
+	wrappedClientStream, err := clientInterceptor(context.Background(), &grpc.StreamDesc{}, nil, reconpb.ReconcileService_Reconcile_FullMethodName, streamer)
 	require.NoError(t, err)
 
 	// 1. Client sends DataChunk
 	chunkData := make([]byte, 65536)
-	chunkFrame := &transferpb.SyncFrame{
-		Payload: &transferpb.SyncFrame_DataChunk{
-			DataChunk: &transferpb.DataItemChunk{
+	chunkFrame := &reconpb.Frame{
+		Payload: &reconpb.Frame_DataChunk{
+			DataChunk: &reconpb.DataItemChunk{
 				Data: chunkData,
 			},
 		},
@@ -412,7 +412,7 @@ func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
 	assert.Equal(t, 65536, clientRec.gossipEvents[0].PayloadDataSize)
 
 	// 2. Client receives DataChunk
-	var recvFrame transferpb.SyncFrame
+	var recvFrame reconpb.Frame
 	err = wrappedClientStream.RecvMsg(&recvFrame)
 	require.NoError(t, err)
 
@@ -429,21 +429,21 @@ func TestStreamTelemetryInterceptors_SyncFrameAccounting(t *testing.T) {
 	}
 
 	handler := func(srv any, ss grpc.ServerStream) error {
-		var in transferpb.SyncFrame
+		var in reconpb.Frame
 		recvErr := ss.RecvMsg(&in)
 		if recvErr != nil {
 			return recvErr
 		}
-		replyChunk := &transferpb.SyncFrame{
-			Payload: &transferpb.SyncFrame_DataChunk{
-				DataChunk: &transferpb.DataItemChunk{Data: inData},
+		replyChunk := &reconpb.Frame{
+			Payload: &reconpb.Frame_DataChunk{
+				DataChunk: &reconpb.DataItemChunk{Data: inData},
 			},
 		}
 		return ss.SendMsg(replyChunk)
 	}
 
 	info := &grpc.StreamServerInfo{
-		FullMethod: "/reconcile.transfer.ItemTransfer/Sync",
+		FullMethod: reconpb.ReconcileService_Reconcile_FullMethodName,
 	}
 
 	err = serverInterceptor(nil, mockSS, info, handler)

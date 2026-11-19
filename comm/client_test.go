@@ -8,6 +8,7 @@ import (
 
 	"github.com/eika123/ifrit/crypto/identity"
 	log "github.com/inconshreveable/log15"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -29,7 +30,7 @@ func (suite *ClientTestSuite) SetupTest() {
 	conf, err := validClientConfig()
 	require.NoError(suite.T(), err, "Failed to generate config")
 
-	c, err := newClient(conf, nil, nil)
+	c, err := newClient(conf, true, nil, nil)
 	require.NoError(suite.T(), err, "Failed to create client")
 
 	suite.c = c
@@ -55,7 +56,7 @@ func (suite *ClientTestSuite) TestNewClient() {
 	}
 
 	for i, t := range tests {
-		c, err := newClient(t.config, nil, nil)
+		c, err := newClient(t.config, true, nil, nil)
 		require.Equalf(suite.T(), t.out, err, "Invalid error output for test %d", i)
 
 		if t.out == nil {
@@ -65,6 +66,12 @@ func (suite *ClientTestSuite) TestNewClient() {
 		}
 
 	}
+
+	cNoComp, err := newClient(validConf, false, nil, nil)
+	require.NoError(suite.T(), err)
+	cComp, err := newClient(validConf, true, nil, nil)
+	require.NoError(suite.T(), err)
+	assert.Greater(suite.T(), len(cComp.dialOptions), len(cNoComp.dialOptions), "WithCompression(true) should add gzip call option")
 }
 
 func validClientConfig() (*tls.Config, error) {

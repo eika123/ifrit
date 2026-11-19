@@ -18,6 +18,9 @@ type Symbol[S any] interface {
 // DigestSymbol represents a concrete 64-bit digest symbol satisfying Symbol[DigestSymbol].
 type DigestSymbol uint64
 
+// DigestSymbolSize is the wire size in bytes of a DigestSymbol.
+const DigestSymbolSize = int(unsafe.Sizeof(DigestSymbol(0)))
+
 // CryptographicIdentity represents elements that supply a canonical byte or string
 // representation intended for cryptographic hashing (e.g., SHA-256) rather than FNV-1a.
 type CryptographicIdentity interface {

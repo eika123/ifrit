@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 )
@@ -19,6 +20,7 @@ func (d *dummyPingService) Stop()                                   {}
 func (d *dummyPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
 	return nil
 }
+func (d *dummyPingService) SetFingerprintsProvider(func() comm.Fingerprints) {}
 
 func TestVizShutdownHandler(t *testing.T) {
 	// Uninitialized node -> returns 500

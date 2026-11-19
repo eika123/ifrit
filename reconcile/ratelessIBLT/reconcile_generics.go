@@ -1,31 +1,24 @@
 package ratelessIBLT
 
-// Collection of generic helpers and interfaces -- use these to write your
-// reconciler stubs on top of for example gRPC / protobuf
+// Generic RIBLT two-stage set reconciliation helpers (sketch prefix + rateless fallback).
 //
-// For use in Practical Rateless Set Reconciliation,
-// The client/caller streams coded symbols to the server/callee.
-// Let the set on the client be called A, and the set on the server be called B.
-//
-// The server tries to decode for each symbol. When decoding succeeds,
-// the server knows the symmetric delta symbols. In a trivial application
-// Where the symbols are the sole symbols of interest, the server may just
-// respond with the symbols the client is missing. However, to do something
-// interesting we have a two-phase sync of data after this session:
-//
-// Since we exchange actual data (for example video snippets, files or
-// database records) after the digest delta calculation on the server,
-// The server must stream both A \ B and B \ A back to the client.
-// After this, a second phase data sync begins.
+// The initiator (set A) streams coded symbols to the responder (set B).
+// The responder subtracts its local sketch (or feeds a rateless decoder) until
+// decoding succeeds, then streams both A \ B (Requested) and B \ A (Available)
+// digests back to the initiator so Phase 2 can transfer the missing items.
 
 import (
+	"fmt"
 	"io"
 	"slices"
 	"sync"
 
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile"
 	"github.com/yangl1996/riblt"
 )
+
+const DefaultMaxSymbols = 1 << 20
 
 // SketchStore provides O(M) sketch snapshots and fallback rateless codecs
 // for a reconcilable set.
@@ -202,87 +195,140 @@ func sendCodedBatch[S digestmaps.Symbol[S]](
 	return false, ReconcileDiff[S]{}, nil
 }
 
-// ReconcileServer runs the responder side of the two-stage RIBLT protocol.
+// ReconcileServer runs the responder side of the two-stage RIBLT protocol and
+// returns the decoded symmetric difference (Requested = A\B, Available = B\A).
 func ReconcileServer[S digestmaps.Symbol[S]](
 	tr ReconcileServerTransport[S],
 	store SketchStore[S],
-) error {
+	maxSymbols ...int,
+) (ReconcileDiff[S], error) {
+	symLimit := DefaultMaxSymbols
+	if len(maxSymbols) > 0 && maxSymbols[0] > 0 {
+		symLimit = maxSymbols[0]
+	}
+
 	localSketch := store.SnapshotSketch()
 	var buffered []riblt.CodedSymbol[S]
 
 	if len(localSketch) > 0 {
+		var diff ReconcileDiff[S]
 		var handled bool
 		var err error
-		buffered, handled, err = trySketchReconcile(tr, localSketch)
+		buffered, diff, handled, err = trySketchReconcile(tr, localSketch, symLimit)
 		if handled || err != nil {
-			return err
+			return diff, err
 		}
 	}
 
-	return decodeRatelessFallback(tr, store, buffered)
+	return decodeRatelessFallback(tr, store, buffered, symLimit)
 }
 
 func trySketchReconcile[S digestmaps.Symbol[S]](
 	tr ReconcileServerTransport[S],
 	localSketch riblt.Sketch[S],
-) ([]riblt.CodedSymbol[S], bool, error) {
+	maxSymbols int,
+) ([]riblt.CodedSymbol[S], ReconcileDiff[S], bool, error) {
 	buffered := make([]riblt.CodedSymbol[S], 0, len(localSketch))
 	for len(buffered) < len(localSketch) {
 		syms, eof, err := tr.RecvCoded()
 		if err != nil {
-			return nil, false, err
+			return nil, ReconcileDiff[S]{}, false, err
+		}
+		if len(syms) > 0 {
+			if maxSymbols > 0 && len(buffered)+len(syms) > maxSymbols {
+				return nil, ReconcileDiff[S]{}, false, fmt.Errorf("%w: coded symbols %d > %d", reconcile.ErrSessionLimitExceeded, len(buffered)+len(syms), maxSymbols)
+			}
+			buffered = append(buffered, syms...)
 		}
 		if eof {
 			break
 		}
-		buffered = append(buffered, syms...)
 	}
 
 	if len(buffered) == len(localSketch) {
 		diff := slices.Clone(riblt.Sketch[S](buffered))
 		diff.Subtract(localSketch)
 		if remote, local, ok := diff.Decode(); ok {
-			return nil, true, streamDiffPages(tr, remote, local)
+			if err := streamDiffPages(tr, remote, local); err != nil {
+				return nil, ReconcileDiff[S]{}, true, err
+			}
+			return nil, buildReconcileDiff(remote, local, false), true, nil
 		}
 		if err := tr.SendNeedMore(); err != nil {
-			return nil, false, err
+			return nil, ReconcileDiff[S]{}, false, err
 		}
 	}
-	return buffered, false, nil
+	return buffered, ReconcileDiff[S]{}, false, nil
 }
 
 func decodeRatelessFallback[S digestmaps.Symbol[S]](
 	tr ReconcileServerTransport[S],
 	store SketchStore[S],
 	buffered []riblt.CodedSymbol[S],
-) error {
+	maxSymbols int,
+) (ReconcileDiff[S], error) {
 	dec := store.MakeDecoder()
+	received := len(buffered)
+	if maxSymbols > 0 && received > maxSymbols {
+		return ReconcileDiff[S]{}, fmt.Errorf("%w: coded symbols %d > %d", reconcile.ErrSessionLimitExceeded, received, maxSymbols)
+	}
 	for _, cs := range buffered {
 		dec.AddCodedSymbol(cs)
 	}
 	if len(buffered) > 0 {
 		dec.TryDecode()
 		if dec.Decoded() {
-			return streamDiffPages(tr, dec.Remote(), dec.Local())
+			remote, local := dec.Remote(), dec.Local()
+			if err := streamDiffPages(tr, remote, local); err != nil {
+				return ReconcileDiff[S]{}, err
+			}
+			return buildReconcileDiff(remote, local, true), nil
 		}
 	}
 
 	for {
 		syms, eof, err := tr.RecvCoded()
 		if err != nil {
-			return err
+			return ReconcileDiff[S]{}, err
+		}
+		if len(syms) > 0 {
+			received += len(syms)
+			if maxSymbols > 0 && received > maxSymbols {
+				return ReconcileDiff[S]{}, fmt.Errorf("%w: coded symbols %d > %d", reconcile.ErrSessionLimitExceeded, received, maxSymbols)
+			}
+			for _, cs := range syms {
+				dec.AddCodedSymbol(cs)
+			}
+			dec.TryDecode()
+			if dec.Decoded() {
+				remote, local := dec.Remote(), dec.Local()
+				if err := streamDiffPages(tr, remote, local); err != nil {
+					return ReconcileDiff[S]{}, err
+				}
+				return buildReconcileDiff(remote, local, true), nil
+			}
 		}
 		if eof {
-			return nil
-		}
-		for _, cs := range syms {
-			dec.AddCodedSymbol(cs)
-		}
-		dec.TryDecode()
-		if dec.Decoded() {
-			return streamDiffPages(tr, dec.Remote(), dec.Local())
+			return ReconcileDiff[S]{}, fmt.Errorf("%w: initiator closed Phase 1 before RIBLT decoded", io.ErrUnexpectedEOF)
 		}
 	}
+}
+
+func buildReconcileDiff[S digestmaps.Symbol[S]](remote, local []riblt.HashedSymbol[S], fallback bool) ReconcileDiff[S] {
+	diff := ReconcileDiff[S]{UsedFallback: fallback}
+	if len(remote) > 0 {
+		diff.Requested = make([]S, len(remote))
+		for i, hs := range remote {
+			diff.Requested[i] = hs.Symbol
+		}
+	}
+	if len(local) > 0 {
+		diff.Available = make([]S, len(local))
+		for i, hs := range local {
+			diff.Available[i] = hs.Symbol
+		}
+	}
+	return diff
 }
 
 func streamDiffPages[S digestmaps.Symbol[S]](

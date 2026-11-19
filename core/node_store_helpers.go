@@ -4,27 +4,32 @@ import (
 	"bytes"
 	"encoding/binary"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/eika123/ifrit/digestmaps"
 	"github.com/eika123/ifrit/reconcile"
 )
 
-func (n *Node) SetFingerprintData(fp []byte) {
-	n.self.SetFingerprintData(fp)
-}
-
+// FingerprintData returns the canonical 8-byte big-endian fingerprint of the
+// registered data store, or an 8-byte zero slice when no data store is registered.
 func (n *Node) FingerprintData() []byte {
-	if selfFp := n.self.FingerprintData(); len(selfFp) > 0 {
-		return selfFp
-	}
 	n.dataReconcilerMutex.RLock()
 	fingerprintpFn := n.dataStoreFP
 	n.dataReconcilerMutex.RUnlock()
 	if fingerprintpFn != nil {
 		return fingerprintpFn()
 	}
-	return nil
+	return make([]byte, 8)
+}
+
+// Fingerprints returns the current 8-byte store fingerprints for UDP Pong replies.
+func (n *Node) Fingerprints() comm.Fingerprints {
+	return comm.Fingerprints{
+		Data:        n.FingerprintData(),
+		Accusations: n.AccusationFingerprintBytes(),
+		View:        n.ViewFingerprintBytes(),
+	}
 }
 
 func (n *Node) AccusationFingerprint() digestmaps.DigestSymbol {
@@ -94,19 +99,19 @@ func (n *Node) CertDigests() []digestmaps.DigestSymbol {
 	return n.view.CertDigests()
 }
 
-// SessionManager returns the peer reconciliation session manager.
-func (n *Node) SessionManager() *PeerSessionManager {
-	return n.sessionManager
+// PeerGate returns the per-peer reconciliation concurrency gate.
+func (n *Node) PeerGate() *PeerGate {
+	return n.peerGate
 }
 
-// RegisterDataStore registers an application's typed reconcilable data store on the node
+// RegisterDataStore registers an application's typed data store on the node
 // using the default reconcile.ItemCodec for type T.
-func RegisterDataStore[T any](n *Node, store reconcile.Store[T]) {
+func RegisterDataStore[T any](n *Node, store digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol]) {
 	RegisterDataStoreWithCodec(n, store, nil)
 }
 
-// RegisterDataStoreWithCodec registers an application's typed reconcilable data store on the node
+// RegisterDataStoreWithCodec registers an application's typed data store on the node
 // with a custom reconcile.ItemCodec.
-func RegisterDataStoreWithCodec[T any](n *Node, store reconcile.Store[T], codec reconcile.ItemCodec[T]) {
+func RegisterDataStoreWithCodec[T any](n *Node, store digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol], codec reconcile.ItemCodec[T]) {
 	RegisterReconcilableDataStore(n, store, codec)
 }

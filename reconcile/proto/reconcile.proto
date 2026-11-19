@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package reconcile;
+option go_package = "github.com/eika123/ifrit/reconcile/proto;reconpb";
+
+service ReconcileService {
+  // Single bidirectional stream per (peer, store):
+  // Phase 1 exchanges opaque NegotiatePayload frames until both sides emit done=true.
+  // Phase 2 exchanges WantDigests / DataItem* / SyncComplete on the same stream.
+  rpc Reconcile(stream Frame) returns (stream Frame);
+}
+
+message Frame {
+  oneof payload {
+    NegotiatePayload negotiate = 1;
+    WantDigests want_digests   = 2;
+    DataItemHeader data_header = 3;
+    DataItemChunk data_chunk   = 4;
+    DataItemEnd data_end       = 5;
+    SyncComplete complete      = 6;
+  }
+}
+
+message NegotiatePayload {
+  bytes data = 1;
+  bool done  = 2; // Half-closes Phase 1 from this sender without closing the gRPC stream
+}
+
+message WantDigests {
+  repeated bytes digests = 1;
+}
+
+message DataItemHeader {
+  bytes digest     = 1;
+  int64 total_size = 2;
+}
+
+message DataItemChunk {
+  bytes data = 1;
+}
+
+message DataItemEnd {
+  bytes digest = 1;
+}
+
+message SyncComplete {
+  bytes fingerprint = 1;
+}

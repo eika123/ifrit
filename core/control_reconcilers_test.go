@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ import (
 	"github.com/eika123/ifrit/reconcile/naive"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/golang/protobuf/proto"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -164,7 +164,7 @@ func TestControlReconcilers_SequentialControlAndConcurrentData(t *testing.T) {
 	noteDet := &stubControlDetector[*discovery.Note]{}
 	accDet := &stubControlDetector[*discovery.Accusation]{}
 
-	nodeB.SetControlReconcilerHooks(ControlReconcilerHooks{
+	nodeB.setControlReconcilerHooks(ControlReconcilerHooks{
 		CertDetector: certDet,
 		CertApplier: func(_ context.Context, item *pki.Certificate) error {
 			seqMu.Lock()
@@ -629,36 +629,36 @@ func TestControlReconcilers_CrossedWiresTieBreaker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 1. Low-ID node holds active outbound lock for high-ID node -> high-ID inbound request must be aborted (codes.Aborted).
-	seqLow, ok := lowNode.SessionManager().GetOrCreate(highNode.self.Id).TryStartOutboundReconciling()
-	require.True(t, ok)
+	// 1. Low-ID node holds active outbound gate for high-ID node -> high-ID inbound request must be aborted (codes.Aborted).
+	require.True(t, lowNode.PeerGate().TryStartOutbound(highNode.self.Id))
 
 	err := highNode.reconcilePeerStores(ctx, lowPeerOnHigh)
 	require.Error(t, err)
 	var se interface{ GRPCStatus() *status.Status }
 	require.ErrorAs(t, err, &se)
 	assert.Equal(t, codes.Aborted, se.GRPCStatus().Code())
-	assert.True(t, lowNode.SessionManager().Get(highNode.self.Id).ResetIfSeq(seqLow))
+	lowNode.PeerGate().ReleaseOutbound(highNode.self.Id)
+	assert.True(t, lowNode.PeerGate().IsIdle(highNode.self.Id))
+	assert.Equal(t, 0, lowNode.PeerGate().Len())
 
-	// 2. High-ID node holds outbound lock for low-ID node -> low-ID inbound request wins,
-	//    high-ID yields cleanly, and high-ID's stale ResetIfSeq cannot clobber low-ID's session.
-	seqHigh, ok := highNode.SessionManager().GetOrCreate(lowNode.self.Id).TryStartOutboundReconciling()
-	require.True(t, ok)
+	// 2. High-ID node holds outbound gate for low-ID node -> low-ID inbound request wins,
+	//    high-ID yields cleanly, and releasing high-ID's outbound afterwards prunes back to idle.
+	require.True(t, highNode.PeerGate().TryStartOutbound(lowNode.self.Id))
 
 	require.NoError(t, lowNode.reconcilePeerStores(ctx, highPeerOnLow))
-	// After lowNode's inbound streams finish cleanly, highNode's session returned to Idle via ReleaseInbound (seq > seqHigh).
-	assert.False(t, highNode.SessionManager().Get(lowNode.self.Id).ResetIfSeq(seqHigh))
-	assert.Equal(t, SessionIdle, highNode.SessionManager().Get(lowNode.self.Id).State())
+	highNode.PeerGate().ReleaseOutbound(lowNode.self.Id)
+	assert.True(t, highNode.PeerGate().IsIdle(lowNode.self.Id))
+	assert.Equal(t, 0, highNode.PeerGate().Len())
 }
 
 type errRecordingReconciler struct {
-	inner reconcile.StoreReconciler
-	mu    sync.Mutex
-	errs  []error
+	reconcile.StoreReconciler
+	mu   sync.Mutex
+	errs []error
 }
 
 func (r *errRecordingReconciler) ReconcileWithPeer(ctx context.Context, addr string) (reconcile.Summary, error) {
-	sum, err := r.inner.ReconcileWithPeer(ctx, addr)
+	sum, err := r.StoreReconciler.ReconcileWithPeer(ctx, addr)
 	if err != nil {
 		r.mu.Lock()
 		r.errs = append(r.errs, err)
@@ -700,13 +700,13 @@ func TestControlReconcilers_ConcurrentCrossedWiresGossip(t *testing.T) {
 	RegisterDataStore(highNode, storeHigh)
 	storeHigh.Insert("item-from-high")
 
-	lowCertRec := &errRecordingReconciler{inner: lowNode.certReconciler}
-	lowDataRec := &errRecordingReconciler{inner: lowNode.dataStoreReconciler}
+	lowCertRec := &errRecordingReconciler{StoreReconciler: lowNode.certReconciler}
+	lowDataRec := &errRecordingReconciler{StoreReconciler: lowNode.dataStoreReconciler}
 	lowNode.certReconciler = lowCertRec
 	lowNode.dataStoreReconciler = lowDataRec
 
-	highCertRec := &errRecordingReconciler{inner: highNode.certReconciler}
-	highDataRec := &errRecordingReconciler{inner: highNode.dataStoreReconciler}
+	highCertRec := &errRecordingReconciler{StoreReconciler: highNode.certReconciler}
+	highDataRec := &errRecordingReconciler{StoreReconciler: highNode.dataStoreReconciler}
 	highNode.certReconciler = highCertRec
 	highNode.dataStoreReconciler = highDataRec
 
@@ -740,9 +740,11 @@ func TestControlReconcilers_ConcurrentCrossedWiresGossip(t *testing.T) {
 		assert.Equal(t, codes.Aborted, code)
 	}
 
-	// Both sessions must return cleanly to SessionIdle with no deadlock or leaked locks.
-	assert.Equal(t, SessionIdle, lowNode.SessionManager().GetOrCreate(highNode.self.Id).State())
-	assert.Equal(t, SessionIdle, highNode.SessionManager().GetOrCreate(lowNode.self.Id).State())
+	// Both gates must return cleanly to idle with no leaked entries.
+	assert.True(t, lowNode.PeerGate().IsIdle(highNode.self.Id))
+	assert.True(t, highNode.PeerGate().IsIdle(lowNode.self.Id))
+	assert.Equal(t, 0, lowNode.PeerGate().Len())
+	assert.Equal(t, 0, highNode.PeerGate().Len())
 
 	// Even if highNode aborted mid-round, lowNode's bidirectional session converged both stores.
 	assert.Equal(t, 2, storeLow.Size())
@@ -755,18 +757,14 @@ func TestControlReconcilers_ConcurrentCrossedWiresGossip(t *testing.T) {
 }
 
 func TestControlReconcilers_NaiveStrategyEndToEnd(t *testing.T) {
-	prev := viper.GetString("reconciliation_strategy")
-	viper.Set("reconciliation_strategy", "naive")
-	t.Cleanup(func() {
-		viper.Set("reconciliation_strategy", prev)
-	})
+	naiveOpts := Options{ReconciliationStrategy: "naive"}
 
 	caCert, caPriv := genTestCA(t)
 
-	n1, comm1, _, _ := createTestNodeWithComm(t, caCert, caPriv)
+	n1, comm1, _, _ := createTestNodeWithComm(t, caCert, caPriv, naiveOpts)
 	defer n1.Stop()
 	defer comm1.Stop()
-	n2, comm2, _, _ := createTestNodeWithComm(t, caCert, caPriv)
+	n2, comm2, _, _ := createTestNodeWithComm(t, caCert, caPriv, naiveOpts)
 	defer n2.Stop()
 	defer comm2.Stop()
 
@@ -785,10 +783,10 @@ func TestControlReconcilers_NaiveStrategyEndToEnd(t *testing.T) {
 	assert.True(t, n2.view.Exists(string(certC.SubjectKeyId)))
 
 	// 2. Pair two fresh naive nodes + register naive data stores and test concurrent crossed-wires gossip convergence.
-	n3, comm3, cert3, priv3 := createTestNodeWithComm(t, caCert, caPriv)
+	n3, comm3, cert3, priv3 := createTestNodeWithComm(t, caCert, caPriv, naiveOpts)
 	defer n3.Stop()
 	defer comm3.Stop()
-	n4, comm4, cert4, priv4 := createTestNodeWithComm(t, caCert, caPriv)
+	n4, comm4, cert4, priv4 := createTestNodeWithComm(t, caCert, caPriv, naiveOpts)
 	defer n4.Stop()
 	defer comm4.Stop()
 
@@ -828,9 +826,244 @@ func TestControlReconcilers_NaiveStrategyEndToEnd(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	assert.Equal(t, SessionIdle, lowNode.SessionManager().GetOrCreate(highNode.self.Id).State())
-	assert.Equal(t, SessionIdle, highNode.SessionManager().GetOrCreate(lowNode.self.Id).State())
+	assert.True(t, lowNode.PeerGate().IsIdle(highNode.self.Id))
+	assert.True(t, highNode.PeerGate().IsIdle(lowNode.self.Id))
+	assert.Equal(t, 0, lowNode.PeerGate().Len())
+	assert.Equal(t, 0, highNode.PeerGate().Len())
 	assert.Equal(t, 2, storeLow.Size())
 	assert.Equal(t, 2, storeHigh.Size())
 	assert.False(t, lowNode.IsDivergent(highPeerOnLow))
+}
+
+func TestControlReconcilers_SingleVerifyPerItem(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+
+	// Add peer C to both views such that nodeA is C's predecessor on ring 1.
+	var privC *ecdsa.PrivateKey
+	var certC *x509.Certificate
+	for {
+		var err error
+		privC, err = genTLSKeys()
+		require.NoError(t, err)
+		cand := genNodeCertSignedByCA(t, privC, caCert, caPriv)
+		require.NoError(t, nodeA.evalValidCertificate(cand))
+		peerC := nodeA.view.Peer(string(cand.SubjectKeyId))
+		if nodeA.view.ValidAccuser(peerC, nodeA.self, 1) {
+			certC = cand
+			break
+		}
+		require.NoError(t, nodeA.view.RemoveTestFull(string(cand.SubjectKeyId)))
+	}
+	require.NoError(t, nodeB.evalValidCertificate(certC))
+
+	noteC2 := signTestPbNote(t, privC, certC.SubjectKeyId, 2, validAllRingsMask(nodeA.view.NumRings()))
+	require.NoError(t, nodeA.evalNote(noteC2))
+
+	accC := signTestPbAccusation(t, privA, certA.SubjectKeyId, certC.SubjectKeyId, 2, 1)
+	_, inserted := nodeA.view.AccusationStore().Insert(discovery.AccusationFromPb(accC))
+	require.True(t, inserted)
+
+	// Wrap nodeB's cryptoService to count Verify invocations during reconciliation.
+	counter := &countingCrypto{inner: nodeB.cs}
+	nodeB.cs = counter
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+
+	// Exactly 1 Verify for noteC2 and 1 Verify for accC.
+	assert.Equal(t, int64(2), counter.verifies.Load())
+	activeC, ok := nodeB.view.ActiveNote(string(certC.SubjectKeyId))
+	require.True(t, ok)
+	assert.Equal(t, uint64(2), activeC.Epoch())
+	assert.True(t, nodeB.view.IsAccused(nodeB.view.Peer(string(certC.SubjectKeyId))))
+}
+
+func TestControlReconcilers_BenignSemanticRejectionsConverge(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+
+	privC, err := genTLSKeys()
+	require.NoError(t, err)
+	certC := genNodeCertSignedByCA(t, privC, caCert, caPriv)
+	require.NoError(t, nodeA.evalValidCertificate(certC))
+	require.NoError(t, nodeB.evalValidCertificate(certC))
+
+	// NodeB already has epoch 3 for C; NodeA has stale epoch 1 + fresh epoch 4, plus a stale-epoch accusation.
+	mask := validAllRingsMask(nodeA.view.NumRings())
+	require.NoError(t, nodeB.evalNote(signTestPbNote(t, privC, certC.SubjectKeyId, 3, mask)))
+	nodeA.view.NoteStore().Insert(discovery.NoteFromPb(signTestPbNote(t, privC, certC.SubjectKeyId, 1, mask)))
+	require.NoError(t, nodeA.evalNote(signTestPbNote(t, privC, certC.SubjectKeyId, 4, mask)))
+
+	staleAcc := signTestPbAccusation(t, privA, certA.SubjectKeyId, certC.SubjectKeyId, 1, 1)
+	nodeA.view.AccusationStore().Insert(discovery.AccusationFromPb(staleAcc))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Benign rejections (errOldNote, errInvalidEpoch) must not abort the session.
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+
+	assert.Equal(t, nodeA.view.NoteStore().Fingerprint(), nodeB.view.NoteStore().Fingerprint())
+	assert.Equal(t, nodeA.AccusationFingerprint(), nodeB.AccusationFingerprint())
+	activeC, ok := nodeB.view.ActiveNote(string(certC.SubjectKeyId))
+	require.True(t, ok)
+	assert.Equal(t, uint64(4), activeC.Epoch())
+}
+
+func TestControlReconcilers_SelfAccusationTriggersRebuttalWithSingleVerify(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+
+	initialEpoch := nodeB.view.SelfNote().Epoch()
+	counter := &countingCrypto{inner: nodeB.cs}
+	nodeB.cs = counter
+
+	selfAcc := discovery.AccusationFromPb(signTestPbAccusation(t, privA, certA.SubjectKeyId, certB.SubjectKeyId, initialEpoch, 1))
+	hooks := nodeB.defaultControlReconcilerHooks()
+
+	ctx := context.Background()
+	require.NoError(t, hooks.AccDetector.ValidateItem(ctx, selfAcc))
+	require.NoError(t, hooks.AccApplier(ctx, selfAcc))
+
+	assert.Equal(t, int64(1), counter.verifies.Load())
+	assert.Greater(t, nodeB.view.SelfNote().Epoch(), initialEpoch, "self accusation must trigger rebuttal epoch bump")
+}
+
+type spyingControlDetector[T any] struct {
+	inner      reconcile.TamperDetector[T]
+	mu         sync.Mutex
+	misbehaved []error
+}
+
+func (d *spyingControlDetector[T]) ValidateItem(ctx context.Context, item T) error {
+	return d.inner.ValidateItem(ctx, item)
+}
+
+func (d *spyingControlDetector[T]) OnMisbehavior(ctx context.Context, err error, evidence []byte) {
+	d.mu.Lock()
+	d.misbehaved = append(d.misbehaved, err)
+	d.mu.Unlock()
+	d.inner.OnMisbehavior(ctx, err, evidence)
+}
+
+func (d *spyingControlDetector[T]) misbehaviorCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.misbehaved)
+}
+
+func TestControlReconcilers_MixedStrategyDataStoreConverges(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	// Default nodes use riblt/1 for control stores; attach naive/1 data stores to both.
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+
+	storeA, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	storeA.InsertBatch("shared", "from-a-naive")
+	RegisterDataStore(nodeA, storeA)
+
+	storeB, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	storeB.InsertBatch("shared", "from-b-naive")
+	RegisterDataStore(nodeB, storeB)
+
+	// Also add a third peer cert on A so riblt/1 control sync runs alongside naive/1 data sync.
+	privC, err := genTLSKeys()
+	require.NoError(t, err)
+	certC := genNodeCertSignedByCA(t, privC, caCert, caPriv)
+	require.NoError(t, nodeA.evalValidCertificate(certC))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+
+	assert.True(t, nodeB.view.Exists(string(certC.SubjectKeyId)))
+	assert.Equal(t, 3, storeA.Size())
+	assert.Equal(t, 3, storeB.Size())
+	assert.Equal(t, storeA.Fingerprint(), storeB.Fingerprint())
+}
+
+func TestControlReconcilers_ErrIgnoreDoesNotTriggerMisbehavior(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+
+	hooks := nodeB.defaultControlReconcilerHooks()
+	noteSpy := &spyingControlDetector[*discovery.Note]{inner: hooks.NoteDetector}
+	accSpy := &spyingControlDetector[*discovery.Accusation]{inner: hooks.AccDetector}
+	hooks.NoteDetector = noteSpy
+	hooks.AccDetector = accSpy
+	nodeB.setControlReconcilerHooks(hooks)
+
+	privC, err := genTLSKeys()
+	require.NoError(t, err)
+	certC := genNodeCertSignedByCA(t, privC, caCert, caPriv)
+	require.NoError(t, nodeA.evalValidCertificate(certC))
+	require.NoError(t, nodeB.evalValidCertificate(certC))
+
+	// NodeB already has epoch 3; NodeA has stale epoch 1 + valid epoch 4 + stale accusation.
+	mask := validAllRingsMask(nodeA.view.NumRings())
+	require.NoError(t, nodeB.evalNote(signTestPbNote(t, privC, certC.SubjectKeyId, 3, mask)))
+	nodeA.view.NoteStore().Insert(discovery.NoteFromPb(signTestPbNote(t, privC, certC.SubjectKeyId, 1, mask)))
+	require.NoError(t, nodeA.evalNote(signTestPbNote(t, privC, certC.SubjectKeyId, 4, mask)))
+	nodeA.view.AccusationStore().Insert(discovery.AccusationFromPb(signTestPbAccusation(t, privA, certA.SubjectKeyId, certC.SubjectKeyId, 1, 1)))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+
+	assert.Equal(t, 0, noteSpy.misbehaviorCount(), "stale note ErrIgnore must not invoke OnMisbehavior")
+	assert.Equal(t, 0, accSpy.misbehaviorCount(), "stale accusation ErrIgnore must not invoke OnMisbehavior")
+	activeC, ok := nodeB.view.ActiveNote(string(certC.SubjectKeyId))
+	require.True(t, ok)
+	assert.Equal(t, uint64(4), activeC.Epoch())
 }

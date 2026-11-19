@@ -15,10 +15,8 @@ import (
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	proto "github.com/eika123/ifrit/protobuf"
-	"github.com/eika123/ifrit/reconcile"
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -93,12 +91,14 @@ type signer interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
-// ViewStores supplies optional pre-built reconcilable control stores for a View.
-// Any nil field falls back to a default in-memory DigestSet.
+// ViewStores supplies optional pre-built reconcilable control stores and timeout settings for a View.
+// Any nil store field falls back to a default in-memory DigestSet.
 type ViewStores struct {
-	Certs       reconcile.Store[*pki.Certificate]
-	Notes       reconcile.Store[*Note]
-	Accusations reconcile.Store[*Accusation]
+	Certs          digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
+	Notes          digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
+	Accusations    digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
+	RemovalTimeout time.Duration // defaults to 60s when <= 0
+	UpdateInterval time.Duration // defaults to 10s when <= 0
 }
 
 // NewView initializes and returns a new View instance, configuring the local peer,
@@ -108,7 +108,6 @@ type ViewStores struct {
 //   - Requires initialized and valid certificate manager / certificates (cert).
 //   - Requires a cryptoService / signer capable of signing protobuf Notes.
 //   - Requires a connectionManager / commService to manage connection lifecycles.
-//   - Viper configuration must be loaded (keys: "removal_timeout", "view_update_interval").
 func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer, stores ...*ViewStores) (*View, error) {
 	var vs *ViewStores
 	if len(stores) > 0 {
@@ -136,14 +135,14 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return nil, err
 	}
 
-	removalTimeout := viper.GetFloat64("removal_timeout")
-	if removalTimeout <= 0 {
-		removalTimeout = 60.0
+	removalTimeout := 60.0
+	if vs != nil && vs.RemovalTimeout > 0 {
+		removalTimeout = vs.RemovalTimeout.Seconds()
 	}
 
-	updateInterval := viper.GetInt32("view_update_interval")
-	if updateInterval <= 0 {
-		updateInterval = 10
+	updateTimeout := 10 * time.Second
+	if vs != nil && vs.UpdateInterval > 0 {
+		updateTimeout = vs.UpdateInterval
 	}
 
 	peerHasher := func(p *Peer) digestmaps.DigestSymbol {
@@ -229,7 +228,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		s:                 s,
 
 		removalTimeout: removalTimeout,
-		updateTimeout:  time.Second * time.Duration(updateInterval),
+		updateTimeout:  updateTimeout,
 	}
 
 	for i = 0; i < numRings; i++ {
@@ -1361,11 +1360,6 @@ func (v *View) ClearTestNote(p *Peer) {
 }
 
 func mustMutableStore[T any, S digestmaps.Symbol[S]](name string, store digestmaps.ReverseIndexStore[T, S]) digestmaps.MutableReverseIndexStore[T, S] {
-	if wrapped, ok := store.(interface {
-		Base() digestmaps.ReverseIndexStore[T, S]
-	}); ok {
-		store = wrapped.Base()
-	}
 	m, ok := store.(digestmaps.MutableReverseIndexStore[T, S])
 	if !ok {
 		panic(fmt.Sprintf("%s does not implement MutableReverseIndexStore", name))

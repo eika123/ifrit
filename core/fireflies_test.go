@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
+	reconpb "github.com/eika123/ifrit/reconcile/proto"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,21 +24,11 @@ import (
 
 type recordingPingServer struct {
 	pingStub
-	fpDataProvider func() []byte
-	fpAccProvider  func() []byte
-	fpViewProvider func() []byte
+	fpProvider func() comm.Fingerprints
 }
 
-func (r *recordingPingServer) SetFingerprintDataProvider(f func() []byte) {
-	r.fpDataProvider = f
-}
-
-func (r *recordingPingServer) SetFingerprintAccusationsProvider(f func() []byte) {
-	r.fpAccProvider = f
-}
-
-func (r *recordingPingServer) SetFingerprintViewProvider(f func() []byte) {
-	r.fpViewProvider = f
+func (r *recordingPingServer) SetFingerprintsProvider(f func() comm.Fingerprints) {
+	r.fpProvider = f
 }
 
 func appendProtocolFramed(dst []byte, field []byte) []byte {
@@ -67,28 +59,25 @@ func TestNode_PiggybacksAccusationFingerprintOnPingServer(t *testing.T) {
 	n, err := NewNode(&commStub{}, ps, &cmStub{cert: cert}, cs)
 	require.NoError(t, err)
 
-	require.NotNil(t, ps.fpDataProvider, "data fingerprint provider should be registered")
-	require.NotNil(t, ps.fpAccProvider, "accusation fingerprint provider should be registered")
-	require.NotNil(t, ps.fpViewProvider, "view fingerprint provider should be registered")
+	require.NotNil(t, ps.fpProvider, "fingerprint provider should be registered")
 
 	// View fingerprint reflects initial view
-	initialViewFP := ps.fpViewProvider()
-	require.Len(t, initialViewFP, 8)
-	assert.Equal(t, uint64(n.ViewFingerprint()), binary.BigEndian.Uint64(initialViewFP))
+	initialFPS := ps.fpProvider()
+	require.Len(t, initialFPS.View, 8)
+	assert.Equal(t, uint64(n.ViewFingerprint()), binary.BigEndian.Uint64(initialFPS.View))
 
 	// Initial empty accusation set -> accusation fingerprint 0
-	initialAccFP := ps.fpAccProvider()
-	require.Len(t, initialAccFP, 8)
-	assert.Equal(t, uint64(0), binary.BigEndian.Uint64(initialAccFP))
+	require.Len(t, initialFPS.Accusations, 8)
+	assert.Equal(t, uint64(0), binary.BigEndian.Uint64(initialFPS.Accusations))
 
 	// Add an accusation to the view
 	err = n.view.AddAccusation("accusedNode", "accuserNode", 1, 1, []byte("r"), []byte("s"))
 	require.NoError(t, err)
 
 	// Accusation fingerprint in provider must now reflect the new accusation
-	updatedAccFP := ps.fpAccProvider()
+	updatedAccFP := ps.fpProvider().Accusations
 	require.Len(t, updatedAccFP, 8)
-	assert.NotEqual(t, initialAccFP, updatedAccFP)
+	assert.NotEqual(t, initialFPS.Accusations, updatedAccFP)
 	assert.Equal(t, uint64(n.AccusationFingerprint()), binary.BigEndian.Uint64(updatedAccFP))
 }
 
@@ -105,11 +94,11 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	require.NoError(t, err)
 	defer n.Stop()
 
-	require.NotNil(t, ps.fpDataProvider, "data fingerprint provider should be registered")
+	require.NotNil(t, ps.fpProvider, "fingerprint provider should be registered")
 
-	// Initially, no data reconciler registered -> data fingerprint provider returns nil
-	initialDataFP := ps.fpDataProvider()
-	assert.Nil(t, initialDataFP, "data fingerprint should be nil when no data reconciler is registered")
+	// Initially, no data reconciler registered -> canonical 8-byte zero fingerprint
+	initialDataFP := ps.fpProvider().Data
+	assert.Equal(t, make([]byte, 8), initialDataFP, "data fingerprint should be canonical 8-byte zero when no data reconciler is registered")
 
 	// Register a typed reconcilable data store with items
 	hasher := digestmaps.MustDefaultHasher[string]()
@@ -122,7 +111,7 @@ func TestNode_PiggybacksDataFingerprintOnPingServer(t *testing.T) {
 	RegisterDataStore(n, store)
 
 	// Data fingerprint in ping server provider must now reflect the store's fingerprint
-	updatedDataFP := ps.fpDataProvider()
+	updatedDataFP := ps.fpProvider().Data
 	require.Len(t, updatedDataFP, 8)
 	expectedFP := store.Fingerprint()
 	assert.Equal(t, uint64(expectedFP), binary.BigEndian.Uint64(updatedDataFP))
@@ -240,6 +229,10 @@ func (s *stubStoreReconciler) ReconcileWithPeer(ctx context.Context, addr string
 	return reconcile.Summary{}, nil
 }
 
+func (s *stubStoreReconciler) HandleReconcile(reconpb.ReconcileService_ReconcileServer) error {
+	return nil
+}
+
 func (s *stubStoreReconciler) takeAddrs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -297,10 +290,9 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 		&stubStoreReconciler{},
 	)
 
-	poisonedBytes := []byte("poisoned-fingerprint-data")
 	n.SetAdversarialPolicy(&AdversarialPolicy{
 		OnGossipOut: func(target *discovery.Peer, msg *pb.State) {
-			msg.FingerprintData = poisonedBytes
+			msg.IsRebuttal = true
 		},
 	})
 
@@ -309,7 +301,25 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 	comm.mu.Lock()
 	defer comm.mu.Unlock()
 	require.NotEmpty(t, comm.sentStates, "gossip fallback must send a thin Spread State message")
-	assert.Equal(t, poisonedBytes, comm.sentStates[0].FingerprintData, "outbound State should carry poisoned fingerprint")
+	assert.True(t, comm.sentStates[0].GetIsRebuttal(), "outbound State should carry OnGossipOut mutation")
+}
+
+func TestNode_CanonicalFingerprintDataQuiescence(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+	nUnreg, comm1, _, _ := createTestNodeWithComm(t, caCert, caPriv)
+	defer nUnreg.Stop()
+	defer comm1.Stop()
+
+	nEmpty, comm2, _, _ := createTestNodeWithComm(t, caCert, caPriv)
+	defer nEmpty.Stop()
+	defer comm2.Stop()
+
+	emptyStore, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	RegisterDataStore(nEmpty, emptyStore)
+
+	assert.Equal(t, make([]byte, 8), nUnreg.FingerprintData())
+	assert.Equal(t, nUnreg.FingerprintData(), nEmpty.FingerprintData())
 }
 
 type recordingComm struct {
@@ -482,25 +492,25 @@ func TestNode_GossipPeerReconcileSessionFlow(t *testing.T) {
 	}
 	installStubReconcilers(n, certRec, &stubStoreReconciler{}, &stubStoreReconciler{}, &stubStoreReconciler{})
 
-	// 1. Concurrency guard: while session is already OutboundReconciling, gossip tick skips peer.
-	sess := n.SessionManager().GetOrCreate(p.Id)
-	_, ok := sess.TryStartOutboundReconciling()
-	require.True(t, ok)
+	// 1. Concurrency guard: while outbound gate is held, gossip tick skips peer.
+	require.True(t, n.PeerGate().TryStartOutbound(p.Id))
 
 	n.gossip()
 	assert.Empty(t, certRec.takeAddrs(), "Peer must be skipped while session is busy")
-	sess.ResetToIdle()
+	n.PeerGate().ReleaseOutbound(p.Id)
 
-	// 2. Normal gossip completes and resets session back to SessionIdle.
+	// 2. Normal gossip completes and returns gate to idle (and prunes map entry).
 	n.gossip()
 	assert.Equal(t, []string{"peer-divergent-addr"}, certRec.takeAddrs())
-	assert.Equal(t, SessionIdle, sess.State())
+	assert.True(t, n.PeerGate().IsIdle(p.Id))
+	assert.Equal(t, 0, n.PeerGate().Len())
 
-	// 3. Reconciler error also resets session cleanly back to SessionIdle.
+	// 3. Reconciler error also releases gate cleanly back to idle.
 	p.SetFingerprintData([]byte("diverged-again"))
 	recErr = errors.New("network dial failure")
 	n.gossip()
-	assert.Equal(t, SessionIdle, sess.State())
+	assert.True(t, n.PeerGate().IsIdle(p.Id))
+	assert.Equal(t, 0, n.PeerGate().Len())
 }
 
 // -----------------------------------------------------------------------------
@@ -511,9 +521,10 @@ type mockPingService struct {
 	customPong func(p *pb.Ping) (*pb.Pong, error)
 }
 
-func (s *mockPingService) Pause(time.Duration) {}
-func (s *mockPingService) Start()              {}
-func (s *mockPingService) Stop()               {}
+func (s *mockPingService) Pause(time.Duration)                              {}
+func (s *mockPingService) Start()                                           {}
+func (s *mockPingService) Stop()                                            {}
+func (s *mockPingService) SetFingerprintsProvider(func() comm.Fingerprints) {}
 
 func (s *mockPingService) Ping(addr string, p *pb.Ping) (*pb.Pong, error) {
 	if s.customPong != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/eika123/ifrit/reconcile"
 	"github.com/eika123/ifrit/reconcile/naive"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
-	"github.com/eika123/ifrit/reconcile/transfer"
 	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 	"google.golang.org/grpc"
@@ -99,47 +99,39 @@ func (accusationCodec) Decode(data []byte) (*discovery.Accusation, error) {
 
 // SyncConfig defines streaming transfer limits and timeouts.
 type SyncConfig struct {
-	ChunkBytes       int           // Deprecated: kept for API compatibility
-	MaxItemBytes     int64         // Maximum byte size of a single item (default 64 MB; <= 0 disables limit)
-	ControlBatchSize int           // Deprecated: kept for API compatibility
-	Timeout          time.Duration // Timeout for a reconciliation session (default 30s)
+	MaxItemBytes int64         // Maximum byte size of a single item (default 64 MB; <= 0 disables limit)
+	Timeout      time.Duration // Timeout for a reconciliation session (default 30s)
 }
 
 // DefaultSyncConfig returns standard reconciliation streaming parameters.
 func DefaultSyncConfig() SyncConfig {
 	return SyncConfig{
-		ChunkBytes:       1024 * 128,
-		MaxItemBytes:     1024 * 1024 * 64,
-		ControlBatchSize: 128,
-		Timeout:          30 * time.Second,
+		MaxItemBytes: 1024 * 1024 * 64,
+		Timeout:      30 * time.Second,
 	}
-}
-
-// SetSyncConfig updates the streaming configuration on the node.
-func (n *Node) SetSyncConfig(cfg SyncConfig) {
-	n.syncConfigMutex.Lock()
-	defer n.syncConfigMutex.Unlock()
-	n.syncConfig = cfg
 }
 
 // SyncConfig returns the node's active streaming configuration.
 func (n *Node) SyncConfig() SyncConfig {
-	n.syncConfigMutex.RLock()
-	defer n.syncConfigMutex.RUnlock()
 	return n.syncConfig
 }
 
+func isNaiveStrategy(strategy string) bool {
+	s := strings.ToLower(strings.TrimSpace(strategy))
+	return s == "naive" || s == naive.ProtocolName
+}
+
 func newControlViewStores(strategy string) (*discovery.ViewStores, error) {
-	if strategy == "naive" {
-		certs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*pki.Certificate]())
+	if isNaiveStrategy(strategy) {
+		certs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
 		if err != nil {
 			return nil, err
 		}
-		notes, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.Note]())
+		notes, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.Note]())
 		if err != nil {
 			return nil, err
 		}
-		accs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.Accusation]())
+		accs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.Accusation]())
 		if err != nil {
 			return nil, err
 		}
@@ -169,9 +161,9 @@ func newControlViewStores(strategy string) (*discovery.ViewStores, error) {
 	}, nil
 }
 
-func (n *Node) inboundStreamGuard() transfer.StreamGuard {
+func (n *Node) inboundStreamGuard() reconcile.StreamGuard {
 	return func(ctx context.Context, next func() error) error {
-		if n == nil || n.sessionManager == nil {
+		if n == nil || n.peerGate == nil {
 			return next()
 		}
 		cert, err := n.validateCtx(ctx)
@@ -188,39 +180,41 @@ func (n *Node) inboundStreamGuard() transfer.StreamGuard {
 		if n.self != nil {
 			selfID = n.self.Id
 		}
-		sess := n.sessionManager.GetOrCreate(remoteID)
-		seq, ok, err := sess.TryStartInboundReconciling(selfID, remoteID)
-		if !ok {
+		if err := n.peerGate.TryStartInbound(selfID, remoteID); err != nil {
 			return status.Errorf(codes.Aborted, "reconciliation session busy: %v", err)
 		}
-		defer sess.ReleaseInbound(seq)
+		defer n.peerGate.ReleaseInbound(remoteID)
 		return next()
 	}
 }
 
-type reconcilerMux interface {
-	RegisterStore(storeID string, handler any)
-	RegisterGRPC(s *grpc.Server)
-}
-
-func (n *Node) initControlReconcilers(hooks ControlReconcilerHooks) {
-	var mux reconcilerMux
-	if n.reconciliationStrategy == "naive" {
-		mux = naive.NewReconcilerMux(n.inboundStreamGuard())
+func (n *Node) initControlReconcilers(hooks ControlReconcilerHooks) error {
+	ribltNeg := ratelessIBLT.NewNegotiator()
+	naiveNeg := naive.NewNegotiator()
+	reg, err := reconcile.NewRegistry(ribltNeg, naiveNeg)
+	if err != nil {
+		return err
+	}
+	n.reconcileRegistry = reg
+	if isNaiveStrategy(n.reconciliationStrategy) {
+		n.defaultNegotiator = naiveNeg
 	} else {
-		mux = ratelessIBLT.NewReconcilerMux(n.inboundStreamGuard())
+		n.defaultNegotiator = ribltNeg
 	}
-	n.bindStoreServer = func(storeID string, handler any) {
-		mux.RegisterStore(storeID, handler)
+	n.reconcileMux = reconcile.NewMux(n.inboundStreamGuard())
+	if err := n.rebuildControlReconcilers(hooks); err != nil {
+		return err
 	}
-	n.rebuildControlReconcilers(hooks)
-	n.comm.RegisterGRPC(mux.RegisterGRPC)
+	n.reconcileMux.Register(n.comm)
+	return nil
 }
 
-// SetControlReconcilerHooks swaps the control store validation/applier hooks
-// and re-binds the control store reconcilers on the node's store server.
-func (n *Node) SetControlReconcilerHooks(hooks ControlReconcilerHooks) {
-	n.rebuildControlReconcilers(hooks)
+// setControlReconcilerHooks swaps the control store validation/applier hooks
+// and re-binds the control store reconcilers on the node's store mux (for tests).
+func (n *Node) setControlReconcilerHooks(hooks ControlReconcilerHooks) {
+	if err := n.rebuildControlReconcilers(hooks); err != nil {
+		log.Error("failed to rebuild control reconcilers", "err", err)
+	}
 }
 
 func (n *Node) reconcilerConnProvider() reconcile.ConnProvider {
@@ -250,13 +244,17 @@ func buildControlReconciler[T any](
 	codec reconcile.ItemCodec[T],
 	detector reconcile.TamperDetector[T],
 	applier reconcile.ItemApplier[T],
-) reconcile.StoreReconciler {
-	rs, ok := store.(reconcile.Store[T])
-	if !ok || rs == nil {
-		return nil
+) (reconcile.StoreReconciler, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if detector == nil {
+		detector = reconcile.AcceptAll[T]()
 	}
 	syncCfg := n.SyncConfig()
-	rec := rs.NewReconciler(reconcile.Config[T]{
+	eng, err := reconcile.NewEngine(store, reconcile.Config[T]{
+		Negotiator:   n.defaultNegotiator,
+		Registry:     n.reconcileRegistry,
 		Codec:        codec,
 		ConnProvider: n.reconcilerConnProvider(),
 		Auth:         n.reconcilerPeerAuth(),
@@ -266,25 +264,40 @@ func buildControlReconciler[T any](
 		Timeout:      syncCfg.Timeout,
 		StoreID:      storeID,
 	})
-	if n.bindStoreServer != nil {
-		n.bindStoreServer(storeID, rec)
+	if err != nil {
+		return nil, err
 	}
-	return rec
+	if n.reconcileMux != nil {
+		if err := n.reconcileMux.ReplaceStore(storeID, eng); err != nil {
+			return nil, err
+		}
+	}
+	return eng, nil
 }
 
-func (n *Node) rebuildControlReconcilers(hooks ControlReconcilerHooks) {
-	n.certReconciler = buildControlReconciler(n, n.view.CertStore(), storeIDCerts, certCodec{}, hooks.CertDetector, hooks.CertApplier)
-	n.noteReconciler = buildControlReconciler(n, n.view.NoteStore(), storeIDNotes, noteCodec{}, hooks.NoteDetector, hooks.NoteApplier)
-	n.accReconciler = buildControlReconciler(n, n.view.AccusationStore(), storeIDAccs, accusationCodec{}, hooks.AccDetector, hooks.AccApplier)
+func (n *Node) rebuildControlReconcilers(hooks ControlReconcilerHooks) error {
+	var err error
+	n.certReconciler, err = buildControlReconciler(n, n.view.CertStore(), storeIDCerts, certCodec{}, hooks.CertDetector, hooks.CertApplier)
+	if err != nil {
+		return err
+	}
+	n.noteReconciler, err = buildControlReconciler(n, n.view.NoteStore(), storeIDNotes, noteCodec{}, hooks.NoteDetector, hooks.NoteApplier)
+	if err != nil {
+		return err
+	}
+	n.accReconciler, err = buildControlReconciler(n, n.view.AccusationStore(), storeIDAccs, accusationCodec{}, hooks.AccDetector, hooks.AccApplier)
+	return err
 }
 
-func (n *Node) registerStoreReconciler(rec reconcile.StoreReconciler, fingerprintpFn func() []byte) {
+func (n *Node) registerStoreReconciler(rec reconcile.StoreReconciler, fingerprintFn func() []byte) {
 	n.dataReconcilerMutex.Lock()
 	n.dataStoreReconciler = rec
-	n.dataStoreFP = fingerprintpFn
+	n.dataStoreFP = fingerprintFn
 	n.dataReconcilerMutex.Unlock()
-	if n.bindStoreServer != nil && rec != nil {
-		n.bindStoreServer(storeIDData, rec)
+	if n.reconcileMux != nil && rec != nil {
+		if err := n.reconcileMux.ReplaceStore(storeIDData, rec); err != nil {
+			log.Error("failed to bind data store reconciler", "err", err)
+		}
 	}
 }
 
@@ -381,11 +394,14 @@ func storeFingerprintFn[T any](store digestmaps.ReverseIndexStore[T, digestmaps.
 	}
 }
 
-// RegisterReconcilableDataStore binds a reconcile.Store[T] and reconcile.ItemCodec[T]
+// RegisterReconcilableDataStore binds a ReverseIndexStore[T] and reconcile.ItemCodec[T]
 // as the node's application data store for StoreReconciler gossip.
+// If store implements reconcile.Store[T], its declared Negotiator is used for outbound
+// reconciliation; otherwise the node's default Negotiator is used. Inbound streams accept
+// any Negotiator registered in the node's protocol registry.
 func RegisterReconcilableDataStore[T any](
 	n *Node,
-	store reconcile.Store[T],
+	store digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol],
 	codec reconcile.ItemCodec[T],
 ) {
 	if n == nil || store == nil {
@@ -394,36 +410,42 @@ func RegisterReconcilableDataStore[T any](
 	if codec == nil {
 		codec = reconcile.DefaultItemCodec[T]()
 	}
+	neg := n.defaultNegotiator
+	if rs, ok := store.(reconcile.Store[T]); ok && rs.Negotiator() != nil {
+		neg = rs.Negotiator()
+	}
 	syncCfg := n.SyncConfig()
-	rec := store.NewReconciler(reconcile.Config[T]{
+	eng, err := reconcile.NewEngine(store, reconcile.Config[T]{
+		Negotiator:   neg,
+		Registry:     n.reconcileRegistry,
 		Codec:        codec,
 		ConnProvider: n.reconcilerConnProvider(),
 		Auth:         n.reconcilerPeerAuth(),
+		Detector:     reconcile.AcceptAll[T](),
+		Applier: func(_ context.Context, item T) error {
+			store.Insert(item)
+			return nil
+		},
 		MaxItemBytes: syncCfg.MaxItemBytes,
 		Timeout:      syncCfg.Timeout,
 		StoreID:      storeIDData,
 	})
-	n.registerStoreReconciler(rec, storeFingerprintFn(store))
+	if err != nil {
+		log.Error("failed to create data store reconciler", "err", err)
+		return
+	}
+	n.registerStoreReconciler(eng, storeFingerprintFn(store))
 }
 
-// --- Phase 2B: Production TamperDetector + ItemApplier hooks wired to evalXYZ ---
+// --- TamperDetector + ItemApplier hooks wired to evalXYZ ---
 
 type certControlDetector struct {
 	node *Node
 }
 
 func (d certControlDetector) ValidateItem(_ context.Context, item *pki.Certificate) error {
-	if item == nil || len(item.Raw()) == 0 {
-		return errNilCert
-	}
-	cert, err := x509.ParseCertificate(item.Raw())
-	if err != nil {
-		return err
-	}
-	if d.node.self != nil && d.node.self.Id == string(cert.SubjectKeyId) {
-		return nil
-	}
-	return d.node.validateCertificate(cert)
+	_, err := d.node.validateCertItem(item)
+	return err
 }
 
 func (certControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) {
@@ -438,22 +460,8 @@ func (d noteControlDetector) ValidateItem(_ context.Context, item *discovery.Not
 	if item == nil {
 		return errors.New("nil note")
 	}
-	pbNote := item.ToPbMsg()
-	if d.node.self != nil && d.node.self.Id == string(pbNote.GetId()) {
-		return nil
-	}
-	sign := pbNote.GetSignature()
-	if sign == nil {
-		return errInvalidSignature
-	}
-	peer := d.node.view.Peer(string(pbNote.GetId()))
-	if peer == nil {
-		return errNoPeer
-	}
-	if !d.node.view.ValidMask(pbNote.GetMask()) {
-		return errInvalidMask
-	}
-	return d.node.verifySignedMessage(pbNote, sign, peer)
+	_, err := d.node.validateNotePb(item.ToPbMsg())
+	return err
 }
 
 func (noteControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) {
@@ -468,25 +476,8 @@ func (d accControlDetector) ValidateItem(_ context.Context, item *discovery.Accu
 	if item == nil {
 		return errors.New("nil accusation")
 	}
-	pbAcc := item.ToPbMsg()
-	accuserID := string(pbAcc.GetAccuser())
-
-	var accuser *discovery.Peer
-	if d.node.self != nil && accuserID == d.node.self.Id {
-		accuser = d.node.self
-	} else {
-		accuser = d.node.view.Peer(accuserID)
-	}
-	if accuser == nil {
-		return errNoPeer
-	}
-	if err := d.node.verifySignedMessage(pbAcc, pbAcc.GetSignature(), accuser); err != nil {
-		return err
-	}
-	if pbAcc.GetRingNum() == 0 || pbAcc.GetRingNum() > d.node.view.NumRings() {
-		return errors.New("accusation ring number out of bounds")
-	}
-	return nil
+	_, err := d.node.validateAccusationPb(item.ToPbMsg())
+	return err
 }
 
 func (accControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) {
@@ -497,47 +488,44 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 	return ControlReconcilerHooks{
 		CertDetector: certControlDetector{node: n},
 		CertApplier: func(_ context.Context, item *pki.Certificate) error {
+			if item == nil || len(item.Raw()) == 0 {
+				return errNilCert
+			}
 			cert, err := x509.ParseCertificate(item.Raw())
 			if err != nil {
 				return err
 			}
 			if n.self != nil && n.self.Id == string(cert.SubjectKeyId) {
-				return nil
+				return fmt.Errorf("%w: self certificate", reconcile.ErrIgnore)
 			}
-			if n.view == nil || n.view.CertStore() == nil {
-				return errors.New("cert store is not initialized")
-			}
-			n.view.CertStore().Insert(item)
-			if !n.view.Exists(string(cert.SubjectKeyId)) {
-				return n.evalValidCertificate(cert)
-			}
-			return nil
+			return n.applyVerifiedCert(item, cert)
 		},
 		NoteDetector: noteControlDetector{node: n},
 		NoteApplier: func(_ context.Context, item *discovery.Note) error {
-			if n.view == nil || n.view.NoteStore() == nil {
-				return errors.New("note store is not initialized")
+			if item == nil {
+				return errors.New("nil note")
 			}
 			pbNote := item.ToPbMsg()
 			if n.self != nil && n.self.Id == string(pbNote.GetId()) {
-				return nil
+				return fmt.Errorf("%w: self note", reconcile.ErrIgnore)
 			}
-			err := n.evalNote(pbNote)
+			peer := n.view.Peer(string(pbNote.GetId()))
+			if peer == nil {
+				return errNoPeer
+			}
+			err := n.applyVerifiedNote(pbNote, peer)
 			if errors.Is(err, errOldNote) {
-				return nil
+				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
 			}
 			return err
 		},
 		AccDetector: accControlDetector{node: n},
 		AccApplier: func(_ context.Context, item *discovery.Accusation) error {
-			if n.view == nil || n.view.AccusationStore() == nil {
-				return errors.New("accusation store is not initialized")
+			if item == nil {
+				return errors.New("nil accusation")
 			}
-			n.view.AccusationStore().Insert(item)
 			pbAcc := item.ToPbMsg()
 			accuserID := string(pbAcc.GetAccuser())
-			accusedID := string(pbAcc.GetAccused())
-
 			var accuser *discovery.Peer
 			if n.self != nil && accuserID == n.self.Id {
 				accuser = n.self
@@ -545,30 +533,17 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 				accuser = n.view.Peer(accuserID)
 			}
 			if accuser == nil {
-				return nil
+				return errNoPeer
 			}
 
-			var accused *discovery.Peer
-			if n.self != nil && accusedID == n.self.Id {
-				accused = n.self
-			} else {
-				accused = n.view.Peer(accusedID)
-			}
-			if accused == nil {
-				return nil
-			}
-			if _, ok := n.view.ActiveNote(accusedID); !ok {
-				return nil
-			}
-
-			err := n.evalAccusation(pbAcc, accuser, accused)
+			err := n.applyVerifiedAccusation(pbAcc, accuser)
 			if errors.Is(err, errAccAlreadyExists) ||
 				errors.Is(err, errInvalidEpoch) ||
 				errors.Is(err, errInvalidAccuser) ||
 				errors.Is(err, errDisabledRing) ||
 				errors.Is(err, errInvalidSelfAccusation) {
 				log.Debug(err.Error(), "ringNum", pbAcc.GetRingNum(), "epoch", pbAcc.GetEpoch())
-				return nil
+				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
 			}
 			return err
 		},
@@ -648,22 +623,15 @@ func (n *Node) gossipWithStoreReconcilers() {
 			continue
 		}
 
-		var sess *PeerReconcileSession
-		var seq uint64
-		if n.sessionManager != nil {
-			sess = n.sessionManager.GetOrCreate(peer.Id)
-			var ok bool
-			seq, ok = sess.TryStartOutboundReconciling()
-			if !ok {
-				continue
-			}
+		if n.peerGate != nil && !n.peerGate.TryStartOutbound(peer.Id) {
+			continue
 		}
 
 		wg.Add(1)
-		go func(p *discovery.Peer, s *PeerReconcileSession, sq uint64) {
+		go func(p *discovery.Peer) {
 			defer wg.Done()
-			if s != nil {
-				defer s.ResetIfSeq(sq)
+			if n.peerGate != nil {
+				defer n.peerGate.ReleaseOutbound(p.Id)
 			}
 
 			ctx, cancel := n.syncTimeoutContext()
@@ -684,7 +652,7 @@ func (n *Node) gossipWithStoreReconcilers() {
 			if err != nil {
 				log.Error("Peer store reconciliation failed", "addr", p.Addr, "err", err)
 			}
-		}(peer, sess, seq)
+		}(peer)
 	}
 
 	wg.Wait()

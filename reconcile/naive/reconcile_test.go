@@ -2,105 +2,24 @@ package naive
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"errors"
 	"fmt"
-	"math/big"
-	"net"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/digestmaps"
 	"github.com/eika123/ifrit/reconcile"
-	naivepb "github.com/eika123/ifrit/reconcile/naive/proto"
-	transferpb "github.com/eika123/ifrit/reconcile/transfer/proto"
+	"github.com/eika123/ifrit/reconcile/internal/testutil"
+	reconpb "github.com/eika123/ifrit/reconcile/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
-func genMTLSKeyAndCert(t *testing.T, caCert *x509.Certificate, caPriv *ecdsa.PrivateKey, id []byte) (*ecdsa.PrivateKey, *x509.Certificate) {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	require.NoError(t, err)
-	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
-		SubjectKeyId:          id,
-		Subject:               pkix.Name{Locality: []string{"127.0.0.1:0", "127.0.0.1:0"}},
-		BasicConstraintsValid: true,
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-	}
-	if caCert == nil {
-		tmpl.IsCA = true
-		tmpl.KeyUsage |= x509.KeyUsageCertSign
-		caCert = tmpl
-		caPriv = priv
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &priv.PublicKey, caPriv)
-	require.NoError(t, err)
-	cert, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
-	return priv, cert
-}
-
-type recordingDetector[T any] struct {
-	mu     sync.Mutex
-	errors []error
-}
-
-func (d *recordingDetector[T]) ValidateItem(context.Context, T) error { return nil }
-func (d *recordingDetector[T]) OnMisbehavior(_ context.Context, err error, _ []byte) {
-	d.mu.Lock()
-	d.errors = append(d.errors, err)
-	d.mu.Unlock()
-}
-func (d *recordingDetector[T]) count() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return len(d.errors)
-}
-
-func setupCommPair(t *testing.T) (*comm.Comm, *comm.Comm, string) {
-	t.Helper()
-
-	caPriv, caCert := genMTLSKeyAndCert(t, nil, nil, []byte("ca"))
-	privA, certA := genMTLSKeyAndCert(t, caCert, caPriv, []byte("peer-a"))
-	privB, certB := genMTLSKeyAndCert(t, caCert, caPriv, []byte("peer-b"))
-
-	lisA, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	lisB, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	addrB := lisB.Addr().String()
-
-	commA, err := comm.NewComm(certA, caCert, privA, lisA)
-	require.NoError(t, err)
-	t.Cleanup(commA.Stop)
-
-	commB, err := comm.NewComm(certB, caCert, privB, lisB)
-	require.NoError(t, err)
-	t.Cleanup(commB.Stop)
-
-	return commA, commB, addrB
-}
-
 func TestNaiveReconciler_MTLSOverCommAndMux(t *testing.T) {
-	commA, commB, addrB := setupCommPair(t)
+	commA, commB, addrB := testutil.SetupCommPair(t)
 
 	storeCertA, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
@@ -128,23 +47,51 @@ func TestNaiveReconciler_MTLSOverCommAndMux(t *testing.T) {
 		}
 		return nil
 	}
+	connProvA := testutil.CommConnProvider(commA)
 
-	recCertA := storeCertA.NewReconciler(reconcile.Config[string]{
-		ConnProvider: func(_ context.Context, addr string) (grpc.ClientConnInterface, error) { return commA.ClientConn(addr) },
+	recCertA, err := reconcile.NewEngine(storeCertA, reconcile.Config[string]{
+		Negotiator:   storeCertA.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		ConnProvider: connProvA,
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeCertA),
 		StoreID:      "certs",
 	})
-	recCertB := storeCertB.NewReconciler(reconcile.Config[string]{Auth: auth, StoreID: "certs"})
-	recDataA := storeDataA.NewReconciler(reconcile.Config[string]{
-		ConnProvider: func(_ context.Context, addr string) (grpc.ClientConnInterface, error) { return commA.ClientConn(addr) },
+	require.NoError(t, err)
+	recCertB, err := reconcile.NewEngine(storeCertB, reconcile.Config[string]{
+		Negotiator: storeCertB.Negotiator(),
+		Codec:      reconcile.DefaultItemCodec[string](),
+		Auth:       auth,
+		Detector:   reconcile.AcceptAll[string](),
+		Applier:    testutil.InsertTestApplier(storeCertB),
+		StoreID:    "certs",
+	})
+	require.NoError(t, err)
+	recDataA, err := reconcile.NewEngine(storeDataA, reconcile.Config[string]{
+		Negotiator:   storeDataA.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		ConnProvider: connProvA,
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeDataA),
 		StoreID:      "data",
 		MaxItemBytes: 1024 * 1024,
 	})
-	recDataB := storeDataB.NewReconciler(reconcile.Config[string]{Auth: auth, StoreID: "data", MaxItemBytes: 1024 * 1024})
+	require.NoError(t, err)
+	recDataB, err := reconcile.NewEngine(storeDataB, reconcile.Config[string]{
+		Negotiator:   storeDataB.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		Auth:         auth,
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeDataB),
+		StoreID:      "data",
+		MaxItemBytes: 1024 * 1024,
+	})
+	require.NoError(t, err)
 
-	muxB := NewReconcilerMux()
-	muxB.RegisterStore("certs", recCertB)
-	muxB.RegisterStore("data", recDataB)
-	commB.RegisterGRPC(muxB.RegisterGRPC)
+	muxB := reconcile.NewMux()
+	require.NoError(t, muxB.RegisterStore("certs", recCertB))
+	require.NoError(t, muxB.RegisterStore("data", recDataB))
+	muxB.Register(commB)
 	go commB.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -177,74 +124,64 @@ func TestNaiveReconciler_MTLSOverCommAndMux(t *testing.T) {
 	// 3. Unknown store-id must fail cleanly.
 	cc, err := commA.ClientConn(addrB)
 	require.NoError(t, err)
-	badCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("store-id", "unknown"))
-	stream, err := naivepb.NewNaiveReconcilerClient(cc).ExchangeDigests(badCtx)
+	badCtx := testutil.OutgoingContext(ctx, "unknown", ProtocolName)
+	stream, err := reconpb.NewReconcileServiceClient(cc).Reconcile(badCtx)
 	require.NoError(t, err)
 	_, err = stream.Recv()
 	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
 }
 
 func TestNaiveReconciler_AuthEnforcedBeforeDataExchange(t *testing.T) {
-	commA, commB, addrB := setupCommPair(t)
+	commA, commB, addrB := testutil.SetupCommPair(t)
 
 	storeB, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	storeB.Insert("secret-server-item")
 
-	recB := storeB.NewReconciler(reconcile.Config[string]{
+	recB, err := reconcile.NewEngine(storeB, reconcile.Config[string]{
+		Negotiator: storeB.Negotiator(),
+		Codec:      reconcile.DefaultItemCodec[string](),
 		Auth: func(context.Context) error {
 			return status.Error(codes.PermissionDenied, "unauthorized peer")
 		},
+		Detector: reconcile.AcceptAll[string](),
+		Applier:  testutil.InsertTestApplier(storeB),
 	})
-	mux := NewReconcilerMux()
-	mux.RegisterStore("data", recB)
-	commB.RegisterGRPC(mux.RegisterGRPC)
+	require.NoError(t, err)
+	mux := reconcile.NewMux()
+	require.NoError(t, mux.RegisterStore("data", recB))
+	mux.Register(commB)
 	go commB.Start()
 
 	cc, err := commA.ClientConn(addrB)
 	require.NoError(t, err)
-	client := naivepb.NewNaiveReconcilerClient(cc)
-	transferClient := transferpb.NewItemTransferClient(cc)
+	client := reconpb.NewReconcileServiceClient(cc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	outCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("store-id", "data"))
+	outCtx := testutil.OutgoingContext(ctx, "data", ProtocolName)
 
-	// 1. ExchangeDigests rejects with PermissionDenied and leaks no fingerprint or digests.
-	digStream, err := client.ExchangeDigests(outCtx)
+	stream, err := client.Reconcile(outCtx)
 	require.NoError(t, err)
-	_ = digStream.Send(&naivepb.DigestBatch{})
-	_ = digStream.CloseSend()
-	resp, err := digStream.Recv()
+	_ = stream.Send(&reconpb.Frame{
+		Payload: &reconpb.Frame_Negotiate{Negotiate: &reconpb.NegotiatePayload{Done: true}},
+	})
+	resp, err := stream.Recv()
 	require.Error(t, err)
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	assert.Nil(t, resp)
-
-	// 2. Direct ItemTransfer.Sync stream rejects with PermissionDenied before any frame is exchanged.
-	stream, err := transferClient.Sync(outCtx)
-	require.NoError(t, err)
-	_ = stream.Send(&transferpb.SyncFrame{
-		Payload: &transferpb.SyncFrame_WantDigests{
-			WantDigests: &transferpb.WantDigests{
-				Digests: [][]byte{digestmaps.EncodeDigestSymbol(storeB.Digest("secret-server-item"))},
-			},
-		},
-	})
-	frame, err := stream.Recv()
-	require.Error(t, err)
-	assert.Equal(t, codes.PermissionDenied, status.Code(err))
-	assert.Nil(t, frame)
 }
 
 func TestNaiveReconciler_LargeBatchedDigestExchange(t *testing.T) {
-	commA, commB, addrB := setupCommPair(t)
+	commA, commB, addrB := testutil.SetupCommPair(t)
 
 	storeA, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	storeB, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 
-	// 40,000 items crosses the 32,768 DigestBatch / DigestDiffBatch boundary.
+	// 40,000 items crosses the 32,768 batch boundary.
 	const sharedCount = 40000
 	shared := make([]string, sharedCount)
 	for i := 0; i < sharedCount; i++ {
@@ -255,15 +192,28 @@ func TestNaiveReconciler_LargeBatchedDigestExchange(t *testing.T) {
 	storeA.Insert("only-on-a")
 	storeB.Insert("only-on-b")
 
-	recA := storeA.NewReconciler(reconcile.Config[string]{
-		ConnProvider: func(_ context.Context, addr string) (grpc.ClientConnInterface, error) { return commA.ClientConn(addr) },
+	recA, err := reconcile.NewEngine(storeA, reconcile.Config[string]{
+		Negotiator:   storeA.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		ConnProvider: testutil.CommConnProvider(commA),
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeA),
 		StoreID:      "data",
 	})
-	recB := storeB.NewReconciler(reconcile.Config[string]{StoreID: "data"})
+	require.NoError(t, err)
+	recB, err := reconcile.NewEngine(storeB, reconcile.Config[string]{
+		Negotiator: storeB.Negotiator(),
+		Codec:      reconcile.DefaultItemCodec[string](),
+		Auth:       reconcile.NoopAuthenticator,
+		Detector:   reconcile.AcceptAll[string](),
+		Applier:    testutil.InsertTestApplier(storeB),
+		StoreID:    "data",
+	})
+	require.NoError(t, err)
 
-	muxB := NewReconcilerMux()
-	muxB.RegisterStore("data", recB)
-	commB.RegisterGRPC(muxB.RegisterGRPC)
+	muxB := reconcile.NewMux()
+	require.NoError(t, muxB.RegisterStore("data", recB))
+	muxB.Register(commB)
 	go commB.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -279,7 +229,7 @@ func TestNaiveReconciler_LargeBatchedDigestExchange(t *testing.T) {
 }
 
 func TestNaiveReconciler_ItemApplierAndFramingGuards(t *testing.T) {
-	commA, commB, addrB := setupCommPair(t)
+	commA, commB, addrB := testutil.SetupCommPair(t)
 
 	storeA, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
@@ -287,9 +237,12 @@ func TestNaiveReconciler_ItemApplierAndFramingGuards(t *testing.T) {
 	require.NoError(t, err)
 	storeA.InsertBatch("valid-item", "rejected-item")
 
-	det := &recordingDetector[string]{}
-	recB := storeB.NewReconciler(reconcile.Config[string]{
-		Detector: det,
+	det := &testutil.RecordingDetector[string]{}
+	recB, err := reconcile.NewEngine(storeB, reconcile.Config[string]{
+		Negotiator: storeB.Negotiator(),
+		Codec:      reconcile.DefaultItemCodec[string](),
+		Auth:       reconcile.NoopAuthenticator,
+		Detector:   det,
 		Applier: func(_ context.Context, item string) error {
 			if item == "rejected-item" {
 				return errors.New("policy rejected")
@@ -299,14 +252,20 @@ func TestNaiveReconciler_ItemApplierAndFramingGuards(t *testing.T) {
 		},
 		StoreID: "data",
 	})
-	recA := storeA.NewReconciler(reconcile.Config[string]{
-		ConnProvider: func(_ context.Context, addr string) (grpc.ClientConnInterface, error) { return commA.ClientConn(addr) },
+	require.NoError(t, err)
+	recA, err := reconcile.NewEngine(storeA, reconcile.Config[string]{
+		Negotiator:   storeA.Negotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		ConnProvider: testutil.CommConnProvider(commA),
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeA),
 		StoreID:      "data",
 	})
+	require.NoError(t, err)
 
-	mux := NewReconcilerMux()
-	mux.RegisterStore("data", recB)
-	commB.RegisterGRPC(mux.RegisterGRPC)
+	mux := reconcile.NewMux()
+	require.NoError(t, mux.RegisterStore("data", recB))
+	mux.Register(commB)
 	go commB.Start()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -314,7 +273,66 @@ func TestNaiveReconciler_ItemApplierAndFramingGuards(t *testing.T) {
 
 	_, err = recA.ReconcileWithPeer(ctx, addrB)
 	require.Error(t, err)
-	assert.GreaterOrEqual(t, det.count(), 1)
+	assert.GreaterOrEqual(t, det.Count(), 1)
 	_, hasRejected := storeB.Contains("rejected-item")
 	assert.False(t, hasRejected)
+}
+
+func TestNaiveReconciler_MaxDigestsLimitAndMalformedPayload(t *testing.T) {
+	commA, commB, addrB := testutil.SetupCommPair(t)
+
+	storeA, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	storeB, err := NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	storeA.InsertBatch("a", "b", "c", "d", "e")
+
+	det := &testutil.RecordingDetector[string]{}
+	recB, err := reconcile.NewEngine(storeB, reconcile.Config[string]{
+		Negotiator: NewNegotiator(WithMaxDigests(3)),
+		Codec:      reconcile.DefaultItemCodec[string](),
+		Auth:       reconcile.NoopAuthenticator,
+		Detector:   det,
+		Applier:    testutil.InsertTestApplier(storeB),
+		StoreID:    "data",
+	})
+	require.NoError(t, err)
+	recA, err := reconcile.NewEngine(storeA, reconcile.Config[string]{
+		Negotiator:   NewNegotiator(),
+		Codec:        reconcile.DefaultItemCodec[string](),
+		ConnProvider: testutil.CommConnProvider(commA),
+		Detector:     reconcile.AcceptAll[string](),
+		Applier:      testutil.InsertTestApplier(storeA),
+		StoreID:      "data",
+	})
+	require.NoError(t, err)
+
+	mux := reconcile.NewMux()
+	require.NoError(t, mux.RegisterStore("data", recB))
+	mux.Register(commB)
+	go commB.Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Exceed MaxDigests
+	_, err = recA.ReconcileWithPeer(ctx, addrB)
+	require.Error(t, err)
+	assert.Equal(t, codes.ResourceExhausted, status.Code(errors.Unwrap(err)))
+	assert.GreaterOrEqual(t, det.Count(), 1)
+
+	// 2. Malformed binary digest batch (not multiple of 8 bytes)
+	cc, err := commA.ClientConn(addrB)
+	require.NoError(t, err)
+	outCtx := testutil.OutgoingContext(ctx, "data", ProtocolName)
+	stream, err := reconpb.NewReconcileServiceClient(cc).Reconcile(outCtx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&reconpb.Frame{
+		Payload: &reconpb.Frame_Negotiate{
+			Negotiate: &reconpb.NegotiatePayload{Data: []byte{1, 2, 3}, Done: true},
+		},
+	}))
+	_, err = stream.Recv()
+	require.Error(t, err)
+	assert.GreaterOrEqual(t, det.Count(), 2)
 }

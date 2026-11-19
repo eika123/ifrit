@@ -92,7 +92,7 @@ func genNodeCertSignedByCA(t *testing.T, priv *ecdsa.PrivateKey, caCert *x509.Ce
 	return cert
 }
 
-func createTestNodeWithComm(t *testing.T, caCert *x509.Certificate, caPriv *ecdsa.PrivateKey) (*Node, *comm.Comm, *x509.Certificate, *ecdsa.PrivateKey) {
+func createTestNodeWithComm(t *testing.T, caCert *x509.Certificate, caPriv *ecdsa.PrivateKey, opts ...Options) (*Node, *comm.Comm, *x509.Certificate, *ecdsa.PrivateKey) {
 	priv, err := genTLSKeys()
 	require.NoError(t, err)
 	cert := genNodeCertSignedByCA(t, priv, caCert, caPriv)
@@ -106,7 +106,7 @@ func createTestNodeWithComm(t *testing.T, caCert *x509.Certificate, caPriv *ecds
 	c, err := comm.NewComm(cert, caCert, priv, l, commOpts...)
 	require.NoError(t, err)
 
-	n, err := NewNode(c, &pingStub{}, &cmStub{cert: cert, caCert: caCert}, &cryptoStub{priv: priv})
+	n, err := NewNode(c, &pingStub{}, &cmStub{cert: cert, caCert: caCert}, &cryptoStub{priv: priv}, opts...)
 	require.NoError(t, err)
 
 	go c.Start()
@@ -362,12 +362,7 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	require.False(t, nodeA.view.Exists(idB), "Node A must not have Node B in full view initially")
 
 	// 1. Node B contacts Node A via Spread RPC (gossip bootstrap)
-	msg := &pb.State{
-		FingerprintCertificates: nodeB.CertFingerprintBytes(),
-		FingerprintView:         nodeB.ViewFingerprintBytes(),
-		FingerprintAccusations:  nodeB.AccusationFingerprintBytes(),
-		FingerprintData:         nodeB.FingerprintData(),
-	}
+	msg := &pb.State{}
 	if selfNoteB != nil {
 		msg.OwnNote = selfNoteB.ToPbMsg()
 	}
@@ -376,17 +371,7 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	require.NoError(t, err, "Node B must successfully send Spread RPC to Node A")
 	require.NotNil(t, reply, "SpreadResponse must not be nil")
 
-	// 2. Verify non-empty fingerprints in SpreadResponse
-	assert.NotEmpty(t, reply.GetFingerprintCertificates(), "SpreadResponse must return non-empty certificate fingerprint")
-	assert.NotEmpty(t, reply.GetFingerprintView(), "SpreadResponse must return non-empty view fingerprint")
-	assert.NotEmpty(t, reply.GetFingerprintAccusations(), "SpreadResponse must return non-empty accusations fingerprint")
-
-	assert.Equal(t, nodeA.CertFingerprintBytes(), reply.GetFingerprintCertificates(),
-		"SpreadResponse certificate fingerprint must match Node A's fingerprint")
-	assert.Equal(t, nodeA.ViewFingerprintBytes(), reply.GetFingerprintView(),
-		"SpreadResponse view fingerprint must match Node A's fingerprint")
-
-	// 3. Ingest fast-path accusations if present and run control store bootstrap reconciliation
+	// 2. Ingest fast-path accusations if present and run control store bootstrap reconciliation
 	if accs := reply.GetAccusations(); len(accs) > 0 {
 		nodeB.mergeAccusations(accs)
 	}

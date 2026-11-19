@@ -27,13 +27,13 @@ type RawCodedSymbol[H RawHashedSymbol] interface {
 }
 
 func EncodeDigestSymbol(sym DigestSymbol) []byte {
-	buf := make([]byte, 8)
+	buf := make([]byte, DigestSymbolSize)
 	binary.BigEndian.PutUint64(buf, uint64(sym))
 	return buf
 }
 
 func DecodeDigestSymbol(sym []byte) (DigestSymbol, error) {
-	if len(sym) != 8 {
+	if len(sym) != DigestSymbolSize {
 		return 0, ErrInvalidDigestLength
 	}
 	return DigestSymbol(binary.BigEndian.Uint64(sym)), nil

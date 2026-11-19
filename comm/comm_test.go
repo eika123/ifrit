@@ -105,10 +105,8 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 		},
 	}
 
-	// Verify Comm routes generic gRPC service registrations onto its mTLS server.
-	commB.RegisterGRPC(func(s *grpc.Server) {
-		pb.RegisterGossipServer(s, svc)
-	})
+	// Verify Comm registers the gossip service onto its mTLS server.
+	commB.Register(svc)
 
 	go commB.Start()
 

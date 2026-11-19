@@ -16,6 +16,13 @@ import (
 // without risking packet truncation.
 const udpBufferSize = 4096
 
+// Fingerprints bundles the three 8-byte store fingerprints piggybacked on UDP Pong replies.
+type Fingerprints struct {
+	Data        []byte
+	Accusations []byte
+	View        []byte
+}
+
 type UDPServer struct {
 	conn *net.UDPConn
 	addr string
@@ -26,14 +33,8 @@ type UDPServer struct {
 	pongSigner
 	timeout time.Duration
 
-	fpDataProvider func() []byte
-	fpDataMutex    sync.RWMutex
-
-	fpAccProvider func() []byte
-	fpAccMutex    sync.RWMutex
-
-	fpViewProvider func() []byte
-	fpViewMutex    sync.RWMutex
+	fpProvider func() Fingerprints
+	fpMutex    sync.RWMutex
 }
 
 type pongSigner interface {
@@ -114,10 +115,8 @@ func (us *UDPServer) Start() {
 				continue
 			}
 
-			fpData := us.getFingerprintData()
-			fpAcc := us.getFingerprintAccusations()
-			fpView := us.getFingerprintView()
-			content := us.PongContent(ping.GetNonce(), fpData, fpAcc, fpView)
+			fps := us.getFingerprints()
+			content := us.PongContent(ping.GetNonce(), fps.Data, fps.Accusations, fps.View)
 			r, s, err := us.Sign(content)
 			if err != nil {
 				log.Error(err.Error())
@@ -130,9 +129,9 @@ func (us *UDPServer) Start() {
 					R: r,
 					S: s,
 				},
-				FingerprintData:        fpData,
-				FingerprintAccusations: fpAcc,
-				FingerprintView:        fpView,
+				FingerprintData:        fps.Data,
+				FingerprintAccusations: fps.Accusations,
+				FingerprintView:        fps.View,
 			}
 
 			resp, err := proto.Marshal(pong)
@@ -151,61 +150,25 @@ func (us *UDPServer) Start() {
 	}
 }
 
-func (us *UDPServer) SetFingerprintDataProvider(f func() []byte) {
-	us.fpDataMutex.Lock()
-	defer us.fpDataMutex.Unlock()
-	us.fpDataProvider = f
+// SetFingerprintsProvider registers a dynamic callback returning current store fingerprints for Pong replies.
+func (us *UDPServer) SetFingerprintsProvider(f func() Fingerprints) {
+	us.fpMutex.Lock()
+	defer us.fpMutex.Unlock()
+	us.fpProvider = f
 }
 
-func (us *UDPServer) SetFingerprintData(fp []byte) {
-	us.SetFingerprintDataProvider(func() []byte { return fp })
+// SetFingerprints sets static fingerprints for Pong replies.
+func (us *UDPServer) SetFingerprints(fp Fingerprints) {
+	us.SetFingerprintsProvider(func() Fingerprints { return fp })
 }
 
-func (us *UDPServer) getFingerprintData() []byte {
-	us.fpDataMutex.RLock()
-	defer us.fpDataMutex.RUnlock()
-	if us.fpDataProvider != nil {
-		return us.fpDataProvider()
+func (us *UDPServer) getFingerprints() Fingerprints {
+	us.fpMutex.RLock()
+	defer us.fpMutex.RUnlock()
+	if us.fpProvider != nil {
+		return us.fpProvider()
 	}
-	return nil
-}
-
-func (us *UDPServer) SetFingerprintAccusationsProvider(f func() []byte) {
-	us.fpAccMutex.Lock()
-	defer us.fpAccMutex.Unlock()
-	us.fpAccProvider = f
-}
-
-func (us *UDPServer) SetFingerprintAccusations(fp []byte) {
-	us.SetFingerprintAccusationsProvider(func() []byte { return fp })
-}
-
-func (us *UDPServer) getFingerprintAccusations() []byte {
-	us.fpAccMutex.RLock()
-	defer us.fpAccMutex.RUnlock()
-	if us.fpAccProvider != nil {
-		return us.fpAccProvider()
-	}
-	return nil
-}
-
-func (us *UDPServer) SetFingerprintViewProvider(f func() []byte) {
-	us.fpViewMutex.Lock()
-	defer us.fpViewMutex.Unlock()
-	us.fpViewProvider = f
-}
-
-func (us *UDPServer) SetFingerprintView(fp []byte) {
-	us.SetFingerprintViewProvider(func() []byte { return fp })
-}
-
-func (us *UDPServer) getFingerprintView() []byte {
-	us.fpViewMutex.RLock()
-	defer us.fpViewMutex.RUnlock()
-	if us.fpViewProvider != nil {
-		return us.fpViewProvider()
-	}
-	return nil
+	return Fingerprints{}
 }
 
 func (us *UDPServer) Addr() string {

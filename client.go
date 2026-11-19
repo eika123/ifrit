@@ -24,6 +24,7 @@ import (
 type Client struct {
 	node     *core.Node
 	identity *identity.Identity
+	strategy string
 }
 
 type Config struct {
@@ -45,6 +46,24 @@ type Config struct {
 
 	// Optional transport options (e.g. gRPC interceptors or close hooks) passed to comm.NewComm.
 	CommOptions []comm.Option
+
+	// Optional programmatic configuration overrides (eliminates need for ifrit_config.yaml).
+	CAAddr                 string
+	GossipInterval         time.Duration
+	MonitorInterval        time.Duration
+	ViewUpdateInterval     time.Duration
+	PingTimeout            time.Duration
+	PingLimit              uint32
+	PingsPerInterval       int
+	RemovalTimeout         time.Duration
+	MaxConcurrentMessages  uint32
+	UseCompression         *bool
+	ReconciliationStrategy string
+	SyncConfig             *SyncConfig
+	EntryAddrs             []string
+	UseViz                 *bool
+	VizAddr                string
+	VizUpdateInterval      time.Duration
 }
 
 var (
@@ -61,7 +80,7 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, errNoConfig
 	}
 
-	err := readConfig()
+	resolved, err := resolveConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +140,7 @@ func NewClient(config *Config) (*Client, error) {
 		Locality: []string{tcpAddr, udpAddr},
 	}
 
-	caAddr := viper.GetString("ca_addr")
+	caAddr := resolved.caAddr
 
 	if config.New {
 		id, err = identity.New(&identity.Config{
@@ -140,19 +159,21 @@ func NewClient(config *Config) (*Client, error) {
 		}
 	}
 
-	commOpts := append([]comm.Option{comm.WithAdvertisedAddr(tcpAddr)}, config.CommOptions...)
+	commOpts := append([]comm.Option{
+		comm.WithAdvertisedAddr(tcpAddr),
+		comm.WithCompression(resolved.useCompression),
+	}, config.CommOptions...)
 	commService, err := comm.NewComm(id.Certificate(), id.CaCertificate(), id.Priv(), l, commOpts...)
 	if err != nil {
 		return nil, err
 	}
 
-	pingTimeout := time.Second * time.Duration(viper.GetInt32("ping_timeout"))
-	udpServer, err := comm.NewUdpServer(id, udpConn, pingTimeout)
+	udpServer, err := comm.NewUdpServer(id, udpConn, resolved.pingTimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	n, err := core.NewNode(commService, udpServer, id, id)
+	n, err := core.NewNode(commService, udpServer, id, id, resolved.nodeOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +181,7 @@ func NewClient(config *Config) (*Client, error) {
 	return &Client{
 		node:     n,
 		identity: id,
+		strategy: resolved.nodeOpts.ReconciliationStrategy,
 	}, nil
 }
 
@@ -188,6 +210,11 @@ func (c *Client) Id() string {
 // Can be directly used as entry addresses in the config.
 func (c *Client) Addr() string {
 	return c.node.Addr()
+}
+
+// Strategy returns the configured reconciliation strategy name for this client.
+func (c *Client) Strategy() string {
+	return c.strategy
 }
 
 // Signs the provided content with the internal private key of ifrit.
@@ -300,17 +327,17 @@ func NewDigestSet[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol]) (
 	return digestmaps.NewDigestSet(hasher)
 }
 
-// NewReconcilableStore creates a new in-memory reconcilable store using the configured
-// reconciliation_strategy ("naive" or default ratelessIBLT). sketchSize is optional and
-// applies to ratelessIBLT (when omitted or <= 0, DefaultSketchSize is used).
+// NewReconcilableStore creates a new in-memory reconcilable store backed by
+// ratelessIBLT (default). sketchSize is optional (when omitted or <= 0, DefaultSketchSize is used).
 func NewReconcilableStore[T any](hasher digestmaps.Hasher[T, digestmaps.DigestSymbol], sketchSize ...int) (ReconcilableStore[T], error) {
-	return NewReconcilableStoreWithStrategy(viper.GetString("reconciliation_strategy"), hasher, sketchSize...)
+	return ratelessIBLT.NewReconcilableStore(hasher, sketchSize...)
 }
 
 // NewReconcilableStoreWithStrategy creates a reconcilable store for the given strategy
-// ("naive" or "riblt"/"rateless_iblt").
+// ("naive"/"naive/1" or default "riblt"/"riblt/1").
 func NewReconcilableStoreWithStrategy[T any](strategy string, hasher digestmaps.Hasher[T, digestmaps.DigestSymbol], sketchSize ...int) (ReconcilableStore[T], error) {
-	if strings.EqualFold(strings.TrimSpace(strategy), "naive") {
+	s := strings.ToLower(strings.TrimSpace(strategy))
+	if s == "naive" || s == naive.ProtocolName {
 		return naive.NewReconcilableStore(hasher)
 	}
 	return ratelessIBLT.NewReconcilableStore(hasher, sketchSize...)
@@ -337,24 +364,16 @@ func DefaultSyncConfig() SyncConfig {
 	return core.DefaultSyncConfig()
 }
 
-// SetSyncConfig updates the streaming configuration on the client's node.
-func (c *Client) SetSyncConfig(cfg SyncConfig) {
-	if c == nil || c.node == nil {
-		return
-	}
-	c.node.SetSyncConfig(cfg)
-}
-
-// RegisterDataStore registers an application's typed reconcilable data store with the Ifrit client.
-func RegisterDataStore[T any](c *Client, store ReconcilableStore[T]) {
+// RegisterDataStore registers an application's typed data store with the Ifrit client.
+func RegisterDataStore[T any](c *Client, store ReverseIndexStore[T]) {
 	if c == nil || c.node == nil {
 		return
 	}
 	core.RegisterDataStore(c.node, store)
 }
 
-// RegisterDataStoreWithCodec registers an application's typed reconcilable data store with a custom ItemCodec.
-func RegisterDataStoreWithCodec[T any](c *Client, store ReconcilableStore[T], codec ItemCodec[T]) {
+// RegisterDataStoreWithCodec registers an application's typed data store with a custom ItemCodec.
+func RegisterDataStoreWithCodec[T any](c *Client, store ReverseIndexStore[T], codec ItemCodec[T]) {
 	if c == nil || c.node == nil {
 		return
 	}
@@ -394,37 +413,116 @@ func configSearchPaths(envPaths string) []string {
 	return paths
 }
 
-func readConfig() error {
+type resolvedClientConfig struct {
+	caAddr         string
+	pingTimeout    time.Duration
+	useCompression bool
+	nodeOpts       core.Options
+}
+
+func resolveConfig(cfg *Config) (resolvedClientConfig, error) {
+	v := viper.New()
 	if envCfg := os.Getenv("IFRIT_CONFIG"); envCfg != "" {
-		viper.SetConfigFile(envCfg)
-	} else {
-		viper.SetConfigName("ifrit_config")
-		for _, p := range configSearchPaths(os.Getenv("IFRIT_CONFIG_PATHS")) {
-			viper.AddConfigPath(p)
+		v.SetConfigFile(envCfg)
+		if err := v.ReadInConfig(); err != nil {
+			return resolvedClientConfig{}, err
 		}
-		viper.SetConfigType("yaml")
+	} else {
+		v.SetConfigName("ifrit_config")
+		for _, p := range configSearchPaths(os.Getenv("IFRIT_CONFIG_PATHS")) {
+			v.AddConfigPath(p)
+		}
+		v.SetConfigType("yaml")
+		if err := v.ReadInConfig(); err != nil {
+			var notFound viper.ConfigFileNotFoundError
+			if !errors.As(err, &notFound) || cfg.CAAddr == "" {
+				return resolvedClientConfig{}, err
+			}
+		}
 	}
 
-	err := viper.ReadInConfig()
-	if err != nil {
-		return err
+	// Behavior defaults
+	v.SetDefault("gossip_interval", 10)
+	v.SetDefault("monitor_interval", 10)
+	v.SetDefault("view_update_interval", 10)
+	v.SetDefault("ping_timeout", 5)
+	v.SetDefault("ping_limit", 3)
+	v.SetDefault("pings_per_interval", 3)
+	v.SetDefault("removal_timeout", 60)
+	v.SetDefault("max_concurrent_messages", 5)
+	v.SetDefault("use_compression", true)
+	v.SetDefault("reconciliation_strategy", "riblt")
+	v.SetDefault("viz_update_interval", 10)
+
+	out := resolvedClientConfig{
+		caAddr:         v.GetString("ca_addr"),
+		pingTimeout:    time.Second * time.Duration(v.GetInt32("ping_timeout")),
+		useCompression: v.GetBool("use_compression"),
+		nodeOpts: core.Options{
+			GossipInterval:         time.Second * time.Duration(v.GetInt32("gossip_interval")),
+			MonitorInterval:        time.Second * time.Duration(v.GetInt32("monitor_interval")),
+			ViewUpdateInterval:     time.Second * time.Duration(v.GetInt32("view_update_interval")),
+			RemovalTimeout:         time.Second * time.Duration(v.GetFloat64("removal_timeout")),
+			PingLimit:              uint32(v.GetInt32("ping_limit")),
+			PingsPerInterval:       v.GetInt("pings_per_interval"),
+			MaxConcurrentMessages:  uint32(v.GetInt32("max_concurrent_messages")),
+			ReconciliationStrategy: v.GetString("reconciliation_strategy"),
+			EntryAddrs:             v.GetStringSlice("entry_addrs"),
+			SyncConfig:             core.DefaultSyncConfig(),
+			UseViz:                 v.GetBool("use_viz"),
+			VizAddr:                v.GetString("viz_addr"),
+			VizUpdateInterval:      time.Second * time.Duration(v.GetInt32("viz_update_interval")),
+		},
 	}
 
-	// Behavior variables
-	viper.SetDefault("gossip_interval", 10)
-	viper.SetDefault("monitor_interval", 10)
-	viper.SetDefault("view_update_interval", 10)
-	viper.SetDefault("ping_timeout", 5)
-	viper.SetDefault("ping_limit", 3)
-	viper.SetDefault("pings_per_interval", 3)
-	viper.SetDefault("removal_timeout", 60)
-	viper.SetDefault("max_concurrent_messages", 5)
-	viper.SetDefault("use_compression", true)
-	viper.SetDefault("reconciliation_strategy", "naive")
-	viper.SetDefault("session_timeout", 30)
+	if cfg.CAAddr != "" {
+		out.caAddr = cfg.CAAddr
+	}
+	if cfg.PingTimeout > 0 {
+		out.pingTimeout = cfg.PingTimeout
+	}
+	if cfg.UseCompression != nil {
+		out.useCompression = *cfg.UseCompression
+	}
+	if cfg.GossipInterval > 0 {
+		out.nodeOpts.GossipInterval = cfg.GossipInterval
+	}
+	if cfg.MonitorInterval > 0 {
+		out.nodeOpts.MonitorInterval = cfg.MonitorInterval
+	}
+	if cfg.ViewUpdateInterval > 0 {
+		out.nodeOpts.ViewUpdateInterval = cfg.ViewUpdateInterval
+	}
+	if cfg.RemovalTimeout > 0 {
+		out.nodeOpts.RemovalTimeout = cfg.RemovalTimeout
+	}
+	if cfg.PingLimit > 0 {
+		out.nodeOpts.PingLimit = cfg.PingLimit
+	}
+	if cfg.PingsPerInterval > 0 {
+		out.nodeOpts.PingsPerInterval = cfg.PingsPerInterval
+	}
+	if cfg.MaxConcurrentMessages > 0 {
+		out.nodeOpts.MaxConcurrentMessages = cfg.MaxConcurrentMessages
+	}
+	if cfg.ReconciliationStrategy != "" {
+		out.nodeOpts.ReconciliationStrategy = cfg.ReconciliationStrategy
+	}
+	if cfg.SyncConfig != nil {
+		out.nodeOpts.SyncConfig = *cfg.SyncConfig
+	}
+	if len(cfg.EntryAddrs) > 0 {
+		out.nodeOpts.EntryAddrs = cfg.EntryAddrs
+	}
+	if cfg.UseViz != nil {
+		out.nodeOpts.UseViz = *cfg.UseViz
+	}
+	if cfg.VizAddr != "" {
+		out.nodeOpts.VizAddr = cfg.VizAddr
+	}
+	if cfg.VizUpdateInterval > 0 {
+		out.nodeOpts.VizUpdateInterval = cfg.VizUpdateInterval
+	}
 
-	// Visualizer specific
-	viper.SetDefault("viz_update_interval", 10)
-
-	return nil
+	return out, nil
 }
