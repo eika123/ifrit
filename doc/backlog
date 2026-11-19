@@ -52,6 +52,14 @@
 	    the CA revokes its certificate (or issues a CRL update), evicting the node from the network for good
 	    or for a sustained cooldown period.
 
+	- State Snapshotter & Deterministic Garbage Collector (Grow-Only Control Stores):
+	  - Currently, `NoteStore` and `AccusationStore` remain grow-only so cumulative XOR fingerprints converge across all honest nodes while `VersionVectorMutable` tracks the active latest epochs (`activeNotes`, `activeAccusations`).
+	  - Future work: design a deterministic state snapshotter + garbage collector that compacts superseded historical notes and expired accusations at agreed epoch/checkpoint boundaries without causing transient or permanent fingerprint divergence.
+
+	- Out-of-Process Application Multiplexing & IPC Boundary:
+	  - Decouple application state stores from the in-process Ifrit daemon so external applications (written in any language) can host their own `reconcile` stores and reconcilers over sockets.
+	  - Let Ifrit focus strictly on membership and messaging/streaming between cluster members, exposing a local IPC socket (e.g. Unix domain socket / local gRPC) for app registration, membership/neighbor discovery, and multiplexed P2P transport.
+
 
 - Code overhaul
     - Detach visualizer component from rest of system
