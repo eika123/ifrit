@@ -66,4 +66,5 @@ message Pong {
     bytes fingerprint_data = 3;
     bytes fingerprint_accusations = 4;
     bytes fingerprint_view = 5;
+    bytes fingerprint_services = 6;
 }

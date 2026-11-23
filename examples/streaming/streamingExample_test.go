@@ -98,7 +98,13 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	if err != nil {
 		return nil, err
 	}
-	client.RegisterStreamHandler(streamHandler)
+	clientSvc, err := client.Service("streaming-example")
+	if err != nil {
+		return nil, err
+	}
+	if err := clientSvc.RegisterStreamHandler(streamHandler); err != nil {
+		return nil, err
+	}
 	// Pass client by value as argument to avoid closure capture races on local variables.
 	go func(c *ifrit.Client) {
 		defer wg.Done()
@@ -114,6 +120,12 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 		client.Stop()
 		return nil, err
 	}
+	masterSvc, err := master.Service("streaming-example")
+	if err != nil {
+		client.Stop()
+		master.Stop()
+		return nil, err
+	}
 	// Pass master by value as argument to avoid closure capture races on local variables.
 	go func(m *ifrit.Client) {
 		defer wg.Done()
@@ -121,7 +133,9 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	}(master)
 
 	return &App{
-		master: master,
-		client: client,
+		master:    master,
+		client:    client,
+		masterSvc: masterSvc,
+		clientSvc: clientSvc,
 	}, nil
 }

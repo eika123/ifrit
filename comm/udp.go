@@ -16,11 +16,12 @@ import (
 // without risking packet truncation.
 const udpBufferSize = 4096
 
-// Fingerprints bundles the three 8-byte store fingerprints piggybacked on UDP Pong replies.
+// Fingerprints bundles the four 8-byte store fingerprints piggybacked on UDP Pong replies.
 type Fingerprints struct {
 	Data        []byte
 	Accusations []byte
 	View        []byte
+	Services    []byte
 }
 
 type UDPServer struct {
@@ -116,7 +117,7 @@ func (us *UDPServer) Start() {
 			}
 
 			fps := us.getFingerprints()
-			content := us.PongContent(ping.GetNonce(), fps.Data, fps.Accusations, fps.View)
+			content := us.PongContent(ping.GetNonce(), fps.Data, fps.Accusations, fps.View, fps.Services)
 			r, s, err := us.Sign(content)
 			if err != nil {
 				log.Error(err.Error())
@@ -132,6 +133,7 @@ func (us *UDPServer) Start() {
 				FingerprintData:        fps.Data,
 				FingerprintAccusations: fps.Accusations,
 				FingerprintView:        fps.View,
+				FingerprintServices:    fps.Services,
 			}
 
 			resp, err := proto.Marshal(pong)
@@ -191,18 +193,20 @@ func appendFramed(dst []byte, field []byte) []byte {
 	return append(dst, field...)
 }
 
-// PongContent returns the canonical serialized semantic content of a Pong message (nonce, fingerprint_data, fingerprint_accusations, and fingerprint_view)
+// PongContent returns the canonical serialized semantic content of a Pong message
+// (nonce, fingerprint_data, fingerprint_accusations, fingerprint_view, and fingerprint_services)
 // using length-prefixed framing to prevent field-boundary shifting attacks.
-func PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
+func PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
+	totalLen := 4*5 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView) + len(fpServices)
 	content := make([]byte, 0, totalLen)
 	content = appendFramed(content, nonce)
 	content = appendFramed(content, fpData)
 	content = appendFramed(content, fpAcc)
 	content = appendFramed(content, fpView)
+	content = appendFramed(content, fpServices)
 	return content
 }
 
-func (us *UDPServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	return PongContent(nonce, fpData, fpAcc, fpView)
+func (us *UDPServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
+	return PongContent(nonce, fpData, fpAcc, fpView, fpServices)
 }

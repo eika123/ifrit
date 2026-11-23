@@ -248,6 +248,7 @@ echo " READY"
 
 # 4. Parse nodes and launch processes
 NODE_HTTP_ADDRS=()
+NODE_LOGS=()
 NODE_INDEX=1
 
 while read -r N_HOST N_HTTP N_TCP N_UDP; do
@@ -257,16 +258,18 @@ while read -r N_HOST N_HTTP N_TCP N_UDP; do
     CLEANUP_DIRS+=("$NODE_DIR")
     HTTP_ENDPOINT="${N_HOST}:${N_HTTP}"
     NODE_HTTP_ADDRS+=("$HTTP_ENDPOINT")
+    NODE_LOG="${NODE_DIR}/node.log"
+    NODE_LOGS+=("$NODE_LOG")
 
     echo "[*] Starting Node ${NODE_INDEX} (Host: ${N_HOST}, HTTP: ${N_HTTP}, RPC: ${N_TCP}, UDP: ${N_UDP})..."
-    IFRIT_CONFIG="${NODE_DIR}/ifrit_config.yaml" /tmp/ifrit-http-node \
+    IFRIT_CONFIG="" /tmp/ifrit-http-node \
         -hostname "${N_HOST}" \
         -http-port "${N_HTTP}" \
         -tcp-port "${N_TCP}" \
         -udp-port "${N_UDP}" \
         -ca-addr "${CA_ADDR}" \
         -crypto-dir "${NODE_DIR}" \
-        -gossip-interval 1 > /dev/null 2>&1 &
+        -gossip-interval 1 > "${NODE_LOG}" 2>&1 &
     PID=$!
     PIDS+=("$PID")
 
@@ -293,6 +296,12 @@ done
 if [ "$ALL_HEALTHY" = false ]; then
     echo " FAILED"
     echo "[-] One or more HTTP nodes failed to become healthy."
+    for idx in "${!NODE_LOGS[@]}"; do
+        if [ -s "${NODE_LOGS[$idx]}" ]; then
+            echo "[-] Node $((idx + 1)) (${NODE_HTTP_ADDRS[$idx]}) log:"
+            cat "${NODE_LOGS[$idx]}"
+        fi
+    done
     exit 1
 fi
 echo " READY"

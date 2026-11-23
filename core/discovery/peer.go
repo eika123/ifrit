@@ -60,10 +60,11 @@ type Peer struct {
 
 	// scratch pad between udp ping-pongs and gossip loop
 	// used to detect divergence, triggering calls on spread
-	fingerprintData  []byte
-	fingerprintAcc   []byte
-	fingerprintView  []byte
-	fingerprintMutex sync.RWMutex
+	fingerprintData     []byte
+	fingerprintAcc      []byte
+	fingerprintView     []byte
+	fingerprintServices []byte
+	fingerprintMutex    sync.RWMutex
 }
 
 // Ecdsa signature values
@@ -195,8 +196,22 @@ func (p *Peer) SetFingerprintView(fp []byte) {
 	p.fingerprintView = fp
 }
 
+func (p *Peer) FingerprintServices() []byte {
+	p.fingerprintMutex.RLock()
+	defer p.fingerprintMutex.RUnlock()
+
+	return p.fingerprintServices
+}
+
+func (p *Peer) SetFingerprintServices(fp []byte) {
+	p.fingerprintMutex.Lock()
+	defer p.fingerprintMutex.Unlock()
+
+	p.fingerprintServices = fp
+}
+
 // SetFingerprints updates cached peer fingerprints from remote responses.
-func (p *Peer) SetFingerprints(data, acc, view []byte) {
+func (p *Peer) SetFingerprints(data, acc, view, services []byte) {
 	// go: method calls on nil structs are allowed
 	if p == nil {
 		return
@@ -209,5 +224,8 @@ func (p *Peer) SetFingerprints(data, acc, view []byte) {
 	}
 	if len(view) > 0 {
 		p.SetFingerprintView(view)
+	}
+	if len(services) > 0 {
+		p.SetFingerprintServices(services)
 	}
 }

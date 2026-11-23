@@ -17,7 +17,7 @@ func (d *dummyPingService) Pause(time.Duration)                     {}
 func (d *dummyPingService) Ping(string, *pb.Ping) (*pb.Pong, error) { return nil, nil }
 func (d *dummyPingService) Start()                                  {}
 func (d *dummyPingService) Stop()                                   {}
-func (d *dummyPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
+func (d *dummyPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
 	return nil
 }
 func (d *dummyPingService) SetFingerprintsProvider(func() comm.Fingerprints) {}

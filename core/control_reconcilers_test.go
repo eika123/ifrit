@@ -589,6 +589,7 @@ func TestControlReconcilers_GossipSwitchoverAndReadmission(t *testing.T) {
 		nodeA.FingerprintData(),
 		nodeA.AccusationFingerprintBytes(),
 		nodeA.ViewFingerprintBytes(),
+		nodeA.ServiceFingerprintBytes(),
 	)
 	require.False(t, nodeA.IsDivergent(peerBOnA))
 	nodeA.gossip()

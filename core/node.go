@@ -60,23 +60,21 @@ type Node struct {
 	monitorTimeout         time.Duration
 	nodeDeadTimeout        float64
 
-	msgHandler      processMsg
-	msgHandlerMutex sync.RWMutex
-
-	streamHandler      streamMsg
-	streamHandlerMutex sync.RWMutex
+	services *serviceRegistry
 
 	reconciliationStrategy string
 	dataStoreReconciler    reconcile.StoreReconciler
 	dataStoreFP            func() []byte
 	dataReconcilerMutex    sync.RWMutex
 
-	certReconciler    reconcile.StoreReconciler
-	noteReconciler    reconcile.StoreReconciler
-	accReconciler     reconcile.StoreReconciler
-	reconcileRegistry *reconcile.Registry
-	defaultNegotiator reconcile.Negotiator
-	reconcileMux      *reconcile.Mux
+	certReconciler       reconcile.StoreReconciler
+	noteReconciler       reconcile.StoreReconciler
+	accReconciler        reconcile.StoreReconciler
+	serviceReconciler    reconcile.StoreReconciler
+	serviceAccReconciler reconcile.StoreReconciler
+	reconcileRegistry    *reconcile.Registry
+	defaultNegotiator    reconcile.Negotiator
+	reconcileMux         *reconcile.Mux
 
 	peerGate *PeerGate
 
@@ -108,8 +106,8 @@ type commService interface {
 	Stop()
 
 	Gossip(string, *pb.State) (*pb.StateResponse, error)
-	Send(string, *pb.Msg) (*pb.MsgResponse, error)
-	StreamMessenger(string, chan []byte, chan []byte) error
+	Send(string, string, *pb.Msg) (*pb.MsgResponse, error)
+	StreamMessenger(string, string, chan []byte, chan []byte) error
 }
 
 type NodeIdentityCatalog interface {
@@ -167,6 +165,9 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		comm:      comm,
 		self:      v.Self(),
 		view:      v,
+
+		// NB! consider moving msgHandlers and streamHandlers into serviceStores
+		services: newServiceRegistry(),
 
 		reconciliationStrategy: cfg.ReconciliationStrategy,
 		peerGate:               NewPeerGate(),
@@ -353,16 +354,6 @@ func (n *Node) Start() {
 }
 
 // //////////  Communication: Messages and Streaming //////////////////////////
-func (n *Node) SendMessage(dest string, ch chan *Message, data []byte) {
-	msg := &pb.Msg{
-		Content: data,
-	}
-
-	n.dispatcher.Submit(func() {
-		n.sendMsg(dest, ch, msg)
-	})
-}
-
 func (n *Node) IdToAddr(id []byte) (string, error) {
 	peer := n.view.Peer(string(id))
 	if peer == nil {
@@ -372,21 +363,9 @@ func (n *Node) IdToAddr(id []byte) (string, error) {
 	return peer.Addr, nil
 }
 
-func (n *Node) OpenStream(dest string, input, reply chan []byte) {
-	n.dispatcher.Submit(func() {
-		n.openStream(dest, input, reply)
-	})
-}
-
-func (n *Node) openStream(dest string, input, reply chan []byte) {
-	if err := n.comm.StreamMessenger(dest, input, reply); err != nil {
-		log.Error(err.Error())
-	}
-}
-
-func (n *Node) sendMsg(dest string, ch chan *Message, msg *pb.Msg) {
+func (n *Node) sendServiceMsg(serviceID, dest string, ch chan *Message, msg *pb.Msg) {
 	defer close(ch)
-	reply, err := n.comm.Send(dest, msg)
+	reply, err := n.comm.Send(serviceID, dest, msg)
 	if err != nil {
 		log.Error(err.Error())
 		ch <- nil
@@ -402,34 +381,10 @@ func (n *Node) sendMsg(dest string, ch chan *Message, msg *pb.Msg) {
 	ch <- &Message{Data: reply.GetContent(), Error: err}
 }
 
-// Expose so that client can set new handler directly
-func (n *Node) SetMsgHandler(newHandler processMsg) {
-	n.msgHandlerMutex.Lock()
-	defer n.msgHandlerMutex.Unlock()
-
-	n.msgHandler = newHandler
-}
-
-func (n *Node) getMsgHandler() processMsg {
-	n.msgHandlerMutex.RLock()
-	defer n.msgHandlerMutex.RUnlock()
-
-	return n.msgHandler
-}
-
-// Expose so that client can set new handler directly
-func (n *Node) SetStreamHandler(newHandler streamMsg) {
-	n.streamHandlerMutex.Lock()
-	defer n.streamHandlerMutex.Unlock()
-
-	n.streamHandler = newHandler
-}
-
-func (n *Node) getStreamHandler() streamMsg {
-	n.streamHandlerMutex.RLock()
-	defer n.streamHandlerMutex.RUnlock()
-
-	return n.streamHandler
+func (n *Node) openServiceStream(serviceID, dest string, input, reply chan []byte) {
+	if err := n.comm.StreamMessenger(serviceID, dest, input, reply); err != nil {
+		log.Error(err.Error())
+	}
 }
 
 /////////////////////////////////////////////////////////

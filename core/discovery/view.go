@@ -48,6 +48,8 @@ type View struct {
 
 	certStore digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
 
+	serviceDir *ServiceDirectory
+
 	// maps Peer.Id to a timeout. Cannot use ReverseIndexStore because
 	// timeout is not a boolean group
 	timeoutMap   map[string]*timeout
@@ -97,6 +99,8 @@ type ViewStores struct {
 	Certs          digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
 	Notes          digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
 	Accusations    digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
+	Services       digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol]
+	ServiceAccs    digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol]
 	RemovalTimeout time.Duration // defaults to 60s when <= 0
 	UpdateInterval time.Duration // defaults to 10s when <= 0
 }
@@ -209,6 +213,17 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		},
 	)
 
+	var svcStore digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol]
+	var svcAccStore digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol]
+	if vs != nil {
+		svcStore = vs.Services
+		svcAccStore = vs.ServiceAccs
+	}
+	serviceDir, err := NewServiceDirectory(self, numRings, svcStore, svcAccStore)
+	if err != nil {
+		return nil, err
+	}
+
 	v := &View{
 		rings:             rings,
 		viewStore:         viewStore,
@@ -218,6 +233,7 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		noteStore:         noteStore,
 		activeNotes:       activeNotes,
 		certStore:         certStore,
+		serviceDir:        serviceDir,
 		timeoutMap:        make(map[string]*timeout),
 		maxByz:            maxByz,
 		currGossipRing:    1,
@@ -360,6 +376,35 @@ func (v *View) AddFull(id string, cert *x509.Certificate) error {
 // Panics if v, noteStore, or certStore is nil (i.e. View was not constructed via NewView).
 func (v *View) Fingerprint() digestmaps.DigestSymbol {
 	return v.noteStore.Fingerprint().XOR(v.certStore.Fingerprint())
+}
+
+// ServiceDirectory returns the Service Discovery Plane managed alongside this View.
+func (v *View) ServiceDirectory() *ServiceDirectory {
+	return v.serviceDir
+}
+
+// ServiceStore returns the Tier 1 grow-only store for ServiceNotes.
+func (v *View) ServiceStore() digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol] {
+	if v.serviceDir == nil {
+		return nil
+	}
+	return v.serviceDir.ServiceStore()
+}
+
+// ServiceAccusationStore returns the Tier 1 grow-only store for ServiceAccusations.
+func (v *View) ServiceAccusationStore() digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol] {
+	if v.serviceDir == nil {
+		return nil
+	}
+	return v.serviceDir.ServiceAccusationStore()
+}
+
+// ServiceFingerprint returns the combined XOR fingerprint of ServiceDirectory (ifrit/services ^ ifrit/service_accs).
+func (v *View) ServiceFingerprint() digestmaps.DigestSymbol {
+	if v.serviceDir == nil {
+		return 0
+	}
+	return v.serviceDir.Fingerprint()
 }
 
 // NoteFingerprint returns the commutative XOR fingerprint of all peer notes in the view (including self).
@@ -659,6 +704,10 @@ func (v *View) AddLive(p *Peer) {
 	old := v.rings.add(p)
 	v.viewMutex.Unlock()
 
+	if v.serviceDir != nil {
+		v.serviceDir.OnPeerLive(p)
+	}
+
 	for _, addr := range old {
 		v.cm.CloseConn(addr)
 	}
@@ -697,6 +746,10 @@ func (v *View) RemoveLive(p *Peer) {
 	v.liveStore.Remove(peer)
 	v.rings.remove(peer)
 	v.viewMutex.Unlock()
+
+	if v.serviceDir != nil {
+		v.serviceDir.OnPeerDead(peer)
+	}
 
 	v.cm.CloseConn(peer.Addr)
 
@@ -826,6 +879,10 @@ func (v *View) checkTimeouts() {
 			v.RemoveLive(t.accused)
 			v.DeleteTimeout(t.accused)
 		}
+	}
+
+	if v.serviceDir != nil {
+		v.serviceDir.CheckTimeouts(time.Now(), v.removalTimeout)
 	}
 }
 

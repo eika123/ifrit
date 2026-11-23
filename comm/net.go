@@ -32,21 +32,30 @@ func ListenOnPort(port int) (net.Listener, error) {
 	}
 }
 
+func resolveAdvertisedHost(hostname string) (string, error) {
+	if hostname != "" {
+		return hostname, nil
+	}
+	h, err := os.Hostname()
+	if err != nil {
+		return "", err
+	}
+	addrs, err := net.LookupHost(h)
+	if err != nil {
+		return "", err
+	}
+	if len(addrs) == 0 {
+		return "", fmt.Errorf("no addresses found for hostname %q", h)
+	}
+	return addrs[0], nil
+}
+
 // GetListener attempts to bind a TCP listener on the specified port, incrementing up to 100 times.
 // Returns the listener, the full host:port address string, or an error.
 func GetListener(hostname string, portnum int) (net.Listener, string, error) {
-	h, err := os.Hostname()
+	host, err := resolveAdvertisedHost(hostname)
 	if err != nil {
 		return nil, "", err
-	}
-
-	addr, err := net.LookupHost(h)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if hostname != "" {
-		addr[0] = hostname
 	}
 
 	attempts := 0
@@ -54,7 +63,7 @@ func GetListener(hostname string, portnum int) (net.Listener, string, error) {
 		l, err := net.Listen("tcp4", fmt.Sprintf(":%d", portnum))
 		if err == nil {
 			tcpAddr := l.Addr().(*net.TCPAddr)
-			fullAddr := fmt.Sprintf("%s:%d", addr[0], tcpAddr.Port)
+			fullAddr := fmt.Sprintf("%s:%d", host, tcpAddr.Port)
 			return l, fullAddr, nil
 		} else {
 			log.Error(err.Error())
@@ -73,18 +82,9 @@ func GetListener(hostname string, portnum int) (net.Listener, string, error) {
 // ListenUdp binds a UDP connection on the specified port.
 // Returns the connection, the full host:port address string, or an error.
 func ListenUdp(hostname string, portnum int) (*net.UDPConn, string, error) {
-	h, err := os.Hostname()
+	host, err := resolveAdvertisedHost(hostname)
 	if err != nil {
 		return nil, "", err
-	}
-
-	addr, err := net.LookupHost(h)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if hostname != "" {
-		addr[0] = hostname
 	}
 
 	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", portnum))
@@ -98,7 +98,7 @@ func ListenUdp(hostname string, portnum int) (*net.UDPConn, string, error) {
 	}
 
 	actualUdpAddr := conn.LocalAddr().(*net.UDPAddr)
-	fullAddr := fmt.Sprintf("%s:%d", addr[0], actualUdpAddr.Port)
+	fullAddr := fmt.Sprintf("%s:%d", host, actualUdpAddr.Port)
 
 	return conn, fullAddr, nil
 }

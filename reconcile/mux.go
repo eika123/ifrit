@@ -71,6 +71,16 @@ func (m *Mux) ReplaceStore(storeID string, handler StreamHandler) error {
 	return nil
 }
 
+// UnregisterStore removes the handler registered for storeID, if any.
+func (m *Mux) UnregisterStore(storeID string) {
+	if storeID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.handlers, storeID)
+}
+
 // Register attaches this Mux to any grpc.ServiceRegistrar (such as *grpc.Server or *comm.Comm).
 func (m *Mux) Register(s grpc.ServiceRegistrar) {
 	reconpb.RegisterReconcileServiceServer(s, m)

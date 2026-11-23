@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit/crypto/cauth"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -107,21 +106,8 @@ func TestHTTPDissemination_PythonDriver(t *testing.T) {
 	caAddr, caCleanup := setupTestCA(t)
 	defer caCleanup()
 
-	// Global config setup for ifrit clients in this process
-	testCfgDir, err := os.MkdirTemp("", "ifrit-test-cfg-*")
-	require.NoError(t, err)
-	defer func() {
-		if rmErr := os.RemoveAll(testCfgDir); rmErr != nil {
-			t.Logf("cleanup cfg dir: %v", rmErr)
-		}
-	}()
-
-	cfgFile := filepath.Join(testCfgDir, "ifrit_config.yaml")
-	cfgContent := fmt.Sprintf("ca_addr: %q\ngossip_interval: 1\n", caAddr)
-	require.NoError(t, os.WriteFile(cfgFile, []byte(cfgContent), 0644))
-	t.Setenv("IFRIT_CONFIG", cfgFile)
-	viper.Set("ca_addr", caAddr)
-	viper.Set("gossip_interval", 1)
+	// Verify nodes boot cleanly via programmatic AppConfig without requiring IFRIT_CONFIG.
+	t.Setenv("IFRIT_CONFIG", "")
 
 	// Spin up 3 HTTP nodes
 	numNodes := 3
@@ -179,20 +165,7 @@ func TestHTTPDissemination_GoClient(t *testing.T) {
 	caAddr, caCleanup := setupTestCA(t)
 	defer caCleanup()
 
-	testCfgDir, err := os.MkdirTemp("", "ifrit-test-cfg-go-*")
-	require.NoError(t, err)
-	defer func() {
-		if rmErr := os.RemoveAll(testCfgDir); rmErr != nil {
-			t.Logf("cleanup cfg dir: %v", rmErr)
-		}
-	}()
-
-	cfgFile := filepath.Join(testCfgDir, "ifrit_config.yaml")
-	cfgContent := fmt.Sprintf("ca_addr: %q\ngossip_interval: 1\n", caAddr)
-	require.NoError(t, os.WriteFile(cfgFile, []byte(cfgContent), 0644))
-	t.Setenv("IFRIT_CONFIG", cfgFile)
-	viper.Set("ca_addr", caAddr)
-	viper.Set("gossip_interval", 1)
+	t.Setenv("IFRIT_CONFIG", "")
 
 	// Launch 2 nodes
 	apps := make([]*App, 2)

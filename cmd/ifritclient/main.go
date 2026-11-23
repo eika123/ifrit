@@ -53,7 +53,13 @@ func main() {
 		panic(err)
 	}
 
-	clientIfrit.RegisterMsgHandler(msgHandler)
+	svc, err := clientIfrit.Service("ifritclient")
+	if err != nil {
+		panic(err)
+	}
+	if err := svc.RegisterMsgHandler(msgHandler); err != nil {
+		panic(err)
+	}
 	go clientIfrit.Start()
 
 	go func() {
@@ -64,7 +70,7 @@ func main() {
 			}
 
 			addr := clientIfrit.Members()[0]
-			ch := clientIfrit.SendTo(addr, []byte("HellO!"))
+			ch := svc.SendTo(addr, []byte("HellO!"))
 
 			time.Sleep(3 * time.Second)
 			msg := <-ch

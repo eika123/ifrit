@@ -151,6 +151,9 @@ type VersionVector[K comparable, T any, S Symbol[S]] interface {
 	// Fingerprint returns the current cumulative XOR fingerprint in O(1).
 	Fingerprint() S
 
+	// Epoch returns the monotonically increasing mutation counter for the entire vector.
+	Epoch() uint64
+
 	// Size returns the count of active identity slots.
 	Size() int
 

@@ -162,7 +162,7 @@ func (cs *commStub) isStopped() bool {
 	return cs.stopped
 }
 
-func (cs *commStub) StreamMessenger(string, chan []byte, chan []byte) error {
+func (cs *commStub) StreamMessenger(string, string, chan []byte, chan []byte) error {
 	return nil
 }
 
@@ -199,7 +199,7 @@ func (cs *commStub) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) 
 	return &pb.StateResponse{}, nil
 }
 
-func (cs *commStub) Send(addr string, m *pb.Msg) (*pb.MsgResponse, error) {
+func (cs *commStub) Send(serviceID, addr string, m *pb.Msg) (*pb.MsgResponse, error) {
 	return &pb.MsgResponse{}, nil
 }
 
@@ -219,7 +219,7 @@ func (ps *pingStub) Ping(addr string, m *pb.Ping) (*pb.Pong, error) {
 	return &pb.Pong{}, nil
 }
 
-func (ps *pingStub) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
+func (ps *pingStub) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
 	return nil
 }
 

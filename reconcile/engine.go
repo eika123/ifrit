@@ -242,6 +242,11 @@ func (e *Engine[T]) connFor(ctx context.Context, addr string) (grpc.ClientConnIn
 	return e.connProvider(ctx, addr)
 }
 
+// Fingerprint returns the canonical 8-byte big-endian fingerprint of the engine's store.
+func (e *Engine[T]) Fingerprint() []byte {
+	return digestmaps.EncodeDigestSymbol(e.store.Fingerprint())
+}
+
 // ReconcileWithPeer initiates a single-RPC Phase 1 + Phase 2 reconciliation against addr.
 func (e *Engine[T]) ReconcileWithPeer(ctx context.Context, addr string) (Summary, error) {
 	summary := Summary{Peer: addr}
@@ -257,6 +262,9 @@ func (e *Engine[T]) ReconcileWithPeer(ctx context.Context, addr string) (Summary
 	cc, err := e.connFor(ctx, addr)
 	if err != nil {
 		return summary, err
+	}
+	if cc == nil {
+		return summary, ErrMissingConnProvider
 	}
 
 	ctx, cancel := context.WithCancel(e.outgoingContext(ctx, e.negotiator.Name()))

@@ -51,6 +51,7 @@ func (n *Node) rebuttal() {
 
 func (n *Node) gossip() {
 	n.gossipWithStoreReconcilers()
+	n.reconcileServiceStores()
 }
 
 func (n *Node) monitor() {
@@ -164,7 +165,7 @@ type pingService interface {
 	Ping(string, *pb.Ping) (*pb.Pong, error)
 	Start()
 	Stop()
-	PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte
+	PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte
 	SetFingerprintsProvider(func() comm.Fingerprints)
 }
 
@@ -186,7 +187,7 @@ func (fd *failureDetector) validPong(pong *pb.Pong, pingMsg *pb.Ping, dest *disc
 		return false
 	}
 
-	content := fd.ps.PongContent(pong.GetNonce(), pong.GetFingerprintData(), pong.GetFingerprintAccusations(), pong.GetFingerprintView())
+	content := fd.ps.PongContent(pong.GetNonce(), pong.GetFingerprintData(), pong.GetFingerprintAccusations(), pong.GetFingerprintView(), pong.GetFingerprintServices())
 	return fd.cs.Verify(content, sign.GetR(), sign.GetS(), dest.PublicKey())
 }
 
@@ -218,6 +219,7 @@ func (fd *failureDetector) probe(dest *discovery.Peer) error {
 		pong.GetFingerprintData(),
 		pong.GetFingerprintAccusations(),
 		pong.GetFingerprintView(),
+		pong.GetFingerprintServices(),
 	)
 
 	return nil

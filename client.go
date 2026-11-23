@@ -12,6 +12,7 @@ import (
 
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core"
+	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/crypto/identity"
 	"github.com/eika123/ifrit/digestmaps"
 	"github.com/eika123/ifrit/reconcile"
@@ -230,66 +231,194 @@ func (c *Client) VerifySignature(r, s, content []byte, id string) bool {
 	return c.node.Verify(r, s, content, id)
 }
 
-// Sends the given data to the given destination.
-// The caller must ensure that the given data is not modified after calling this function.
-// The returned channel will be populated with the response. The data and error values are contained in the *core.Message
-// type. If the destination could not be reached or timeout occurs, nil will be sent through the channel.
-// The response data can be safely modified after receiving it. The message instance is nil if the recipient is unavailable.
-// Ifrit will close the channel after receiving the response message.
-func (c *Client) SendTo(dest string, data []byte) chan *core.Message {
+// PeerInfo represents an immutable snapshot of a live cluster member's identity and RPC address.
+type PeerInfo = discovery.PeerInfo
+
+// Self returns the local node's identity and RPC endpoint.
+func (c *Client) Self() PeerInfo {
+	return c.node.Self()
+}
+
+// LivePeers returns all live cluster members in the base Fireflies view.
+func (c *Client) LivePeers() []PeerInfo {
+	return c.node.LivePeers()
+}
+
+// Neighbours returns the RPC addresses of direct ring neighbors in the base Fireflies overlay.
+func (c *Client) Neighbours() []string {
+	return c.node.Neighbours()
+}
+
+// ConnProvider returns a reconcile.ConnProvider borrowing pooled mTLS connections from this client.
+func (c *Client) ConnProvider() reconcile.ConnProvider {
+	return c.node.ConnProvider()
+}
+
+// PeerAuthenticator returns a reconcile.PeerAuthenticator enforcing mTLS + live-view membership.
+func (c *Client) PeerAuthenticator() reconcile.PeerAuthenticator {
+	return c.node.PeerAuthenticator()
+}
+
+// ServiceMembers returns all live, non-evicted peers currently hosting serviceID.
+func (c *Client) ServiceMembers(serviceID string) []PeerInfo {
+	return c.node.ServiceMembers(serviceID)
+}
+
+type serviceConfig struct {
+	version     uint64
+	healthCheck func() bool
+}
+
+// ServiceOption configures how a third-party service attaches to an Ifrit client.
+type ServiceOption func(*serviceConfig)
+
+// WithServiceVersion sets the initial service version published in this node's ServiceNote.
+func WithServiceVersion(version uint64) ServiceOption {
+	return func(cfg *serviceConfig) {
+		if version > 0 {
+			cfg.version = version
+		}
+	}
+}
+
+// WithHealthCheck registers a local health callback invoked before rebutting a ServiceAccusation
+// targeting this service. Returning false unregisters the service instead of rebutting.
+func WithHealthCheck(fn func() bool) ServiceOption {
+	return func(cfg *serviceConfig) {
+		cfg.healthCheck = fn
+	}
+}
+
+// ServiceEndpoint is a scoped handle for a third-party service running atop Ifrit,
+// providing isolated P2P messaging, bidirectional streaming, super-overlay discovery,
+// service-level accusations, and transparent reconcilable store attachment.
+type ServiceEndpoint struct {
+	client    *Client
+	serviceID string
+}
+
+// Service attaches a third-party service identified by serviceID to this client,
+// initializing its deterministic RingSuperOverlay over S_svc and publishing a signed
+// ServiceNote across the cluster.
+func (c *Client) Service(serviceID string, opts ...ServiceOption) (*ServiceEndpoint, error) {
+	if c == nil || c.node == nil {
+		return nil, errors.New("ifrit client is nil")
+	}
+	cfg := serviceConfig{version: 1}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if _, err := c.node.RegisterService(serviceID, cfg.version, cfg.healthCheck); err != nil {
+		return nil, err
+	}
+	return &ServiceEndpoint{
+		client:    c,
+		serviceID: serviceID,
+	}, nil
+}
+
+// ID returns the validated service identifier for this endpoint.
+func (s *ServiceEndpoint) ID() string {
+	return s.serviceID
+}
+
+// Members returns all live, non-evicted peers currently hosting this service (sorted by ID).
+func (s *ServiceEndpoint) Members() []PeerInfo {
+	return s.client.node.ServiceMembers(s.serviceID)
+}
+
+// MemberAddrs returns the RPC addresses of all live, non-evicted peers hosting this service.
+func (s *ServiceEndpoint) MemberAddrs() []string {
+	members := s.Members()
+	addrs := make([]string, 0, len(members))
+	for _, p := range members {
+		addrs = append(addrs, p.Addr)
+	}
+	return addrs
+}
+
+// Neighbours returns the deterministic k-ring neighbors from this service's RingSuperOverlay.
+func (s *ServiceEndpoint) Neighbours() []PeerInfo {
+	return s.client.node.ServiceNeighbours(s.serviceID)
+}
+
+// NeighbourAddrs returns the RPC addresses of this service's deterministic k-ring neighbors.
+func (s *ServiceEndpoint) NeighbourAddrs() []string {
+	neighbours := s.Neighbours()
+	addrs := make([]string, 0, len(neighbours))
+	for _, p := range neighbours {
+		addrs = append(addrs, p.Addr)
+	}
+	return addrs
+}
+
+// AccusePeer signs and publishes a ServiceAccusation against peerID on ringNum of this
+// service's RingSuperOverlay when peerID's service instance crashes or behaves malignantly.
+func (s *ServiceEndpoint) AccusePeer(peerID string, ringNum uint32) error {
+	return s.client.node.AccuseServicePeer(s.serviceID, peerID, ringNum)
+}
+
+// SendTo sends data to dest routed to this service's message handler.
+func (s *ServiceEndpoint) SendTo(dest string, data []byte) chan *core.Message {
 	ch := make(chan *core.Message, 1)
-
-	go c.node.SendMessage(dest, ch, data)
-
+	go s.client.node.SendServiceMessage(s.serviceID, dest, ch, data)
 	return ch
 }
 
-// Same as SendTo, but destination is now the Ifrit id of the receiver.
-// Returns an error if no observed peer has the specified  destination id.
-func (c *Client) SendToId(destId []byte, data []byte) (chan *core.Message, error) {
-	addr, err := c.node.IdToAddr(destId)
+// SendToId sends data to the peer identified by destId, routed to this service's message handler.
+func (s *ServiceEndpoint) SendToId(destId []byte, data []byte) (chan *core.Message, error) {
+	addr, err := s.client.node.IdToAddr(destId)
 	if err != nil {
 		return nil, err
 	}
-
 	ch := make(chan *core.Message, 1)
-
-	go c.node.SendMessage(addr, ch, data)
-
-	return ch, err
+	go s.client.node.SendServiceMessage(s.serviceID, addr, ch, data)
+	return ch, nil
 }
 
-// Returns a pair of channels used for bi-directional streams, given the destination. The first channel
-// is the input stream to the server and the second stream is the reply stream from the server.
-// To close the stream, close the input channel. The reply stream is open as long as the server sends messages
-// back to the client. The caller must ensure that the reply stream does not block by draining the buffer so that the stream session can complete.
-// Note: it is adviced to implement an aknowledgement mechanism to avoid an untimely closing of a channel and loss of messages.
-func (c *Client) OpenStream(dest string) (chan []byte, chan []byte) {
-	inputStream := make(chan []byte)
-	replyStream := make(chan []byte)
-
-	go c.node.OpenStream(dest, inputStream, replyStream)
-
-	return inputStream, replyStream
+// OpenStream opens a bidirectional byte stream to dest routed to this service's stream handler.
+func (s *ServiceEndpoint) OpenStream(dest string) (inputCh chan<- []byte, replyCh <-chan []byte) {
+	input := make(chan []byte)
+	reply := make(chan []byte)
+	go s.client.node.OpenServiceStream(s.serviceID, dest, input, reply)
+	return input, reply
 }
 
-// Registers the given function as the stream handler.
-// Invoked when the client opens a stream. The callback accepts two channels -
-// an unbuffered input channel and an unbuffered channel used for replying to the client.
-// The caller must close the reply channel to signal that the stream is closing.
-// See the note in OpenStream().
-func (c *Client) RegisterStreamHandler(streamHandler func(chan []byte, chan []byte)) {
-	c.node.SetStreamHandler(streamHandler)
+// RegisterStreamHandler binds streamHandler to inbound streams targeting this service.
+func (s *ServiceEndpoint) RegisterStreamHandler(streamHandler func(chan []byte, chan []byte)) error {
+	return s.client.node.SetServiceStreamHandler(s.serviceID, streamHandler)
 }
 
-// Registers the given function as the message handler.
-// Invoked each time the ifrit client receives an application message (another client sent it through SendTo), this callback will be invoked.
-// The returned byte slice will be sent back as the response.
-// If error is non-nil, it will be returned as the response.
-// All responses will be received on the sending side through a channel,
-// see SendTo documentation for details.
-func (c *Client) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) {
-	c.node.SetMsgHandler(msgHandler)
+// RegisterMsgHandler binds msgHandler to inbound unary messages targeting this service.
+func (s *ServiceEndpoint) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) error {
+	return s.client.node.SetServiceMsgHandler(s.serviceID, msgHandler)
+}
+
+// RegisterStoreReconciler mounts a custom reconcile.StoreReconciler for this service under
+// "service/<serviceID>" and enables automatic background anti-entropy across Neighbours().
+func (s *ServiceEndpoint) RegisterStoreReconciler(rec reconcile.StoreReconciler, fpFn func() []byte) error {
+	return s.client.node.RegisterServiceStoreReconciler(s.serviceID, rec, fpFn)
+}
+
+// Close detaches this service's handlers, store reconciler, and super-overlay, and publishes
+// an updated ServiceNote epoch without this service.
+func (s *ServiceEndpoint) Close() error {
+	return s.client.node.UnregisterService(s.serviceID)
+}
+
+// RegisterServiceStore attaches a typed ReverseIndexStore[T] to svc under "service/<serviceID>",
+// providing transparent eventual-consistency replication via store.Insert() across svc's RingSuperOverlay.
+func RegisterServiceStore[T any](svc *ServiceEndpoint, store ReverseIndexStore[T], codec ...ItemCodec[T]) error {
+	if svc == nil || svc.client == nil || svc.client.node == nil {
+		return errors.New("service endpoint is nil")
+	}
+	var c ItemCodec[T]
+	if len(codec) > 0 {
+		c = codec[0]
+	}
+	return core.RegisterServiceStore(svc.client.node, svc.serviceID, store, c)
 }
 
 // ReverseIndexStore defines the standard contract that all data stores must comply to.

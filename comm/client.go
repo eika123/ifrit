@@ -14,9 +14,14 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
 
-const defaultRPCTimeout = 10 * time.Second
+const (
+	defaultRPCTimeout = 10 * time.Second
+	// ServiceIDMetadataKey is the gRPC metadata key routing Messenger and Stream RPCs to a service.
+	ServiceIDMetadataKey = "service-id"
+)
 
 var (
 	errReachable = errors.New("Remote entity not reachable")
@@ -92,7 +97,7 @@ func (c *gRPCClient) Gossip(addr string, args *pb.State) (*pb.StateResponse, err
 	return reply, nil
 }
 
-func (c *gRPCClient) Send(addr string, args *pb.Msg) (*pb.MsgResponse, error) {
+func (c *gRPCClient) Send(serviceID, addr string, args *pb.Msg) (*pb.MsgResponse, error) {
 	conn, err := c.connection(addr)
 	if err != nil {
 		return nil, err
@@ -100,6 +105,9 @@ func (c *gRPCClient) Send(addr string, args *pb.Msg) (*pb.MsgResponse, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultRPCTimeout)
 	defer cancel()
+	if serviceID != "" {
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(ServiceIDMetadataKey, serviceID))
+	}
 
 	return conn.Messenger(ctx, args)
 }
@@ -114,13 +122,18 @@ func (c *gRPCClient) ClientConn(addr string) (grpc.ClientConnInterface, error) {
 	return conn.cc, nil
 }
 
-func (c *gRPCClient) StreamMessenger(addr string, input, reply chan []byte) error {
+func (c *gRPCClient) StreamMessenger(serviceID, addr string, input, reply chan []byte) error {
 	conn, err := c.connection(addr)
 	if err != nil {
 		return err
 	}
 
-	srv, err := conn.Stream(context.Background())
+	callCtx := context.Background()
+	if serviceID != "" {
+		callCtx = metadata.NewOutgoingContext(callCtx, metadata.Pairs(ServiceIDMetadataKey, serviceID))
+	}
+
+	srv, err := conn.Stream(callCtx)
 	if err != nil {
 		return err
 	}

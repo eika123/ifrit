@@ -10,6 +10,7 @@ type versionVectorMutable[K comparable, T any, S Symbol[S]] struct {
 	hasher      ItemHasher[T, S]
 	items       map[K]*VersionedItem[T]
 	fingerprint S
+	vectorEpoch uint64
 }
 
 // NewVersionVectorMutable creates a thread-safe VersionVectorMutable initialized with key and digest hasher functions.
@@ -47,6 +48,7 @@ func (vv *versionVectorMutable[K, T, S]) AddItem(versionedItem VersionedItem[T])
 		Version: versionNumber,
 	}
 	vv.items[key] = itemCopy
+	vv.vectorEpoch++
 	return itemCopy, true
 }
 
@@ -109,6 +111,7 @@ func (vv *versionVectorMutable[K, T, S]) Remove(key K) (VersionedItem[T], bool) 
 	digest := vv.hasher(*entry)
 	vv.fingerprint = vv.fingerprint.XOR(digest)
 	delete(vv.items, key)
+	vv.vectorEpoch++
 	return *entry, true
 }
 
@@ -124,6 +127,7 @@ func (vv *versionVectorMutable[K, T, S]) RemoveVersion(key K, version uint64) bo
 	digest := vv.hasher(*entry)
 	vv.fingerprint = vv.fingerprint.XOR(digest)
 	delete(vv.items, key)
+	vv.vectorEpoch++
 	return true
 }
 
@@ -131,6 +135,12 @@ func (vv *versionVectorMutable[K, T, S]) Fingerprint() S {
 	vv.mu.RLock()
 	defer vv.mu.RUnlock()
 	return vv.fingerprint
+}
+
+func (vv *versionVectorMutable[K, T, S]) Epoch() uint64 {
+	vv.mu.RLock()
+	defer vv.mu.RUnlock()
+	return vv.vectorEpoch
 }
 
 func (vv *versionVectorMutable[K, T, S]) Size() int {
@@ -182,7 +192,11 @@ func (vv *versionVectorMutable[K, T, S]) Clear() {
 	vv.mu.Lock()
 	defer vv.mu.Unlock()
 
+	if len(vv.items) == 0 {
+		return
+	}
 	vv.items = make(map[K]*VersionedItem[T])
 	var zero S
 	vv.fingerprint = zero
+	vv.vectorEpoch++
 }

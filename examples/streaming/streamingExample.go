@@ -14,8 +14,10 @@ import (
 /** Example of bi-directional streaming using Ifrit library*/
 
 type App struct {
-	master *ifrit.Client
-	client *ifrit.Client
+	master    *ifrit.Client
+	client    *ifrit.Client
+	masterSvc *ifrit.ServiceEndpoint
+	clientSvc *ifrit.ServiceEndpoint
 }
 
 func main() {
@@ -60,8 +62,14 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
+	clientSvc, err := client.Service("streaming-example")
+	if err != nil {
+		return nil, err
+	}
+	if err := clientSvc.RegisterStreamHandler(streamHandler); err != nil {
+		return nil, err
+	}
 	go client.Start()
-	client.RegisterStreamHandler(streamHandler)
 
 	master, err := ifrit.NewClient(&ifrit.Config{
 		New:      true,
@@ -71,16 +79,23 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
+	masterSvc, err := master.Service("streaming-example")
+	if err != nil {
+		return nil, err
+	}
+
 	go master.Start()
 	return &App{
-		master: master,
-		client: client,
+		master:    master,
+		client:    client,
+		masterSvc: masterSvc,
+		clientSvc: clientSvc,
 	}, nil
 }
 
 func (app *App) Stream() error {
 	var wg sync.WaitGroup
-	inputStream, reply := app.master.OpenStream(app.client.Addr())
+	inputStream, reply := app.masterSvc.OpenStream(app.client.Addr())
 
 	var receivedCount int
 	var receivedMu sync.Mutex

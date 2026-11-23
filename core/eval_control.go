@@ -240,6 +240,8 @@ func (n *Node) evalValidCertificate(cert *x509.Certificate) error {
 			return err
 		}
 		n.promotePendingAccusationsForPeer(id)
+		n.promotePendingServiceNotesForPeer(id)
+		n.promotePendingServiceAccusationsForPeer(id)
 	}
 	return nil
 }
@@ -477,6 +479,102 @@ func (n *Node) Verify(r, s, content []byte, id string) bool {
 	}
 
 	return n.cs.Verify(content, r, s, peer.PublicKey())
+}
+
+func (n *Node) livePeerLookup(id string) (*discovery.Peer, bool) {
+	if n.self != nil && id == n.self.Id {
+		return n.self, true
+	}
+	p := n.view.Peer(id)
+	if p == nil || !n.view.IsAlive(p) {
+		return nil, false
+	}
+	return p, true
+}
+
+func (n *Node) validateServiceNote(note *discovery.ServiceNote) error {
+	if note == nil {
+		return discovery.ErrNilServiceNote
+	}
+	if n.self != nil && note.Id() == n.self.Id {
+		return nil
+	}
+	r, s := note.Signature()
+	if len(r) == 0 || len(s) == 0 {
+		return errInvalidSignature
+	}
+	peer := n.view.Peer(note.Id())
+	if peer == nil {
+		return errNoPeer
+	}
+	if !n.cs.Verify(note.UnsignedBytes(), r, s, peer.PublicKey()) {
+		return errInvalidSignature
+	}
+	return nil
+}
+
+func (n *Node) validateServiceAccusation(acc *discovery.ServiceAccusation) error {
+	if acc == nil {
+		return discovery.ErrNilServiceAccusation
+	}
+	if acc.RingNum() == 0 || acc.RingNum() > n.view.NumRings() {
+		return errors.New("service accusation ring number out of bounds")
+	}
+	r, s := acc.Signature()
+	if len(r) == 0 || len(s) == 0 {
+		return errInvalidSignature
+	}
+	var accuser *discovery.Peer
+	if n.self != nil && acc.Accuser() == n.self.Id {
+		accuser = n.self
+	} else {
+		accuser = n.view.Peer(acc.Accuser())
+	}
+	if accuser == nil {
+		return errNoPeer
+	}
+	if !n.cs.Verify(acc.UnsignedBytes(), r, s, accuser.PublicKey()) {
+		return errInvalidSignature
+	}
+	return nil
+}
+
+func (n *Node) promotePendingServiceNotesForPeer(id string) {
+	if n.view == nil || n.view.ServiceStore() == nil || n.view.ServiceDirectory() == nil {
+		return
+	}
+	for _, note := range n.view.ServiceStore().Elements() {
+		if note == nil || note.Id() != id {
+			continue
+		}
+		if err := n.validateServiceNote(note); err != nil {
+			continue
+		}
+		n.view.ServiceDirectory().PromoteServiceNote(note, n.livePeerLookup)
+	}
+}
+
+func (n *Node) promotePendingServiceAccusationsForPeer(id string) {
+	if n.view == nil || n.view.ServiceAccusationStore() == nil || n.view.ServiceDirectory() == nil {
+		return
+	}
+	for _, acc := range n.view.ServiceAccusationStore().Elements() {
+		if acc == nil || (acc.Accused() != id && acc.Accuser() != id) {
+			continue
+		}
+		if err := n.validateServiceAccusation(acc); err != nil {
+			continue
+		}
+		isSelf, err := n.view.ServiceDirectory().ValidateAndPromoteAccusation(acc, n.livePeerLookup)
+		if err != nil {
+			continue
+		}
+		if isSelf {
+			if _, _, rebErr := n.view.ServiceDirectory().ShouldRebutService(n.cs, acc.ServiceID(), acc.ServiceVersion()); rebErr != nil {
+				log.Error("failed to rebut service accusation", "service", acc.ServiceID(), "err", rebErr)
+			}
+		}
+	}
 }
 
 /////////////////////////////////////////////////////////////////////////

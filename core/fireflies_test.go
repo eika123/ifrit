@@ -38,14 +38,8 @@ func appendProtocolFramed(dst []byte, field []byte) []byte {
 	return append(dst, field...)
 }
 
-func (r *recordingPingServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
-	content := make([]byte, 0, totalLen)
-	content = appendProtocolFramed(content, nonce)
-	content = appendProtocolFramed(content, fpData)
-	content = appendProtocolFramed(content, fpAcc)
-	content = appendProtocolFramed(content, fpView)
-	return content
+func (r *recordingPingServer) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
+	return comm.PongContent(nonce, fpData, fpAcc, fpView, fpServices)
 }
 
 func TestNode_PiggybacksAccusationFingerprintOnPingServer(t *testing.T) {
@@ -359,7 +353,8 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 			return reconcile.Summary{}, nil
 		},
 	}
-	installStubReconcilers(n, rec, &stubStoreReconciler{}, &stubStoreReconciler{}, &stubStoreReconciler{})
+	dataRec := &stubStoreReconciler{}
+	installStubReconcilers(n, rec, &stubStoreReconciler{}, &stubStoreReconciler{}, dataRec)
 
 	p1, _, err := createTestPeer()
 	require.NoError(t, err)
@@ -367,6 +362,7 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	p1.SetFingerprintData(n.FingerprintData())
 	p1.SetFingerprintAccusations(n.AccusationFingerprintBytes())
 	p1.SetFingerprintView(n.ViewFingerprintBytes())
+	p1.SetFingerprintServices(n.ServiceFingerprintBytes())
 
 	p2, _, err := createTestPeer()
 	require.NoError(t, err)
@@ -374,6 +370,7 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	p2.SetFingerprintData(n.FingerprintData())
 	p2.SetFingerprintAccusations(n.AccusationFingerprintBytes())
 	p2.SetFingerprintView(n.ViewFingerprintBytes())
+	p2.SetFingerprintServices(n.ServiceFingerprintBytes())
 
 	n.view.AddLive(p1)
 	n.view.AddLive(p2)
@@ -381,11 +378,13 @@ func TestNode_GossipStateDivergenceCheck(t *testing.T) {
 	// Initially, peers have matching fingerprints -> IsDivergent returns false
 	n.gossip()
 	assert.Empty(t, rec.takeAddrs(), "In-sync peers should not be reconciled")
+	assert.Empty(t, dataRec.takeAddrs(), "In-sync peers should not reconcile data")
 
-	// Make p1 divergent in Data
+	// Make p1 divergent in Data only -> reconciles data without triggering host control stores
 	p1.SetFingerprintData([]byte("different-data"))
 	n.gossip()
-	assert.Equal(t, []string{"peer1-addr"}, rec.takeAddrs(), "Only divergent peer p1 should be reconciled")
+	assert.Equal(t, []string{"peer1-addr"}, dataRec.takeAddrs(), "Only divergent peer p1 should reconcile data")
+	assert.Empty(t, rec.takeAddrs(), "Data-only divergence should not trigger host control reconcilers")
 
 	// Bring p1 back into sync with local node
 	p1.SetFingerprintData(n.FingerprintData())
@@ -453,6 +452,7 @@ func TestNode_GossipConvergenceClearsDivergence(t *testing.T) {
 	p.SetFingerprintData([]byte("initial-diff"))
 	p.SetFingerprintAccusations(localAccFP)
 	p.SetFingerprintView(n.ViewFingerprintBytes())
+	p.SetFingerprintServices(n.ServiceFingerprintBytes())
 	n.view.AddLive(p)
 
 	n.gossip()
@@ -540,14 +540,8 @@ func appendFramed(dst []byte, field []byte) []byte {
 	return append(dst, field...)
 }
 
-func (s *mockPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte) []byte {
-	totalLen := 4*4 + len(nonce) + len(fpData) + len(fpAcc) + len(fpView)
-	content := make([]byte, 0, totalLen)
-	content = appendFramed(content, nonce)
-	content = appendFramed(content, fpData)
-	content = appendFramed(content, fpAcc)
-	content = appendFramed(content, fpView)
-	return content
+func (s *mockPingService) PongContent(nonce []byte, fpData []byte, fpAcc []byte, fpView []byte, fpServices []byte) []byte {
+	return comm.PongContent(nonce, fpData, fpAcc, fpView, fpServices)
 }
 
 func createTestPeer() (*discovery.Peer, *cryptoStub, error) {
@@ -579,8 +573,9 @@ func TestFailureDetector_ProbeSuccess(t *testing.T) {
 	expectedFPData := []byte{0x12, 0x34, 0x56, 0x78}
 	expectedFPAcc := []byte{0x9A, 0xBC, 0xDE, 0xF0}
 	expectedFPView := []byte{0x11, 0x22, 0x33, 0x44}
+	expectedFPServices := []byte{0x55, 0x66, 0x77, 0x88}
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), expectedFPData, expectedFPAcc, expectedFPView))
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), expectedFPData, expectedFPAcc, expectedFPView, expectedFPServices))
 		if err != nil {
 			return nil, err
 		}
@@ -593,6 +588,7 @@ func TestFailureDetector_ProbeSuccess(t *testing.T) {
 			FingerprintData:        expectedFPData,
 			FingerprintAccusations: expectedFPAcc,
 			FingerprintView:        expectedFPView,
+			FingerprintServices:    expectedFPServices,
 		}, nil
 	}
 
@@ -605,6 +601,7 @@ func TestFailureDetector_ProbeSuccess(t *testing.T) {
 	assert.Equal(t, expectedFPData, destPeer.FingerprintData(), "peer should store piggybacked data fingerprint")
 	assert.Equal(t, expectedFPAcc, destPeer.FingerprintAccusations(), "peer should store piggybacked accusation fingerprint")
 	assert.Equal(t, expectedFPView, destPeer.FingerprintView(), "peer should store piggybacked view fingerprint")
+	assert.Equal(t, expectedFPServices, destPeer.FingerprintServices(), "peer should store piggybacked services fingerprint")
 }
 
 func TestFailureDetector_ProbeTransportFailuresAndThreshold(t *testing.T) {
@@ -644,7 +641,7 @@ func TestFailureDetector_ProbeRecoveryResetsCount(t *testing.T) {
 
 	// Followed by a successful probe
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), nil, nil, nil))
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), nil, nil, nil, nil))
 		require.NoError(t, err)
 		return &pb.Pong{
 			Nonce: p.GetNonce(),
@@ -686,7 +683,7 @@ func TestFailureDetector_ProbeTamperedFingerprint(t *testing.T) {
 
 	// Legitimate responder signed original fingerprints with the nonce
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), originalDataFP, originalAccFP, nil))
+		r, s, err := cs.Sign(ps.PongContent(p.GetNonce(), originalDataFP, originalAccFP, nil, nil))
 		require.NoError(t, err)
 		return &pb.Pong{
 			Nonce: p.GetNonce(),
@@ -710,7 +707,7 @@ func TestFailureDetector_ProbeMismatchedNonce(t *testing.T) {
 
 	wrongNonce := []byte("different-nonce-bytes-1234567890")
 	ps.customPong = func(p *pb.Ping) (*pb.Pong, error) {
-		r, s, err := cs.Sign(ps.PongContent(wrongNonce, nil, nil, nil))
+		r, s, err := cs.Sign(ps.PongContent(wrongNonce, nil, nil, nil, nil))
 		require.NoError(t, err)
 		return &pb.Pong{
 			Nonce: wrongNonce,

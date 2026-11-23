@@ -29,7 +29,19 @@ func (n *Node) Fingerprints() comm.Fingerprints {
 		Data:        n.FingerprintData(),
 		Accusations: n.AccusationFingerprintBytes(),
 		View:        n.ViewFingerprintBytes(),
+		Services:    n.ServiceFingerprintBytes(),
 	}
+}
+
+func (n *Node) ServiceFingerprint() digestmaps.DigestSymbol {
+	return n.view.ServiceFingerprint()
+}
+
+func (n *Node) ServiceFingerprintBytes() []byte {
+	fp := n.view.ServiceFingerprint()
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(fp))
+	return buf[:]
 }
 
 func (n *Node) AccusationFingerprint() digestmaps.DigestSymbol {
@@ -56,18 +68,19 @@ func (n *Node) ViewFingerprintBytes() []byte {
 
 // IsDivergent checks if peer p's reported fingerprints differ from local node's current fingerprints.
 func (n *Node) IsDivergent(p *discovery.Peer) bool {
-	dataDiff, accDiff, viewDiff := n.DivergentSets(p)
-	return dataDiff || accDiff || viewDiff
+	dataDiff, accDiff, viewDiff, serviceDiff := n.DivergentSets(p)
+	return dataDiff || accDiff || viewDiff || serviceDiff
 }
 
 // DivergentSets returns boolean indicators for which specific sets differ between peer p and the local node.
-func (n *Node) DivergentSets(peer *discovery.Peer) (dataDiff, accDiff, viewDiff bool) {
+func (n *Node) DivergentSets(peer *discovery.Peer) (dataDiff, accDiff, viewDiff, serviceDiff bool) {
 	if peer == nil {
-		return false, false, false
+		return false, false, false, false
 	}
 	dataDiff = !bytes.Equal(peer.FingerprintData(), n.FingerprintData())
 	accDiff = !bytes.Equal(peer.FingerprintAccusations(), n.AccusationFingerprintBytes())
 	viewDiff = !bytes.Equal(peer.FingerprintView(), n.ViewFingerprintBytes())
+	serviceDiff = !bytes.Equal(peer.FingerprintServices(), n.ServiceFingerprintBytes())
 	return
 }
 

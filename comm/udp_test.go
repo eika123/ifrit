@@ -41,10 +41,12 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	expectedFPData := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x12, 0x34}
 	expectedFPAcc := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	expectedFPView := []byte{0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+	expectedFPServices := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	server.SetFingerprints(Fingerprints{
 		Data:        expectedFPData,
 		Accusations: expectedFPAcc,
 		View:        expectedFPView,
+		Services:    expectedFPServices,
 	})
 
 	go server.Start()
@@ -64,7 +66,8 @@ func TestUDPServer_PongCarriesFingerprint(t *testing.T) {
 	assert.Equal(t, expectedFPData, pong.GetFingerprintData())
 	assert.Equal(t, expectedFPAcc, pong.GetFingerprintAccusations())
 	assert.Equal(t, expectedFPView, pong.GetFingerprintView())
-	assert.Equal(t, PongContent(nonce, expectedFPData, expectedFPAcc, expectedFPView), signer.last(), "signature must cover PongContent(nonce, fpData, fpAcc, fpView)")
+	assert.Equal(t, expectedFPServices, pong.GetFingerprintServices())
+	assert.Equal(t, PongContent(nonce, expectedFPData, expectedFPAcc, expectedFPView, expectedFPServices), signer.last(), "signature must cover PongContent(nonce, fpData, fpAcc, fpView, fpServices)")
 
 	// Verify dynamic provider updates are reflected on subsequent pings without races.
 	var fpMu sync.RWMutex
@@ -94,15 +97,14 @@ func TestPongContent_FieldBoundaryShifting(t *testing.T) {
 	nonce := []byte("test-nonce-12345678901234567890")
 	val := []byte("boundary-test")
 
-	// Shift bytes between fpData and fpAcc:
-	// Case 1: fpData has val, fpAcc is nil
-	c1 := PongContent(nonce, val, nil, nil)
-	// Case 2: fpData is nil, fpAcc has val
-	c2 := PongContent(nonce, nil, val, nil)
-	// Case 3: fpData and fpAcc are nil, fpView has val
-	c3 := PongContent(nonce, nil, nil, val)
+	// Shift bytes between fpData, fpAcc, fpView, and fpServices:
+	c1 := PongContent(nonce, val, nil, nil, nil)
+	c2 := PongContent(nonce, nil, val, nil, nil)
+	c3 := PongContent(nonce, nil, nil, val, nil)
+	c4 := PongContent(nonce, nil, nil, nil, val)
 
 	assert.NotEqual(t, c1, c2, "framed PongContent must prevent field-boundary shifting between fpData and fpAcc")
 	assert.NotEqual(t, c1, c3, "framed PongContent must prevent field-boundary shifting between fpData and fpView")
 	assert.NotEqual(t, c2, c3, "framed PongContent must prevent field-boundary shifting between fpAcc and fpView")
+	assert.NotEqual(t, c3, c4, "framed PongContent must prevent field-boundary shifting between fpView and fpServices")
 }

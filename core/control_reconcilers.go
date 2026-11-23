@@ -25,10 +25,13 @@ import (
 )
 
 const (
-	storeIDCerts = "certs"
-	storeIDNotes = "notes"
-	storeIDAccs  = "accusations"
-	storeIDData  = "data"
+	storeIDCerts       = "ifrit/certs"
+	storeIDNotes       = "ifrit/notes"
+	storeIDAccs        = "ifrit/accs"
+	storeIDServices    = "ifrit/services"
+	storeIDServiceAccs = "ifrit/service_accs"
+	storeIDData        = "ifrit/data"
+	serviceStorePrefix = "service/"
 )
 
 // ControlReconcilerHooks defines injectable validation and application hooks for
@@ -42,6 +45,12 @@ type ControlReconcilerHooks struct {
 
 	AccDetector reconcile.TamperDetector[*discovery.Accusation]
 	AccApplier  reconcile.ItemApplier[*discovery.Accusation]
+
+	ServiceDetector reconcile.TamperDetector[*discovery.ServiceNote]
+	ServiceApplier  reconcile.ItemApplier[*discovery.ServiceNote]
+
+	ServiceAccDetector reconcile.TamperDetector[*discovery.ServiceAccusation]
+	ServiceAccApplier  reconcile.ItemApplier[*discovery.ServiceAccusation]
 }
 
 // --- Protobuf ItemCodecs for control items ---
@@ -97,6 +106,32 @@ func (accusationCodec) Decode(data []byte) (*discovery.Accusation, error) {
 	return discovery.AccusationFromPb(&msg), nil
 }
 
+type serviceNoteCodec struct{}
+
+func (serviceNoteCodec) Encode(n *discovery.ServiceNote) ([]byte, error) {
+	if n == nil {
+		return nil, discovery.ErrNilServiceNote
+	}
+	return n.MarshalBinary()
+}
+
+func (serviceNoteCodec) Decode(data []byte) (*discovery.ServiceNote, error) {
+	return discovery.UnmarshalServiceNote(data)
+}
+
+type serviceAccusationCodec struct{}
+
+func (serviceAccusationCodec) Encode(a *discovery.ServiceAccusation) ([]byte, error) {
+	if a == nil {
+		return nil, discovery.ErrNilServiceAccusation
+	}
+	return a.MarshalBinary()
+}
+
+func (serviceAccusationCodec) Decode(data []byte) (*discovery.ServiceAccusation, error) {
+	return discovery.UnmarshalServiceAccusation(data)
+}
+
 // SyncConfig defines streaming transfer limits and timeouts.
 type SyncConfig struct {
 	MaxItemBytes int64         // Maximum byte size of a single item (default 64 MB; <= 0 disables limit)
@@ -135,10 +170,20 @@ func newControlViewStores(strategy string) (*discovery.ViewStores, error) {
 		if err != nil {
 			return nil, err
 		}
+		services, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.ServiceNote]())
+		if err != nil {
+			return nil, err
+		}
+		serviceAccs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.ServiceAccusation]())
+		if err != nil {
+			return nil, err
+		}
 		return &discovery.ViewStores{
 			Certs:       certs,
 			Notes:       notes,
 			Accusations: accs,
+			Services:    services,
+			ServiceAccs: serviceAccs,
 		}, nil
 	}
 
@@ -154,10 +199,20 @@ func newControlViewStores(strategy string) (*discovery.ViewStores, error) {
 	if err != nil {
 		return nil, err
 	}
+	services, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.ServiceNote]())
+	if err != nil {
+		return nil, err
+	}
+	serviceAccs, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.ServiceAccusation]())
+	if err != nil {
+		return nil, err
+	}
 	return &discovery.ViewStores{
 		Certs:       certs,
 		Notes:       notes,
 		Accusations: accs,
+		Services:    services,
+		ServiceAccs: serviceAccs,
 	}, nil
 }
 
@@ -286,6 +341,24 @@ func (n *Node) rebuildControlReconcilers(hooks ControlReconcilerHooks) error {
 		return err
 	}
 	n.accReconciler, err = buildControlReconciler(n, n.view.AccusationStore(), storeIDAccs, accusationCodec{}, hooks.AccDetector, hooks.AccApplier)
+	if err != nil {
+		return err
+	}
+	if hooks.ServiceApplier == nil {
+		defaults := n.defaultControlReconcilerHooks()
+		hooks.ServiceDetector = defaults.ServiceDetector
+		hooks.ServiceApplier = defaults.ServiceApplier
+	}
+	if hooks.ServiceAccApplier == nil {
+		defaults := n.defaultControlReconcilerHooks()
+		hooks.ServiceAccDetector = defaults.ServiceAccDetector
+		hooks.ServiceAccApplier = defaults.ServiceAccApplier
+	}
+	n.serviceReconciler, err = buildControlReconciler(n, n.view.ServiceStore(), storeIDServices, serviceNoteCodec{}, hooks.ServiceDetector, hooks.ServiceApplier)
+	if err != nil {
+		return err
+	}
+	n.serviceAccReconciler, err = buildControlReconciler(n, n.view.ServiceAccusationStore(), storeIDServiceAccs, serviceAccusationCodec{}, hooks.ServiceAccDetector, hooks.ServiceAccApplier)
 	return err
 }
 
@@ -328,32 +401,69 @@ func (n *Node) reconcileControlStores(ctx context.Context, addr string) (certFP,
 	return certFP, noteFP, accFP, nil
 }
 
-// reconcilePeerStores executes sequential control reconciliation (certs -> notes -> accusations)
-// concurrently with application data store reconciliation, updating peer fingerprints on completion.
+// reconcileServiceDiscoveryStores runs Service Discovery reconciliation sequentially:
+// ifrit/services -> ifrit/service_accs, returning the combined remote serviceFP.
+func (n *Node) reconcileServiceDiscoveryStores(ctx context.Context, addr string) ([]byte, error) {
+	var annFP, accFP []byte
+	if n.serviceReconciler != nil {
+		sum, err := n.serviceReconciler.ReconcileWithPeer(ctx, addr)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile services: %w", err)
+		}
+		annFP = sum.RemoteFingerprint
+	}
+	if n.serviceAccReconciler != nil {
+		sum, err := n.serviceAccReconciler.ReconcileWithPeer(ctx, addr)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile service accusations: %w", err)
+		}
+		accFP = sum.RemoteFingerprint
+	}
+	return xorFingerprintBytes(annFP, accFP), nil
+}
+
+// reconcilePeerStores executes sequential host control reconciliation (certs -> notes -> accusations),
+// followed by service discovery reconciliation (ifrit/services -> ifrit/service_accs) when divergent,
+// concurrently with built-in data store reconciliation (ifrit/data).
+// Fingerprints for each plane are updated independently so ifrit/data errors never block
+// Fireflies membership or service discovery convergence (Audit R5).
 func (n *Node) reconcilePeerStores(ctx context.Context, peer *discovery.Peer) error {
 	if peer == nil {
 		return errors.New("reconcilePeerStores: peer cannot be nil")
 	}
+
+	dataDiff, accDiff, viewDiff, serviceDiff := n.DivergentSets(peer)
+	runHostCtrl := viewDiff || accDiff
 
 	n.dataReconcilerMutex.RLock()
 	dataRec := n.dataStoreReconciler
 	n.dataReconcilerMutex.RUnlock()
 
 	var (
-		wg      sync.WaitGroup
-		ctrlErr error
-		dataErr error
-		certFP  []byte
-		noteFP  []byte
-		accFP   []byte
-		dataFP  []byte
+		wg        sync.WaitGroup
+		ctrlErr   error
+		svcErr    error
+		dataErr   error
+		certFP    []byte
+		noteFP    []byte
+		accFP     []byte
+		serviceFP []byte
+		dataFP    []byte
 	)
 
 	wg.Go(func() {
-		certFP, noteFP, accFP, ctrlErr = n.reconcileControlStores(ctx, peer.Addr)
+		if runHostCtrl {
+			certFP, noteFP, accFP, ctrlErr = n.reconcileControlStores(ctx, peer.Addr)
+			if ctrlErr != nil {
+				return
+			}
+		}
+		if serviceDiff {
+			serviceFP, svcErr = n.reconcileServiceDiscoveryStores(ctx, peer.Addr)
+		}
 	})
 
-	if dataRec != nil {
+	if dataRec != nil && dataDiff {
 		wg.Go(func() {
 			sum, err := dataRec.ReconcileWithPeer(ctx, peer.Addr)
 			dataErr = err
@@ -363,16 +473,18 @@ func (n *Node) reconcilePeerStores(ctx context.Context, peer *discovery.Peer) er
 
 	wg.Wait()
 
-	if ctrlErr != nil {
-		return ctrlErr
+	if runHostCtrl && ctrlErr == nil {
+		viewFP := xorFingerprintBytes(certFP, noteFP)
+		peer.SetFingerprints(nil, accFP, viewFP, nil)
 	}
-	if dataErr != nil {
-		return dataErr
+	if serviceDiff && svcErr == nil && len(serviceFP) > 0 {
+		peer.SetFingerprintServices(serviceFP)
+	}
+	if dataRec != nil && dataErr == nil && len(dataFP) > 0 {
+		peer.SetFingerprintData(dataFP)
 	}
 
-	viewFP := xorFingerprintBytes(certFP, noteFP)
-	peer.SetFingerprints(dataFP, accFP, viewFP)
-	return nil
+	return errors.Join(ctrlErr, svcErr, dataErr)
 }
 
 func xorFingerprintBytes(a, b []byte) []byte {
@@ -484,6 +596,30 @@ func (accControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) 
 	log.Debug("Control accusation reconciliation misbehavior", "err", err)
 }
 
+type serviceControlDetector struct {
+	node *Node
+}
+
+func (d serviceControlDetector) ValidateItem(_ context.Context, item *discovery.ServiceNote) error {
+	return d.node.validateServiceNote(item)
+}
+
+func (serviceControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) {
+	log.Debug("Control service note reconciliation misbehavior", "err", err)
+}
+
+type serviceAccControlDetector struct {
+	node *Node
+}
+
+func (d serviceAccControlDetector) ValidateItem(_ context.Context, item *discovery.ServiceAccusation) error {
+	return d.node.validateServiceAccusation(item)
+}
+
+func (serviceAccControlDetector) OnMisbehavior(_ context.Context, err error, _ []byte) {
+	log.Debug("Control service accusation reconciliation misbehavior", "err", err)
+}
+
 func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 	return ControlReconcilerHooks{
 		CertDetector: certControlDetector{node: n},
@@ -546,6 +682,54 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
 			}
 			return err
+		},
+		ServiceDetector: serviceControlDetector{node: n},
+		ServiceApplier: func(_ context.Context, item *discovery.ServiceNote) error {
+			if item == nil {
+				return discovery.ErrNilServiceNote
+			}
+			if n.self != nil && n.self.Id == item.Id() {
+				return fmt.Errorf("%w: self service note", reconcile.ErrIgnore)
+			}
+			if n.view.ServiceStore() != nil {
+				n.view.ServiceStore().Insert(item)
+			}
+			if n.view.ServiceDirectory() != nil {
+				if promoted := n.view.ServiceDirectory().PromoteServiceNote(item, n.livePeerLookup); promoted {
+					n.promotePendingServiceAccusationsForPeer(item.Id())
+				} else {
+					return fmt.Errorf("%w: stale service note epoch %d", reconcile.ErrIgnore, item.Epoch())
+				}
+			}
+			return nil
+		},
+		ServiceAccDetector: serviceAccControlDetector{node: n},
+		ServiceAccApplier: func(_ context.Context, item *discovery.ServiceAccusation) error {
+			if item == nil {
+				return discovery.ErrNilServiceAccusation
+			}
+			if n.view.ServiceAccusationStore() != nil {
+				n.view.ServiceAccusationStore().Insert(item)
+			}
+			if n.view.ServiceDirectory() == nil {
+				return nil
+			}
+			isSelf, err := n.view.ServiceDirectory().ValidateAndPromoteAccusation(item, n.livePeerLookup)
+			if err != nil {
+				if errors.Is(err, discovery.ErrServiceAccAlreadyExists) ||
+					errors.Is(err, discovery.ErrInvalidServiceVersion) ||
+					errors.Is(err, discovery.ErrInvalidServiceAccuser) ||
+					errors.Is(err, discovery.ErrServiceNotHosted) {
+					return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
+				}
+				return err
+			}
+			if isSelf {
+				if _, _, rebErr := n.view.ServiceDirectory().ShouldRebutService(n.cs, item.ServiceID(), item.ServiceVersion()); rebErr != nil {
+					log.Error("failed to rebut service accusation", "service", item.ServiceID(), "err", rebErr)
+				}
+			}
+			return nil
 		},
 	}
 }

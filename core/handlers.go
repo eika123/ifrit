@@ -5,9 +5,13 @@ import (
 	"errors"
 	"io"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -80,6 +84,21 @@ func (n *Node) newStateResponse() *pb.StateResponse {
 	return &pb.StateResponse{}
 }
 
+func serviceIDFromContext(ctx context.Context) (string, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return "", status.Error(codes.InvalidArgument, "missing service-id metadata")
+	}
+	vals := md.Get(comm.ServiceIDMetadataKey)
+	if len(vals) != 1 || vals[0] == "" {
+		return "", status.Error(codes.InvalidArgument, "missing or invalid service-id metadata")
+	}
+	if err := discovery.ValidateServiceID(vals[0]); err != nil {
+		return "", status.Errorf(codes.InvalidArgument, "invalid service-id %q: %v", vals[0], err)
+	}
+	return vals[0], nil
+}
+
 func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, error) {
 	var errMsg string
 	var replyContent []byte
@@ -89,19 +108,37 @@ func (n *Node) Messenger(ctx context.Context, args *pb.Msg) (*pb.MsgResponse, er
 		return nil, err
 	}
 
-	if handler := n.getMsgHandler(); handler != nil {
-		replyContent, err = handler(args.GetContent())
-		if err != nil {
-			errMsg = err.Error()
-		}
+	serviceID, err := serviceIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	handler := n.getServiceMsgHandler(serviceID)
+	if handler == nil {
+		return nil, status.Errorf(codes.NotFound, "no message handler registered for service %q", serviceID)
+	}
+
+	replyContent, err = handler(args.GetContent())
+	if err != nil {
+		errMsg = err.Error()
 	}
 	return &pb.MsgResponse{Content: replyContent, Error: errMsg}, nil
 }
 
 func (n *Node) Stream(srv pb.Gossip_StreamServer) error {
-	handler := n.getStreamHandler()
+	ctx := srv.Context()
+	if _, err := n.validateCtx(ctx); err != nil {
+		return err
+	}
+
+	serviceID, err := serviceIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	handler := n.getServiceStreamHandler(serviceID)
 	if handler == nil {
-		return nil
+		return status.Errorf(codes.NotFound, "no stream handler registered for service %q", serviceID)
 	}
 
 	// Channels used for bi-directional communication
@@ -119,7 +156,6 @@ func (n *Node) Stream(srv pb.Gossip_StreamServer) error {
 
 	go n.runStreamHandler(handler, input, reply)
 
-	ctx := srv.Context()
 	var recvErr error
 
 	for {
