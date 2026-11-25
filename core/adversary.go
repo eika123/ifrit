@@ -1,7 +1,9 @@
 package core
 
 import (
+	"math"
 	"math/rand"
+	"sync"
 
 	"github.com/eika123/ifrit/core/discovery"
 	pb "github.com/eika123/ifrit/protobuf"
@@ -32,6 +34,13 @@ type AdversarialPolicy struct {
 
 	// OnGossipOut can mutate the outbound State message (e.g. poison digests or fingerprints).
 	OnGossipOut func(target *discovery.Peer, msg *pb.State)
+
+	// OnIncomingRebuttal is called when an incoming rebuttal note arrives (via
+	// Spread with IsRebuttal=true, or via ifrit/notes reconciliation for a peer
+	// that currently has an active accusation or timer). Returning true drops
+	// the rebuttal without aborting reconciliation, leaving the local view
+	// divergent so SyncComplete triggers extra reconciliation rounds.
+	OnIncomingRebuttal func(peer *discovery.Peer, note *discovery.Note) bool
 }
 
 func (n *Node) SetAdversarialPolicy(p *AdversarialPolicy) {
@@ -73,4 +82,55 @@ func (a *AdversarialPolicy) shouldSuppressAccusation(target *discovery.Peer, rin
 		return true
 	}
 	return false
+}
+
+func (a *AdversarialPolicy) shouldDropIncomingRebuttal(peer *discovery.Peer, note *discovery.Note) bool {
+	if a == nil || a.OnIncomingRebuttal == nil {
+		return false
+	}
+	return a.OnIncomingRebuttal(peer, note)
+}
+
+// NewDecreasingRebuttalDropper returns an OnIncomingRebuttal hook that tracks
+// the 1-based count of received rebuttals per peer and drops each rebuttal with
+// probability probFn(attempt) in [0, 1]. If rng is nil, math/rand's global
+// source is used.
+func NewDecreasingRebuttalDropper(probFn func(attempt int) float64, rng *rand.Rand) func(*discovery.Peer, *discovery.Note) bool {
+	var (
+		mu       sync.Mutex
+		attempts = make(map[string]int)
+	)
+	return func(peer *discovery.Peer, _ *discovery.Note) bool {
+		if peer == nil || probFn == nil {
+			return false
+		}
+		mu.Lock()
+		attempts[peer.Id]++
+		attempt := attempts[peer.Id]
+		var sample float64
+		if rng != nil {
+			sample = rng.Float64()
+		} else {
+			sample = rand.Float64()
+		}
+		mu.Unlock()
+
+		p := probFn(attempt)
+		if p <= 0 {
+			return false
+		}
+		if p >= 1 {
+			return true
+		}
+		return sample < p
+	}
+}
+
+// NewExponentialRebuttalDropper returns an OnIncomingRebuttal hook whose drop
+// probability decays exponentially per peer: p(k) = (initialBps/10000) * decay^(k-1).
+func NewExponentialRebuttalDropper(initialBps uint32, decay float64, rng *rand.Rand) func(*discovery.Peer, *discovery.Note) bool {
+	p0 := float64(initialBps) / float64(BasisPointMax)
+	return NewDecreasingRebuttalDropper(func(attempt int) float64 {
+		return p0 * math.Pow(decay, float64(attempt-1))
+	}, rng)
 }

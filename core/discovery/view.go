@@ -906,6 +906,23 @@ func (v *View) ShouldRebuttal(epoch uint64, ringNum uint32) bool {
 	return false
 }
 
+// IsRebuttal reports whether note is a strictly newer note for peer that
+// supersedes at least one active accusation against peer in this view.
+func (v *View) IsRebuttal(peer *Peer, note *Note) bool {
+	if peer == nil || note == nil {
+		return false
+	}
+	if v.HasNote(peer.Id, note.Epoch()) {
+		return false
+	}
+	for _, acc := range v.ActiveAccusationsForPeer(peer) {
+		if note.Epoch() > acc.Epoch() {
+			return true
+		}
+	}
+	return false
+}
+
 // ShouldBeNeighbour reports whether a peer with the given ID should be a direct neighbour of the local node on any ring.
 //
 // Prerequisites / Expected Services:

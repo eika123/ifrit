@@ -634,6 +634,10 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 			if peer == nil {
 				return errNoPeer
 			}
+			if n.view.IsRebuttal(peer, item) && n.AdversarialPolicy().shouldDropIncomingRebuttal(peer, item) {
+				log.Debug("Adversary: dropped incoming reconciled rebuttal", "peer", peer.Id, "epoch", item.Epoch())
+				return fmt.Errorf("%w: adversary dropped incoming rebuttal", reconcile.ErrIgnore)
+			}
 			err := n.applyVerifiedNote(item, peer)
 			if errors.Is(err, errOldNote) {
 				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)

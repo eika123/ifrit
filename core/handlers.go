@@ -49,6 +49,16 @@ func (n *Node) Spread(ctx context.Context, args *pb.State) (*pb.StateResponse, e
 	// NOTE: this means we need to figure out how old peers renew their certificates and
 	// how the id is updated. Currently, it's totally random
 	remoteId := string(cert.SubjectKeyId[:])
+	if args.GetOwnNote() != nil {
+		if existing := n.view.Peer(remoteId); existing != nil {
+			incomingNote := discovery.NoteFromPb(args.GetOwnNote())
+			if (args.GetIsRebuttal() || n.view.IsRebuttal(existing, incomingNote)) &&
+				n.AdversarialPolicy().shouldDropIncomingRebuttal(existing, incomingNote) {
+				log.Debug("Adversary: dropped incoming Spread rebuttal", "peer", remoteId)
+				return n.newStateResponse(), nil
+			}
+		}
+	}
 	peer, wasObserved, wasAccused, err := n.admitCaller(cert, remoteId, args.GetOwnNote())
 	if err != nil {
 		return nil, err

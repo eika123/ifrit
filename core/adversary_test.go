@@ -1,7 +1,11 @@
 package core
 
 import (
+	"context"
+	"math/rand"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/core/internal/testutil"
@@ -184,4 +188,105 @@ func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
 	err = node.evalNote(byzNote)
 	require.Error(t, err, "evalNote must reject note with upper bits set beyond numRings")
 	require.Equal(t, errInvalidMask, err)
+}
+
+func TestAdversarialPolicy_ExponentialRebuttalDropper(t *testing.T) {
+	// Always drop first attempt (p0 = 1.0), then halve on each attempt.
+	// Over many independent peers, empirical drop rate must decrease monotonically.
+	rng := rand.New(rand.NewSource(42))
+	dropper := NewExponentialRebuttalDropper(BasisPointMax, 0.5, rng)
+
+	const trials = 400
+	var drops [4]int
+	for i := 0; i < trials; i++ {
+		p := &discovery.Peer{Id: string(genId())}
+		for attempt := 0; attempt < 4; attempt++ {
+			if dropper(p, nil) {
+				drops[attempt]++
+			}
+		}
+	}
+
+	assert.Equal(t, trials, drops[0], "attempt 1 with initialBps=10000 must always drop")
+	assert.Greater(t, drops[0], drops[1], "attempt 2 drop rate must be lower than attempt 1")
+	assert.Greater(t, drops[1], drops[2], "attempt 3 drop rate must be lower than attempt 2")
+	assert.Greater(t, drops[2], drops[3], "attempt 4 drop rate must be lower than attempt 3")
+}
+
+func TestAdversarialPolicy_DropIncomingRebuttal_TriggersExtraReconciliationRounds(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, _, _ := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, _, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	// Admit both nodes via production Spread and converge baseline views cleanly.
+	require.NoError(t, nodeA.admitViaThinSpread(commB.Addr()))
+	require.NoError(t, nodeB.admitViaThinSpread(commA.Addr()))
+
+	peerAOnB := nodeB.view.Peer(nodeA.self.Id)
+	peerBOnA := nodeA.view.Peer(nodeB.self.Id)
+	require.NotNil(t, peerAOnB)
+	require.NotNil(t, peerBOnA)
+	peerAOnB.Addr = commA.Addr()
+	peerBOnA.Addr = commB.Addr()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+	_, _, viewDiff, _ := nodeA.DivergentSets(peerBOnA)
+	require.False(t, viewDiff, "baseline views must be converged before accusation")
+
+	// nodeB has an active accusation against nodeA at epoch 1.
+	acc := testutil.NewAccusation(1, peerAOnB.Id, nodeB.self.Id, 1, privB)
+	testutil.AddTestAccusation(t, nodeB.view, acc)
+	require.NotEmpty(t, nodeB.view.ActiveAccusationsForPeer(peerAOnB))
+
+	// nodeB drops the first 2 incoming rebuttals from nodeA and accepts the 3rd.
+	var attempts atomic.Int32
+	nodeB.SetAdversarialPolicy(&AdversarialPolicy{
+		OnIncomingRebuttal: NewDecreasingRebuttalDropper(func(attempt int) float64 {
+			attempts.Store(int32(attempt))
+			if attempt <= 2 {
+				return 1.0
+			}
+			return 0.0
+		}, nil),
+	})
+
+	// nodeA produces a real higher-epoch rebuttal self-note (epoch 2) via ShouldRebuttal.
+	require.True(t, nodeA.view.ShouldRebuttal(1, 1))
+	require.Equal(t, uint64(2), nodeA.view.SelfNote().Epoch())
+	_, _, viewDiff, _ = nodeA.DivergentSets(peerBOnA)
+	require.True(t, viewDiff)
+
+	// Round 1: nodeB drops the rebuttal via ErrIgnore; SyncComplete reports nodeB's
+	// unchanged fingerprint, so nodeA STILL sees nodeB's view as divergent.
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+	assert.Equal(t, int32(1), attempts.Load())
+	_, _, viewDiff, _ = nodeA.DivergentSets(peerBOnA)
+	assert.True(t, viewDiff, "round 1: nodeA must remain view-divergent after nodeB dropped rebuttal")
+	assert.NotEmpty(t, nodeB.view.ActiveAccusationsForPeer(peerAOnB), "round 1: accusation must still be active on nodeB")
+
+	// Round 2: nodeB drops again -> still divergent.
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+	assert.Equal(t, int32(2), attempts.Load())
+	_, _, viewDiff, _ = nodeA.DivergentSets(peerBOnA)
+	assert.True(t, viewDiff, "round 2: nodeA must remain view-divergent after nodeB dropped rebuttal")
+
+	// Round 3: nodeB accepts the rebuttal -> fingerprints match and accusation is cleared.
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+	assert.Equal(t, int32(3), attempts.Load())
+	_, _, viewDiff, _ = nodeA.DivergentSets(peerBOnA)
+	assert.False(t, viewDiff, "round 3: nodeA and nodeB views must converge once rebuttal is accepted")
+	assert.Equal(t, nodeA.ViewFingerprintBytes(), peerBOnA.FingerprintView())
+	assert.Empty(t, nodeB.view.ActiveAccusationsForPeer(peerAOnB), "round 3: accepted rebuttal must clear active accusation on nodeB")
+	activeNote, ok := nodeB.view.ActiveNote(peerAOnB.Id)
+	require.True(t, ok)
+	assert.Equal(t, uint64(2), activeNote.Epoch())
 }
