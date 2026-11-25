@@ -45,9 +45,9 @@ func (g *PeerGate) pruneIfIdleLocked(peerID string, e *peerGateEntry) {
 	}
 }
 
-// TryStartOutbound acquires the outbound slot for peerID if no outbound or inbound
+// TryAquireOutbound acquires the outbound slot for peerID if no outbound or inbound
 // reconciliation is currently active for that peer.
-func (g *PeerGate) TryStartOutbound(peerID string) bool {
+func (g *PeerGate) TryAquireOutbound(peerID string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -79,7 +79,7 @@ func (g *PeerGate) ReleaseOutbound(peerID string) {
 //     priority and returns ErrSessionBusy.
 //   - If an outbound session to remoteID is active and remoteID < selfID, remote wins
 //     and inbound is admitted while outbound remains marked until its goroutine exits.
-func (g *PeerGate) TryStartInbound(selfID, remoteID string) error {
+func (g *PeerGate) TryAquireInbound(selfID, remoteID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 

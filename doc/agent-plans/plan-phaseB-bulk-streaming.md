@@ -75,7 +75,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> OutboundReconciling : TryStartOutbound() -> (seq, true)
+    Idle --> OutboundReconciling : TryAquireOutbound() -> (seq, true)
     Idle --> InboundReconciling : TryStartInbound() -> (seq, true)
     AwaitingStream --> InboundReconciling : Fresh Inbound Spread Supersedes (seq++)
     OutboundReconciling --> InboundReconciling : Tie-Break Won by Remote (remoteID < selfID, seq++)

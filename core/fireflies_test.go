@@ -494,7 +494,7 @@ func TestNode_GossipPeerReconcileSessionFlow(t *testing.T) {
 	installStubReconcilers(n, certRec, &stubStoreReconciler{}, &stubStoreReconciler{}, &stubStoreReconciler{})
 
 	// 1. Concurrency guard: while outbound gate is held, gossip tick skips peer.
-	require.True(t, n.PeerGate().TryStartOutbound(p.Id))
+	require.True(t, n.PeerGate().TryAquireOutbound(p.Id))
 
 	n.gossip()
 	assert.Empty(t, certRec.takeAddrs(), "Peer must be skipped while session is busy")

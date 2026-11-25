@@ -235,7 +235,7 @@ func (n *Node) inboundStreamGuard() reconcile.StreamGuard {
 		if n.self != nil {
 			selfID = n.self.Id
 		}
-		if err := n.peerGate.TryStartInbound(selfID, remoteID); err != nil {
+		if err := n.peerGate.TryAquireInbound(selfID, remoteID); err != nil {
 			return status.Errorf(codes.Aborted, "reconciliation session busy: %v", err)
 		}
 		defer n.peerGate.ReleaseInbound(remoteID)
@@ -791,7 +791,7 @@ func (n *Node) gossipWithStoreReconcilers() {
 			continue
 		}
 
-		if n.peerGate != nil && !n.peerGate.TryStartOutbound(peer.Id) {
+		if n.peerGate != nil && !n.peerGate.TryAquireOutbound(peer.Id) {
 			continue
 		}
 

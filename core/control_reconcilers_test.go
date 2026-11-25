@@ -621,7 +621,7 @@ func TestControlReconcilers_CrossedWiresTieBreaker(t *testing.T) {
 	defer cancel()
 
 	// 1. Low-ID node holds active outbound gate for high-ID node -> high-ID inbound request must be aborted (codes.Aborted).
-	require.True(t, lowNode.PeerGate().TryStartOutbound(highNode.self.Id))
+	require.True(t, lowNode.PeerGate().TryAquireOutbound(highNode.self.Id))
 
 	err := highNode.reconcilePeerStores(ctx, lowPeerOnHigh)
 	require.Error(t, err)
@@ -634,7 +634,7 @@ func TestControlReconcilers_CrossedWiresTieBreaker(t *testing.T) {
 
 	// 2. High-ID node holds outbound gate for low-ID node -> low-ID inbound request wins,
 	//    high-ID yields cleanly, and releasing high-ID's outbound afterwards prunes back to idle.
-	require.True(t, highNode.PeerGate().TryStartOutbound(lowNode.self.Id))
+	require.True(t, highNode.PeerGate().TryAquireOutbound(lowNode.self.Id))
 
 	require.NoError(t, lowNode.reconcilePeerStores(ctx, highPeerOnLow))
 	highNode.PeerGate().ReleaseOutbound(lowNode.self.Id)

@@ -265,7 +265,7 @@ sequenceDiagram
     participant A as Caller (Node A)
     participant B as Responder (Node B)
 
-    Note over A: Acquire per-peer session lock:<br/>sessionA.TryStartOutbound() -> StateReconciling
+    Note over A: Acquire per-peer session lock:<br/>sessionA.TryAquireOutbound() -> StateReconciling
     A->>B: Spread(State{fp_certs, fp_notes, fp_accs, fp_data, digests...})
     Note over B: Acquire sessionB lock for A.Id -> StateReconciling<br/>Run ProcessIncomingDigests on divergent sets:<br/>sessionB.LocalDigests = B\A, sessionB.RemoteDigests = A\B<br/>Transition sessionB -> StateAwaitingStream
     B-->>A: StateResponse{B\A control items, requested_*_digests (A\B), available_data_digests (B\A)}
