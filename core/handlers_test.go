@@ -550,8 +550,10 @@ func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	acc := discovery.NewAccusation(currentEpoch, node.self.Id, prev.Id, ringNum, suite.privMap[prev.Id])
 
 	// Process accusation against self
-	err := node.evalAccusation(acc, prev, node.self)
+	rawAcc := discovery.AccusationFromPb(acc)
+	accuser, err := node.validateAccusation(rawAcc)
 	require.NoError(suite.T(), err)
+	require.NoError(suite.T(), node.applyVerifiedAccusation(rawAcc, accuser))
 
 	// Verify that rebuttal was dispatched
 	require.NotEmpty(suite.T(), trackingComm.gossipedStates, "Rebuttal should have sent at least one gossip message")

@@ -569,10 +569,7 @@ type noteControlDetector struct {
 }
 
 func (d noteControlDetector) ValidateItem(_ context.Context, item *discovery.Note) error {
-	if item == nil {
-		return errors.New("nil note")
-	}
-	_, err := d.node.validateNotePb(item.ToPbMsg())
+	_, err := d.node.validateNote(item)
 	return err
 }
 
@@ -585,10 +582,7 @@ type accControlDetector struct {
 }
 
 func (d accControlDetector) ValidateItem(_ context.Context, item *discovery.Accusation) error {
-	if item == nil {
-		return errors.New("nil accusation")
-	}
-	_, err := d.node.validateAccusationPb(item.ToPbMsg())
+	_, err := d.node.validateAccusation(item)
 	return err
 }
 
@@ -641,15 +635,14 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 			if item == nil {
 				return errors.New("nil note")
 			}
-			pbNote := item.ToPbMsg()
-			if n.self != nil && n.self.Id == string(pbNote.GetId()) {
+			if n.self != nil && n.self.Id == item.Id() {
 				return fmt.Errorf("%w: self note", reconcile.ErrIgnore)
 			}
-			peer := n.view.Peer(string(pbNote.GetId()))
+			peer := n.view.Peer(item.Id())
 			if peer == nil {
 				return errNoPeer
 			}
-			err := n.applyVerifiedNote(pbNote, peer)
+			err := n.applyVerifiedNote(item, peer)
 			if errors.Is(err, errOldNote) {
 				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
 			}
@@ -660,8 +653,7 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 			if item == nil {
 				return errors.New("nil accusation")
 			}
-			pbAcc := item.ToPbMsg()
-			accuserID := string(pbAcc.GetAccuser())
+			accuserID := item.Accuser()
 			var accuser *discovery.Peer
 			if n.self != nil && accuserID == n.self.Id {
 				accuser = n.self
@@ -672,13 +664,13 @@ func (n *Node) defaultControlReconcilerHooks() ControlReconcilerHooks {
 				return errNoPeer
 			}
 
-			err := n.applyVerifiedAccusation(pbAcc, accuser)
+			err := n.applyVerifiedAccusation(item, accuser)
 			if errors.Is(err, errAccAlreadyExists) ||
 				errors.Is(err, errInvalidEpoch) ||
 				errors.Is(err, errInvalidAccuser) ||
 				errors.Is(err, errDisabledRing) ||
 				errors.Is(err, errInvalidSelfAccusation) {
-				log.Debug(err.Error(), "ringNum", pbAcc.GetRingNum(), "epoch", pbAcc.GetEpoch())
+				log.Debug(err.Error(), "ringNum", item.RingNum(), "epoch", item.Epoch())
 				return fmt.Errorf("%w: %w", reconcile.ErrIgnore, err)
 			}
 			return err

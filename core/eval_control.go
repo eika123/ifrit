@@ -56,26 +56,27 @@ func (n *Node) mergeAccusations(accusations []*pb.Accusation) {
 		return
 	}
 
-	for _, acc := range accusations {
-		accuser, err := n.validateAccusationPb(acc)
+	for _, pbAcc := range accusations {
+		rawAcc := discovery.AccusationFromPb(pbAcc)
+		accuser, err := n.validateAccusation(rawAcc)
 		if err != nil {
 			log.Debug("mergeAccusations: rejected accusation", "err", err)
 			continue
 		}
-		if err := n.applyVerifiedAccusation(acc, accuser); err != nil {
-			log.Debug(err.Error(), "ringNum", acc.GetRingNum(), "epoch", acc.GetEpoch())
+		if err := n.applyVerifiedAccusation(rawAcc, accuser); err != nil {
+			log.Debug(err.Error(), "ringNum", rawAcc.RingNum(), "epoch", rawAcc.Epoch())
 		}
 	}
 }
 
-func (n *Node) validateAccusationPb(pbAcc *pb.Accusation) (*discovery.Peer, error) {
-	if pbAcc == nil {
+func (n *Node) validateAccusation(acc *discovery.Accusation) (*discovery.Peer, error) {
+	if acc == nil {
 		return nil, errors.New("nil accusation")
 	}
-	if pbAcc.GetRingNum() == 0 || pbAcc.GetRingNum() > n.view.NumRings() {
+	if acc.RingNum() == 0 || acc.RingNum() > n.view.NumRings() {
 		return nil, errors.New("accusation ring number out of bounds")
 	}
-	accuserID := string(pbAcc.GetAccuser())
+	accuserID := acc.Accuser()
 	var accuser *discovery.Peer
 	if n.self != nil && accuserID == n.self.Id {
 		accuser = n.self
@@ -85,23 +86,23 @@ func (n *Node) validateAccusationPb(pbAcc *pb.Accusation) (*discovery.Peer, erro
 	if accuser == nil {
 		return nil, errNoPeer
 	}
-	if err := n.verifySignedMessage(pbAcc, pbAcc.GetSignature(), accuser); err != nil {
+	r, s := acc.Signature()
+	if err := n.verifySignedMessage(acc.ToPbMsg(), &pb.Signature{R: r, S: s}, accuser); err != nil {
 		return nil, err
 	}
 	return accuser, nil
 }
 
-func (n *Node) applyVerifiedAccusation(pbAcc *pb.Accusation, accuser *discovery.Peer) error {
+func (n *Node) applyVerifiedAccusation(rawAcc *discovery.Accusation, accuser *discovery.Peer) error {
 	if n.view == nil || n.view.AccusationStore() == nil {
 		return errors.New("accusation store is not initialized")
 	}
-	rawAcc := discovery.AccusationFromPb(pbAcc)
 	if rawAcc == nil {
 		return errInvalidSignature
 	}
 	n.view.AccusationStore().Insert(rawAcc)
 
-	accusedID := string(pbAcc.GetAccused())
+	accusedID := rawAcc.Accused()
 	var accused *discovery.Peer
 	if n.self != nil && accusedID == n.self.Id {
 		accused = n.self
@@ -115,16 +116,16 @@ func (n *Node) applyVerifiedAccusation(pbAcc *pb.Accusation, accuser *discovery.
 		return nil
 	}
 
-	return n.promoteVerifiedAccusation(rawAcc, pbAcc, accuser, accused)
+	return n.promoteVerifiedAccusation(rawAcc, accuser, accused)
 }
 
-func (n *Node) promoteVerifiedAccusation(rawAcc *discovery.Accusation, a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
+func (n *Node) promoteVerifiedAccusation(acc *discovery.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
 	if n.self.Id == accusedPeer.Id {
-		return n.handleSelfAccusationVerified(a, accuserPeer)
+		return n.handleSelfAccusationVerified(acc, accuserPeer)
 	}
 
-	ringNum := a.GetRingNum()
-	epoch := a.GetEpoch()
+	ringNum := acc.RingNum()
+	epoch := acc.Epoch()
 
 	if n.view.HasActiveAccusation(accusedPeer.Id, ringNum, epoch) {
 		note, ok := n.view.ActiveNote(accusedPeer.Id)
@@ -134,79 +135,64 @@ func (n *Node) promoteVerifiedAccusation(rawAcc *discovery.Accusation, a *pb.Acc
 		return errAccAlreadyExists
 	}
 
-	if err := n.validateRemoteAccusationVerified(a, accuserPeer, accusedPeer); err != nil {
+	if err := n.validateRemoteAccusationVerified(acc, accuserPeer, accusedPeer); err != nil {
 		return err
 	}
 
-	if n.view.PromoteAccusation(rawAcc) {
+	if n.view.PromoteAccusation(acc) {
 		n.ensureAccusationTimer(accusedPeer, accuserPeer)
 	}
 	return nil
 }
 
-// evalAccusation validates and processes an incoming gossip accusation against given peer.
-func (n *Node) evalAccusation(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
-	if err := n.verifySignedMessage(a, a.GetSignature(), accuserPeer); err != nil {
-		return err
-	}
-	rawAcc := discovery.AccusationFromPb(a)
-	if rawAcc == nil {
-		return errInvalidSignature
-	}
-	if n.view.AccusationStore() != nil {
-		n.view.AccusationStore().Insert(rawAcc)
-	}
-	return n.promoteVerifiedAccusation(rawAcc, a, accuserPeer, accusedPeer)
-}
-
-func (node *Node) validateNotePb(newNote *pb.Note) (*discovery.Peer, error) {
+func (node *Node) validateNote(newNote *discovery.Note) (*discovery.Peer, error) {
 	if newNote == nil {
 		return nil, errors.New("nil note")
 	}
-	if node.self != nil && node.self.Id == string(newNote.GetId()) {
+	if node.self != nil && node.self.Id == newNote.Id() {
 		return nil, nil
 	}
-	sign := newNote.GetSignature()
-	if sign == nil {
+	if !newNote.HasSignature() {
 		return nil, errInvalidSignature
 	}
-	peer := node.view.Peer(string(newNote.GetId()))
+	r, s := newNote.Signature()
+	peer := node.view.Peer(newNote.Id())
 	if peer == nil {
 		return nil, errNoPeer
 	}
-	if valid := node.view.ValidMask(newNote.GetMask()); !valid {
+	if valid := node.view.ValidMask(newNote.Mask()); !valid {
 		return nil, errInvalidMask
 	}
-	if err := node.verifySignedMessage(newNote, sign, peer); err != nil {
+	if err := node.verifySignedMessage(newNote.ToPbMsg(), &pb.Signature{R: r, S: s}, peer); err != nil {
 		return nil, err
 	}
 	return peer, nil
 }
 
-func (node *Node) applyVerifiedNote(newNote *pb.Note, peer *discovery.Peer) error {
+func (node *Node) applyVerifiedNote(rawNote *discovery.Note, peer *discovery.Peer) error {
 	if peer == nil {
 		return nil
 	}
-	rawNote := discovery.NoteFromPb(newNote)
 	if node.view.NoteStore() != nil {
 		node.view.NoteStore().Insert(rawNote)
 	}
-	if node.view.HasNote(peer.Id, newNote.GetEpoch()) {
+	if node.view.HasNote(peer.Id, rawNote.Epoch()) {
 		return errOldNote
 	}
-	node.promoteValidNote(rawNote, newNote, peer)
+	node.promoteValidNote(rawNote, peer)
 	return nil
 }
 
 func (node *Node) evalNote(newNote *pb.Note) error {
-	peer, err := node.validateNotePb(newNote)
+	rawNote := discovery.NoteFromPb(newNote)
+	peer, err := node.validateNote(rawNote)
 	if err != nil {
 		return err
 	}
-	return node.applyVerifiedNote(newNote, peer)
+	return node.applyVerifiedNote(rawNote, peer)
 }
 
-func (node *Node) promoteValidNote(rawNote *discovery.Note, newNote *pb.Note, peer *discovery.Peer) {
+func (node *Node) promoteValidNote(rawNote *discovery.Note, peer *discovery.Peer) {
 	node.view.PromoteNote(rawNote)
 
 	// If peer is not accused under its most recent note, ensure timers are stopped
@@ -222,7 +208,7 @@ func (node *Node) promoteValidNote(rawNote *discovery.Note, newNote *pb.Note, pe
 			node.view.AddLive(peer)
 		}
 
-		log.Debug("Rebuttal received or live peer updated", "epoch", newNote.GetEpoch(), "addr", peer.Addr)
+		log.Debug("Rebuttal received or live peer updated", "epoch", rawNote.Epoch(), "addr", peer.Addr)
 	}
 
 	node.promotePendingAccusationsForPeer(peer.Id)
@@ -246,6 +232,7 @@ func (n *Node) evalValidCertificate(cert *x509.Certificate) error {
 	return nil
 }
 
+// Used by Spread to check who's calling
 func (n *Node) admitCaller(cert *x509.Certificate, remoteId string, ownNote *pb.Note) (*discovery.Peer, bool, bool, error) {
 	var wasObserved, wasAccused bool
 
@@ -320,16 +307,16 @@ func (n *Node) promotePendingAccusationsForPeer(id string) {
 		}
 
 		// AccusationStore only contains accusations whose signature was already verified on ingress.
-		if err := n.promoteVerifiedAccusation(acc, acc.ToPbMsg(), accuser, accused); err != nil && err != errAccAlreadyExists {
+		if err := n.promoteVerifiedAccusation(acc, accuser, accused); err != nil && err != errAccAlreadyExists {
 			log.Debug("Failed to promote pending accusation", "err", err, "accused", accId, "accuser", accuserId)
 		}
 	}
 }
 
 // handleSelfAccusationVerified validates and responds to a signature-verified accusation against the local node.
-func (n *Node) handleSelfAccusationVerified(a *pb.Accusation, accuserPeer *discovery.Peer) error {
-	ringNum := a.GetRingNum()
-	epoch := a.GetEpoch()
+func (n *Node) handleSelfAccusationVerified(a *discovery.Accusation, accuserPeer *discovery.Peer) error {
+	ringNum := a.RingNum()
+	epoch := a.Epoch()
 
 	if !n.view.ValidAccuser(n.self, accuserPeer, ringNum) {
 		return errInvalidAccuser
@@ -396,9 +383,9 @@ func (n *Node) validateCtx(ctx context.Context) (*x509.Certificate, error) {
 
 // validateRemoteAccusationVerified verifies semantic rules (epoch, enabled ring, valid predecessor)
 // for a signature-verified accusation against a remote peer.
-func (n *Node) validateRemoteAccusationVerified(a *pb.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
-	ringNum := a.GetRingNum()
-	epoch := a.GetEpoch()
+func (n *Node) validateRemoteAccusationVerified(a *discovery.Accusation, accuserPeer, accusedPeer *discovery.Peer) error {
+	ringNum := a.RingNum()
+	epoch := a.Epoch()
 
 	note, ok := n.view.ActiveNote(accusedPeer.Id)
 	if !ok || !note.Equal(epoch) {

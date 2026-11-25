@@ -314,25 +314,35 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 	}
 
-	for i, t := range tests {
-		origSign := t.acc.GetSignature()
-		require.Equalf(suite.T(), t.out, node.evalAccusation(t.acc, t.accuser, t.accused),
-			"Invalid output for test %d.", i)
+	for i, tc := range tests {
+		origSign := tc.acc.GetSignature()
+		err := func() error {
+			if err := node.verifySignedMessage(tc.acc, tc.acc.GetSignature(), tc.accuser); err != nil {
+				return err
+			}
+			rawAcc := discovery.AccusationFromPb(tc.acc)
+			if rawAcc == nil {
+				return errInvalidSignature
+			}
+			node.view.AccusationStore().Insert(rawAcc)
+			return node.promoteVerifiedAccusation(rawAcc, tc.accuser, tc.accused)
+		}()
+		require.Equalf(suite.T(), tc.out, err, "Invalid output for test %d.", i)
 		if origSign != nil {
-			require.NotNilf(suite.T(), t.acc.GetSignature(),
-				"evalAccusation must restore accusation signature for test %d.", i)
+			require.NotNilf(suite.T(), tc.acc.GetSignature(),
+				"accusation verification must preserve signature for test %d.", i)
 		}
 
-		if t.accused != nil {
-			require.Equalf(suite.T(), t.timer, node.view.HasTimer(t.accused),
+		if tc.accused != nil {
+			require.Equalf(suite.T(), tc.timer, node.view.HasTimer(tc.accused),
 				"Invalid timer state for test %d.", i)
 
-			require.Equalf(suite.T(), t.isAccused, node.view.IsAccused(t.accused),
+			require.Equalf(suite.T(), tc.isAccused, node.view.IsAccused(tc.accused),
 				"Invalid accusation state for test %d.", i)
 		}
 
-		if t.rebuttal {
-			require.NotEqualf(suite.T(), t.prevNote, node.view.SelfNote(),
+		if tc.rebuttal {
+			require.NotEqualf(suite.T(), tc.prevNote, node.view.SelfNote(),
 				"Note not changed after rebuttal for test %d.", i)
 		}
 

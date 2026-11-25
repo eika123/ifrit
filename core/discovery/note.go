@@ -54,6 +54,17 @@ func (n *Note) Id() string {
 	return n.id
 }
 
+func (n *Note) HasSignature() bool {
+	return n != nil && n.signature != nil
+}
+
+func (n *Note) Signature() (r, s []byte) {
+	if n == nil || n.signature == nil {
+		return nil, nil
+	}
+	return n.signature.r, n.signature.s
+}
+
 func (n *Note) ToPbMsg() *pb.Note {
 	msg := &pb.Note{
 		Epoch: n.epoch,
