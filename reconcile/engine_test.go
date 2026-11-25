@@ -546,8 +546,7 @@ func TestEngine_MaxWantDigestsAndServerTimeouts(t *testing.T) {
 	assert.Equal(t, codes.DeadlineExceeded, status.Code(err))
 }
 
-func TestEngine_RegistryMuxAndMixedProtocols(t *testing.T) {
-	// Registry validation
+func TestEngine_UnknownProtocol(t *testing.T) {
 	reg, err := reconcile.NewRegistry(naive.NewNegotiator(), ratelessIBLT.NewNegotiator())
 	require.NoError(t, err)
 	require.Error(t, reg.Register(nil))
@@ -555,22 +554,59 @@ func TestEngine_RegistryMuxAndMixedProtocols(t *testing.T) {
 	_, err = reg.Get("unknown/9")
 	require.ErrorIs(t, err, reconcile.ErrUnknownProtocol)
 
+	store, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
+	require.NoError(t, err)
+	eng, err := reconcile.NewEngine(store, reconcile.Config[string]{
+		Negotiator: store.Negotiator(),
+		Registry:   reg,
+		Codec:      reconcile.JSONCodec[string]{},
+		Auth:       reconcile.NoopAuthenticator,
+		Detector:   reconcile.AcceptAll[string](),
+		Applier:    testutil.InsertTestApplier(store),
+		StoreID:    "store-riblt",
+	})
+	require.NoError(t, err)
+
+	mux := reconcile.NewMux()
+	require.NoError(t, mux.RegisterStore("store-riblt", eng))
+	_, cc := startLoopbackMux(t, mux)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	badStream, err := reconpb.NewReconcileServiceClient(cc).Reconcile(testutil.OutgoingContext(ctx, "store-riblt", "bogus/99"))
+	require.NoError(t, err)
+	_, err = badStream.Recv()
+	require.Error(t, err)
+	assert.Equal(t, codes.Unimplemented, status.Code(err))
+}
+
+func TestEngine_RegistryMuxAndMixedProtocols(t *testing.T) {
+	reg, err := reconcile.NewRegistry(naive.NewNegotiator(), ratelessIBLT.NewNegotiator())
+	require.NoError(t, err)
+
 	// Two stores on ONE Mux: "store-riblt" (default riblt/1) and "store-naive" (naive/1),
 	// plus shared Registry so "store-riblt" also accepts inbound naive/1!
+
+	/// RIBLT stores ------------------------------------------------------------------------
 	ribltA, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	ribltB, err := ratelessIBLT.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	ribltA.InsertBatch("r-shared", "r-only-a")
 	ribltB.InsertBatch("r-shared", "r-only-b")
+	/// -------------------------------------------------------------------------------------
 
+	/// Naive stores ------------------------------------------------------------------------
 	naiveA, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	naiveB, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[string]())
 	require.NoError(t, err)
 	naiveA.InsertBatch("n-shared", "n-only-a")
 	naiveB.InsertBatch("n-shared", "n-only-b")
+	/// -------------------------------------------------------------------------------------
 
+	/// register engines --------------------------------------------------------------------
 	engRibltB, err := reconcile.NewEngine(ribltB, reconcile.Config[string]{
 		Negotiator: ribltB.Negotiator(),
 		Registry:   reg,
@@ -618,11 +654,13 @@ func TestEngine_RegistryMuxAndMixedProtocols(t *testing.T) {
 		StoreID:      "store-naive",
 	})
 	require.NoError(t, err)
+	/// -------------------------------------------------------------------------------------
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// 1. Both stores reconcile using their respective protocols on the same Mux.
+	/// Reconciliation with the same protocol -----------------------------------------------
 	_, err = engRibltA.ReconcileWithPeer(ctx, addr)
 	require.NoError(t, err)
 	assert.Equal(t, ribltA.Fingerprint(), ribltB.Fingerprint())
@@ -630,29 +668,26 @@ func TestEngine_RegistryMuxAndMixedProtocols(t *testing.T) {
 	_, err = engNaiveA.ReconcileWithPeer(ctx, addr)
 	require.NoError(t, err)
 	assert.Equal(t, naiveA.Fingerprint(), naiveB.Fingerprint())
+	// ---------------------------------------------------------------------------------------
 
 	// 2. Peer initiates with naive/1 against "store-riblt" (whose outbound default is riblt/1).
+	// Reconciliation with outbound protocol differing from inbound stores protocol ------------
+	// outbound riblt --> inbound naive store switches to riblt
 	ribltA.Insert("cross-proto-item")
 	crossEngA, err := reconcile.NewEngine(ribltA, reconcile.Config[string]{
-		Negotiator:   naive.NewNegotiator(),
+		Negotiator:   naive.NewNegotiator(), // naive negotiator
 		Codec:        reconcile.JSONCodec[string]{},
 		ConnProvider: connProv,
 		Detector:     reconcile.AcceptAll[string](),
 		Applier:      testutil.InsertTestApplier(ribltA),
-		StoreID:      "store-riblt",
+		StoreID:      "store-riblt", // reconciles with the riblt store on remote peer
 	})
 	require.NoError(t, err)
 	_, err = crossEngA.ReconcileWithPeer(ctx, addr)
 	require.NoError(t, err)
 	_, hasCross := ribltB.Contains("cross-proto-item")
 	assert.True(t, hasCross)
-
-	// 3. Unknown protocol header fails explicitly with codes.Unimplemented.
-	badStream, err := reconpb.NewReconcileServiceClient(cc).Reconcile(testutil.OutgoingContext(ctx, "store-riblt", "bogus/99"))
-	require.NoError(t, err)
-	_, err = badStream.Recv()
-	require.Error(t, err)
-	assert.Equal(t, codes.Unimplemented, status.Code(err))
+	// -----------------------------------------------------------------------------------------
 }
 
 func TestEngine_ErrIgnoreSkipsWithoutMisbehaviorOrAbort(t *testing.T) {
