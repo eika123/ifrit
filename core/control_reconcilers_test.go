@@ -9,18 +9,27 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
 	"github.com/eika123/ifrit/reconcile/naive"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
-	"github.com/golang/protobuf/proto"
+	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// setControlReconcilerHooks swaps the control store validation/applier hooks
+// and re-binds the control store reconcilers on the node's store mux (for tests).
+func (n *Node) setControlReconcilerHooks(hooks ControlReconcilerHooks) {
+	if err := n.rebuildControlReconcilers(hooks); err != nil {
+		log.Error("failed to rebuild control reconcilers", "err", err)
+	}
+}
 
 type stubControlDetector[T any] struct {
 	mu           sync.Mutex
@@ -226,31 +235,12 @@ func validAllRingsMask(numRings uint32) uint32 {
 
 func signTestPbNote(t *testing.T, priv *ecdsa.PrivateKey, id []byte, epoch uint64, mask uint32) *pb.Note {
 	t.Helper()
-	n := &pb.Note{Epoch: epoch, Id: id, Mask: mask}
-	raw, err := proto.Marshal(n)
-	require.NoError(t, err)
-	cs := &cryptoStub{priv: priv}
-	r, s, err := cs.Sign(raw)
-	require.NoError(t, err)
-	n.Signature = &pb.Signature{R: r, S: s}
-	return n
+	return testutil.NewNote(string(id), epoch, mask, priv)
 }
 
 func signTestPbAccusation(t *testing.T, priv *ecdsa.PrivateKey, accuser, accused []byte, epoch uint64, ringNum uint32) *pb.Accusation {
 	t.Helper()
-	a := &pb.Accusation{
-		Epoch:   epoch,
-		Accuser: accuser,
-		Accused: accused,
-		RingNum: ringNum,
-	}
-	raw, err := proto.Marshal(a)
-	require.NoError(t, err)
-	cs := &cryptoStub{priv: priv}
-	r, s, err := cs.Sign(raw)
-	require.NoError(t, err)
-	a.Signature = &pb.Signature{R: r, S: s}
-	return a
+	return testutil.NewAccusation(epoch, string(accused), string(accuser), ringNum, priv)
 }
 
 func TestControlReconcilers_DefaultHooks_ColdStartCausalPromotion(t *testing.T) {

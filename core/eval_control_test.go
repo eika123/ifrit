@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	proto "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/credentials"
@@ -24,7 +25,7 @@ func (suite *HandlerTestSuite) TestEvalNotes() {
 	initialFp := node.view.NoteStore().Fingerprint()
 
 	// 1. Valid Note (higher epoch)
-	validPb := discovery.NewNote(p.Id, 2, math.MaxUint32, priv)
+	validPb := testutil.NewNote(p.Id, 2, math.MaxUint32, priv)
 	require.NoError(suite.T(), node.evalNote(validPb))
 
 	rawValid := discovery.NoteFromPb(validPb)
@@ -38,7 +39,7 @@ func (suite *HandlerTestSuite) TestEvalNotes() {
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
 	// 2. Note with invalid signature: MUST NOT be stored in NoteStore, and peer active note MUST NOT update
-	badSigPb := discovery.NewNote(p.Id, 3, math.MaxUint32, priv)
+	badSigPb := testutil.NewNote(p.Id, 3, math.MaxUint32, priv)
 	badSigPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
 	require.Error(suite.T(), node.evalNote(badSigPb))
 
@@ -50,7 +51,7 @@ func (suite *HandlerTestSuite) TestEvalNotes() {
 	require.Equal(suite.T(), uint64(2), activeNote.Epoch(), "Invalid signature note must NOT update active peer note")
 
 	// 3. Note from completely unknown peer: MUST NOT be stored in NoteStore
-	unknownPb := discovery.NewNote("unknown-peer-id-999", 5, math.MaxUint32, priv)
+	unknownPb := testutil.NewNote("unknown-peer-id-999", 5, math.MaxUint32, priv)
 	require.Error(suite.T(), node.evalNote(unknownPb))
 
 	rawUnknown := discovery.NoteFromPb(unknownPb)
@@ -58,7 +59,7 @@ func (suite *HandlerTestSuite) TestEvalNotes() {
 	require.False(suite.T(), found, "Note from unknown peer MUST NOT be ingested into NoteStore")
 
 	// 4. Note with invalid mask (violates Byzantine threshold): MUST NOT be stored in NoteStore
-	badMaskPb := discovery.NewNote(p.Id, 4, 0, priv)
+	badMaskPb := testutil.NewNote(p.Id, 4, 0, priv)
 	require.Error(suite.T(), node.evalNote(badMaskPb))
 
 	rawBadMask := discovery.NoteFromPb(badMaskPb)
@@ -66,7 +67,7 @@ func (suite *HandlerTestSuite) TestEvalNotes() {
 	require.False(suite.T(), found, "Note with invalid mask MUST NOT be ingested into NoteStore")
 
 	// 5. Stale / Older epoch note with VALID signature: MUST be stored in NoteStore, but peer active note stays at epoch 2
-	stalePb := discovery.NewNote(p.Id, 1, math.MaxUint32, priv)
+	stalePb := testutil.NewNote(p.Id, 1, math.MaxUint32, priv)
 	require.ErrorIs(suite.T(), node.evalNote(stalePb), errOldNote)
 
 	rawStale := discovery.NoteFromPb(stalePb)
@@ -108,7 +109,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.True(suite.T(), found)
 
 	// 1. Valid Accusation
-	validAccPb := discovery.NewAccusation(succNote.Epoch(), succ.Id, prev.Id, 1, priv)
+	validAccPb := testutil.NewAccusation(succNote.Epoch(), succ.Id, prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{validAccPb})
 
 	rawValid := discovery.AccusationFromPb(validAccPb)
@@ -119,7 +120,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.NotEqual(suite.T(), initialFp, fpAfterValid)
 
 	// 2. Accusation with invalid signature: MUST NOT be ingested into AccusationStore
-	badSigAccPb := discovery.NewAccusation(succNote.Epoch()+1, succ.Id, prev.Id, 1, priv)
+	badSigAccPb := testutil.NewAccusation(succNote.Epoch()+1, succ.Id, prev.Id, 1, priv)
 	badSigAccPb.Signature = &proto.Signature{R: []byte("tampered_r"), S: []byte("tampered_s")}
 	node.mergeAccusations([]*proto.Accusation{badSigAccPb})
 
@@ -128,7 +129,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.False(suite.T(), found, "Accusation with invalid signature MUST NOT be ingested into AccusationStore")
 
 	// 3. Accusation targeting unknown peer (from valid accuser): MUST be ingested into AccusationStore as orphaned
-	unknownAccPb := discovery.NewAccusation(1, "unknown-accused", prev.Id, 1, priv)
+	unknownAccPb := testutil.NewAccusation(1, "unknown-accused", prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{unknownAccPb})
 
 	rawUnknown := discovery.AccusationFromPb(unknownAccPb)
@@ -136,7 +137,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.True(suite.T(), found, "Accusation targeting unknown peer from valid accuser MUST be ingested into AccusationStore")
 
 	// 4. Accusation from unknown accuser: MUST NOT be ingested into AccusationStore
-	unknownAccuserPb := discovery.NewAccusation(pNote.Epoch(), p.Id, "unknown-accuser", 1, priv)
+	unknownAccuserPb := testutil.NewAccusation(pNote.Epoch(), p.Id, "unknown-accuser", 1, priv)
 	node.mergeAccusations([]*proto.Accusation{unknownAccuserPb})
 
 	rawUnknownAccuser := discovery.AccusationFromPb(unknownAccuserPb)
@@ -144,7 +145,7 @@ func (suite *HandlerTestSuite) TestMergeAccusations() {
 	require.False(suite.T(), found, "Accusation from unknown accuser MUST NOT be ingested into AccusationStore")
 
 	// 5. Accusation targeting mismatched epoch: MUST be ingested into AccusationStore (valid accuser)
-	mismatchedEpochPb := discovery.NewAccusation(9999, succ.Id, prev.Id, 1, priv)
+	mismatchedEpochPb := testutil.NewAccusation(9999, succ.Id, prev.Id, 1, priv)
 	node.mergeAccusations([]*proto.Accusation{mismatchedEpochPb})
 
 	rawMismatched := discovery.AccusationFromPb(mismatchedEpochPb)
@@ -205,7 +206,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		isAccused bool
 	}{
 		{
-			acc:       discovery.NewAccusation(1, selfId, succ.Id, 1, suite.privMap[succ.Id]),
+			acc:       testutil.NewAccusation(1, selfId, succ.Id, 1, suite.privMap[succ.Id]),
 			accuser:   succ,
 			accused:   node.self,
 			out:       errInvalidAccuser,
@@ -215,7 +216,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewUnsignedAccusation(1, selfId, prev.Id, 1),
+			acc:       testutil.NewUnsignedAccusation(1, selfId, prev.Id, 1),
 			accuser:   prev,
 			accused:   node.self,
 			out:       errInvalidSignature,
@@ -226,7 +227,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 
 		{
 			// Stale epoch (0 < current epoch 1) against self is invalid and should not trigger rebuttal.
-			acc:       discovery.NewAccusation(0, selfId, prev.Id, 1, suite.privMap[prev.Id]),
+			acc:       testutil.NewAccusation(0, selfId, prev.Id, 1, suite.privMap[prev.Id]),
 			accuser:   prev,
 			accused:   node.self,
 			out:       errInvalidSelfAccusation,
@@ -237,7 +238,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 
 		{
 			// Accusation matching current epoch (1) triggers rebuttal and advances epoch.
-			acc: discovery.NewAccusation(1, selfId, prev.Id, 1,
+			acc: testutil.NewAccusation(1, selfId, prev.Id, 1,
 				suite.privMap[prev.Id]),
 			accuser:   prev,
 			accused:   node.self,
@@ -251,7 +252,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		{
 			// Catch-up: accusation with higher epoch (10 > current epoch 2, e.g. after restart)
 			// should advance the local epoch beyond it (11) and trigger rebuttal.
-			acc: discovery.NewAccusation(10, selfId, prev.Id, 1,
+			acc: testutil.NewAccusation(10, selfId, prev.Id, 1,
 				suite.privMap[prev.Id]),
 			accuser:   prev,
 			accused:   node.self,
@@ -263,7 +264,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc: discovery.NewAccusation(1, succ.Id, prev.Id, 1,
+			acc: testutil.NewAccusation(1, succ.Id, prev.Id, 1,
 				suite.privMap[prev.Id]),
 			accuser:   prev,
 			accused:   succ,
@@ -274,7 +275,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewAccusation(2, succ.Id, selfId, 1, suite.priv),
+			acc:       testutil.NewAccusation(2, succ.Id, selfId, 1, suite.priv),
 			accuser:   node.self,
 			accused:   succ,
 			out:       errInvalidEpoch,
@@ -284,7 +285,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewUnsignedAccusation(1, succ.Id, selfId, 1),
+			acc:       testutil.NewUnsignedAccusation(1, succ.Id, selfId, 1),
 			accuser:   node.self,
 			accused:   succ,
 			out:       errInvalidSignature,
@@ -294,7 +295,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewAccusation(1, succ.Id, selfId, 1, suite.priv),
+			acc:       testutil.NewAccusation(1, succ.Id, selfId, 1, suite.priv),
 			accuser:   node.self,
 			accused:   succ,
 			out:       nil,
@@ -304,7 +305,7 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 		},
 
 		{
-			acc:       discovery.NewAccusation(1, succ.Id, selfId, 1, suite.priv),
+			acc:       testutil.NewAccusation(1, succ.Id, selfId, 1, suite.priv),
 			accuser:   node.self,
 			accused:   succ,
 			out:       errAccAlreadyExists,
@@ -317,12 +318,9 @@ func (suite *HandlerTestSuite) TestEvalAccusation() {
 	for i, tc := range tests {
 		origSign := tc.acc.GetSignature()
 		err := func() error {
-			if err := node.verifySignedMessage(tc.acc, tc.acc.GetSignature(), tc.accuser); err != nil {
-				return err
-			}
 			rawAcc := discovery.AccusationFromPb(tc.acc)
-			if rawAcc == nil {
-				return errInvalidSignature
+			if err := node.verifySignedItem(rawAcc, tc.accuser); err != nil {
+				return err
 			}
 			node.view.AccusationStore().Insert(rawAcc)
 			return node.promoteVerifiedAccusation(rawAcc, tc.accuser, tc.accused)
@@ -366,8 +364,8 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 
 	node.view.ClearTestNote(peer2)
 
-	acc := discovery.NewAccusation(2, peer3.Id, peer2.Id, 1, suite.privMap[peer2.Id])
-	node.view.AddTestAccusation(acc)
+	acc := testutil.NewAccusation(2, peer3.Id, peer2.Id, 1, suite.privMap[peer2.Id])
+	testutil.AddTestAccusation(suite.T(), node.view, acc)
 
 	peer3Note, _ := node.view.ActiveNote(peer3.Id)
 	err := node.view.StartTimer(peer3, peer3Note, peer2)
@@ -388,7 +386,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		prevNote    *discovery.Note
 	}{
 		{
-			note:        discovery.NewNote("Non-existing Id", 1, mask, suite.privMap[peer.Id]),
+			note:        testutil.NewNote("Non-existing Id", 1, mask, suite.privMap[peer.Id]),
 			out:         errNoPeer,
 			noteHolder:  peer,
 			isAccused:   false,
@@ -398,7 +396,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer.Id, 1, mask, suite.privMap[peer.Id]),
+			note:        testutil.NewNote(peer.Id, 1, mask, suite.privMap[peer.Id]),
 			out:         errOldNote,
 			noteHolder:  peer,
 			isAccused:   false,
@@ -408,7 +406,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer.Id, 2, 0, suite.privMap[peer.Id]),
+			note:        testutil.NewNote(peer.Id, 2, 0, suite.privMap[peer.Id]),
 			out:         errInvalidMask,
 			noteHolder:  peer,
 			isAccused:   false,
@@ -418,7 +416,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewUnsignedNote(peer.Id, 2, mask),
+			note:        testutil.NewUnsignedNote(peer.Id, 2, mask),
 			out:         errInvalidSignature,
 			noteHolder:  peer,
 			isAccused:   false,
@@ -428,7 +426,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer.Id, 2, mask, suite.privMap[peer.Id]),
+			note:        testutil.NewNote(peer.Id, 2, mask, suite.privMap[peer.Id]),
 			out:         nil,
 			noteHolder:  peer,
 			isAccused:   false,
@@ -439,7 +437,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer2.Id, 1, mask, suite.privMap[peer2.Id]),
+			note:        testutil.NewNote(peer2.Id, 1, mask, suite.privMap[peer2.Id]),
 			out:         nil,
 			noteHolder:  peer2,
 			isAccused:   false,
@@ -450,7 +448,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewUnsignedNote(peer3.Id, 2, mask),
+			note:        testutil.NewUnsignedNote(peer3.Id, 2, mask),
 			out:         errInvalidSignature,
 			noteHolder:  peer3,
 			isAccused:   true,
@@ -460,7 +458,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer3.Id, 2, mask, suite.privMap[peer3.Id]),
+			note:        testutil.NewNote(peer3.Id, 2, mask, suite.privMap[peer3.Id]),
 			out:         nil,
 			noteHolder:  peer3,
 			isAccused:   true,
@@ -470,7 +468,7 @@ func (suite *HandlerTestSuite) TestEvalNote() {
 		},
 
 		{
-			note:        discovery.NewNote(peer3.Id, 3, mask, suite.privMap[peer3.Id]),
+			note:        testutil.NewNote(peer3.Id, 3, mask, suite.privMap[peer3.Id]),
 			out:         nil,
 			noteHolder:  peer3,
 			isAccused:   false,
@@ -520,7 +518,7 @@ func (suite *HandlerTestSuite) TestSpread_NotesRequireCertificate() {
 
 	require.False(suite.T(), node.view.Exists(peerId), "Peer must not initially exist in full view")
 
-	note := discovery.NewNote(peerId, 1, math.MaxUint32, priv)
+	note := testutil.NewNote(peerId, 1, math.MaxUint32, priv)
 
 	// Step 1: Attempt to evaluate note before certificate is known: must be rejected because peer cert is missing
 	require.Error(suite.T(), node.evalNote(note))
@@ -559,7 +557,7 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerNoteArrivesLater()
 
 	// Step 2: Ingest accusation into AccusationStore (node.self is succ's predecessor on ring 1)
 	accEpoch := uint64(2)
-	acc := discovery.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
+	acc := testutil.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
 	node.mergeAccusations([]*proto.Accusation{acc})
 
 	// Verify accusation is in Tier 1 store, but NOT yet active/promoted
@@ -569,7 +567,7 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerNoteArrivesLater()
 	require.False(suite.T(), node.view.IsAccused(succ), "Succ must not be marked accused before note arrives")
 
 	// Step 3: Now succ's active note arrives via evalNote
-	succNote := discovery.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
+	succNote := testutil.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
 	require.NoError(suite.T(), node.evalNote(succNote))
 
 	// Verify note was promoted AND orphaned accusation was automatically promoted
@@ -599,7 +597,7 @@ func (suite *HandlerTestSuite) TestAccusation_PromotedWhenPeerCertificateArrives
 	node.view.NoteStore().Insert(discovery.NoteFromPb(succNote.ToPbMsg()))
 
 	// Step 2: Ingest accusation into AccusationStore (node.self is predecessor on ring 1)
-	acc := discovery.NewAccusation(succNote.Epoch(), succId, node.self.Id, 1, suite.priv)
+	acc := testutil.NewAccusation(succNote.Epoch(), succId, node.self.Id, 1, suite.priv)
 	node.mergeAccusations([]*proto.Accusation{acc})
 
 	// Verify accusation is in Tier 1 store, but NOT active/promoted
@@ -778,16 +776,16 @@ func (suite *HandlerTestSuite) TestVerifySignedMessage_ConcurrentRaceFree() {
 	succ, _ := node.view.MyRingNeighbours(1)
 	require.NotNil(suite.T(), succ)
 
-	note := discovery.NewNote(p.Id, 2, math.MaxUint32, priv)
-	acc := discovery.NewAccusation(1, succ.Id, node.self.Id, 1, suite.priv)
+	note := discovery.NoteFromPb(testutil.NewNote(p.Id, 2, math.MaxUint32, priv))
+	acc := discovery.AccusationFromPb(testutil.NewAccusation(1, succ.Id, node.self.Id, 1, suite.priv))
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			require.NoError(suite.T(), node.verifySignedMessage(note, note.GetSignature(), p))
-			require.NoError(suite.T(), node.verifySignedMessage(acc, acc.GetSignature(), node.self))
+			require.NoError(suite.T(), node.verifySignedItem(note, p))
+			require.NoError(suite.T(), node.verifySignedItem(acc, node.self))
 		}()
 	}
 	wg.Wait()
@@ -803,7 +801,7 @@ func (suite *HandlerTestSuite) TestAccusation_DeferredPromotionSkipsRedundantVer
 
 	node.view.ClearTestNote(succ)
 	accEpoch := uint64(2)
-	acc := discovery.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
+	acc := testutil.NewAccusation(accEpoch, succ.Id, node.self.Id, 1, suite.priv)
 
 	// 1. Ingest accusation before succ's note arrives: verified once on ingress.
 	node.mergeAccusations([]*proto.Accusation{acc})
@@ -812,7 +810,7 @@ func (suite *HandlerTestSuite) TestAccusation_DeferredPromotionSkipsRedundantVer
 
 	// 2. Succ's note arrives and triggers promotePendingAccusationsForPeer:
 	// only the note itself should be verified (1 verify), 0 extra verifies for the accusation.
-	succNote := discovery.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
+	succNote := testutil.NewNote(succ.Id, accEpoch, math.MaxUint32, suite.privMap[succ.Id])
 	require.NoError(suite.T(), node.evalNote(succNote))
 	require.Equal(suite.T(), int64(2), counter.verifies.Load())
 	require.True(suite.T(), node.view.IsAccused(succ))

@@ -16,7 +16,6 @@ import (
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/crypto/pki"
 	pb "github.com/eika123/ifrit/protobuf"
-	"github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 )
 
@@ -86,8 +85,7 @@ func (n *Node) validateAccusation(acc *discovery.Accusation) (*discovery.Peer, e
 	if accuser == nil {
 		return nil, errNoPeer
 	}
-	r, s := acc.Signature()
-	if err := n.verifySignedMessage(acc.ToPbMsg(), &pb.Signature{R: r, S: s}, accuser); err != nil {
+	if err := n.verifySignedItem(acc, accuser); err != nil {
 		return nil, err
 	}
 	return accuser, nil
@@ -155,7 +153,6 @@ func (node *Node) validateNote(newNote *discovery.Note) (*discovery.Peer, error)
 	if !newNote.HasSignature() {
 		return nil, errInvalidSignature
 	}
-	r, s := newNote.Signature()
 	peer := node.view.Peer(newNote.Id())
 	if peer == nil {
 		return nil, errNoPeer
@@ -163,7 +160,7 @@ func (node *Node) validateNote(newNote *discovery.Note) (*discovery.Peer, error)
 	if valid := node.view.ValidMask(newNote.Mask()); !valid {
 		return nil, errInvalidMask
 	}
-	if err := node.verifySignedMessage(newNote.ToPbMsg(), &pb.Signature{R: r, S: s}, peer); err != nil {
+	if err := node.verifySignedItem(newNote, peer); err != nil {
 		return nil, err
 	}
 	return peer, nil
@@ -403,51 +400,30 @@ func (n *Node) validateRemoteAccusationVerified(a *discovery.Accusation, accuser
 	return nil
 }
 
-// verifySignedMessage strips the signature from a protobuf message (Note or Accusation),
-// marshals the payload, and verifies the ECDSA signature against the signer's public key.
-func (n *Node) verifySignedMessage(msg proto.Message, sign *pb.Signature, signer *discovery.Peer) error {
-	if sign == nil || signer == nil || signer.PublicKey() == nil {
+type signedControlItem interface {
+	HasSignature() bool
+	Signature() ([]byte, []byte)
+	UnsignedBytes() ([]byte, error)
+}
+
+// verifySignedItem verifies the ECDSA signature of a Note or Accusation
+// over its canonical UnsignedBytes against the signer's public key.
+func (n *Node) verifySignedItem(item signedControlItem, signer *discovery.Peer) error {
+	if item == nil || !item.HasSignature() || signer == nil || signer.PublicKey() == nil {
 		return errInvalidSignature
 	}
 
-	content, err := marshalWithoutSignature(msg)
+	content, err := item.UnsignedBytes()
 	if err != nil {
 		return err
 	}
 
-	if !n.cs.Verify(content, sign.GetR(), sign.GetS(), signer.PublicKey()) {
+	r, s := item.Signature()
+	if !n.cs.Verify(content, r, s, signer.PublicKey()) {
 		return errInvalidSignature
 	}
 
 	return nil
-}
-
-// marshalWithoutSignature marshals a fresh unsigned copy of a Note or Accusation
-// for cryptographic verification without mutating msg.
-func marshalWithoutSignature(msg proto.Message) ([]byte, error) {
-	switch m := msg.(type) {
-	case *pb.Note:
-		if m.GetSignature() == nil {
-			return nil, errInvalidSignature
-		}
-		return proto.Marshal(&pb.Note{
-			Epoch: m.GetEpoch(),
-			Id:    m.GetId(),
-			Mask:  m.GetMask(),
-		})
-	case *pb.Accusation:
-		if m.GetSignature() == nil {
-			return nil, errInvalidSignature
-		}
-		return proto.Marshal(&pb.Accusation{
-			Epoch:   m.GetEpoch(),
-			Accuser: m.GetAccuser(),
-			Accused: m.GetAccused(),
-			RingNum: m.GetRingNum(),
-		})
-	default:
-		return nil, errors.New("unsupported message type for signature stripping")
-	}
 }
 
 func (n *Node) Sign(content []byte) ([]byte, []byte, error) {

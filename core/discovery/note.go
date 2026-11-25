@@ -1,13 +1,10 @@
 package discovery
 
 import (
-	"crypto/ecdsa"
-	"crypto/rand"
 	"fmt"
 
-	"github.com/eika123/ifrit/crypto"
 	pb "github.com/eika123/ifrit/protobuf"
-	"github.com/golang/protobuf/proto"
+	gpb "github.com/golang/protobuf/proto"
 )
 
 type Note struct {
@@ -19,6 +16,16 @@ type Note struct {
 
 func (n Note) CryptographicIdentity() []byte {
 	return fmt.Appendf(nil, "%s:%d:%d", n.id, n.epoch, n.mask)
+}
+
+// UnsignedBytes returns the canonical unsigned protobuf serialization of n
+// used for ECDSA signing and verification.
+func (n *Note) UnsignedBytes() ([]byte, error) {
+	return gpb.Marshal(&pb.Note{
+		Epoch: n.epoch,
+		Id:    []byte(n.id),
+		Mask:  n.mask,
+	})
 }
 
 func (n Note) IsRingDisabled(ringNum, numRings uint32) bool {
@@ -98,70 +105,4 @@ func NoteFromPb(pbNote *pb.Note) *Note {
 		}
 	}
 	return n
-}
-
-/*
-
-########## METHODS ONLY USED FOR TESTING BELOW THIS LINE ##########
-
-*/
-
-// ONLY FOR TESTING
-func NewNote(id string, epoch uint64, mask uint32, priv *ecdsa.PrivateKey) *pb.Note {
-	n := &Note{
-		id:    id,
-		epoch: epoch,
-		mask:  mask,
-	}
-
-	err := signNote(n, priv)
-	if err != nil {
-		panic(err)
-	}
-
-	return n.ToPbMsg()
-}
-
-// ONLY FOR TESTING
-func NewUnsignedNote(id string, epoch uint64, mask uint32) *pb.Note {
-	n := &Note{
-		id:        id,
-		epoch:     epoch,
-		mask:      mask,
-		signature: &signature{},
-	}
-
-	return n.ToPbMsg()
-}
-
-// ONLY FOR TESTING
-func signNote(n *Note, privKey *ecdsa.PrivateKey) error {
-	if privKey == nil {
-		return errNoPrivKey
-	}
-
-	noteMsg := &pb.Note{
-		Epoch: n.epoch,
-		Id:    []byte(n.id),
-		Mask:  n.mask,
-	}
-
-	b, err := proto.Marshal(noteMsg)
-	if err != nil {
-		return err
-	}
-
-	hash := crypto.HashContent(b)
-
-	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash)
-	if err != nil {
-		return err
-	}
-
-	n.signature = &signature{
-		r: r.Bytes(),
-		s: s.Bytes(),
-	}
-
-	return nil
 }

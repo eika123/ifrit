@@ -264,14 +264,6 @@ func (n *Node) initControlReconcilers(hooks ControlReconcilerHooks) error {
 	return nil
 }
 
-// setControlReconcilerHooks swaps the control store validation/applier hooks
-// and re-binds the control store reconcilers on the node's store mux (for tests).
-func (n *Node) setControlReconcilerHooks(hooks ControlReconcilerHooks) {
-	if err := n.rebuildControlReconcilers(hooks); err != nil {
-		log.Error("failed to rebuild control reconcilers", "err", err)
-	}
-}
-
 func (n *Node) reconcilerConnProvider() reconcile.ConnProvider {
 	return func(_ context.Context, addr string) (grpc.ClientConnInterface, error) {
 		return n.comm.ClientConn(addr)

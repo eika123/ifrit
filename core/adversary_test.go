@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,7 +178,7 @@ func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
 	// Byzantine node sets unused upper bits (3..31) to 1 to deceptively deactivate all 3 rings
 	// (mask = 0xFFFFFFF8). Bits 0..2 are 0 (all 3 rings disabled), bits 3..31 are 1.
 	byzMask := uint32(0xFFFFFFF8)
-	byzNote := discovery.NewNote(peerID, 2, byzMask, peerPriv)
+	byzNote := testutil.NewNote(peerID, 2, byzMask, peerPriv)
 
 	// evalNote must reject this note
 	err = node.evalNote(byzNote)

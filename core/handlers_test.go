@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	proto "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/require"
@@ -89,13 +90,13 @@ func (suite *HandlerTestSuite) TestSpread() {
 	notNeighbour := testPeers[0]
 
 	accusedNonNeighbour := testPeers[1]
-	acc := discovery.NewAccusation(1, accusedNonNeighbour.Id, node.self.Id, 1,
+	acc := testutil.NewAccusation(1, accusedNonNeighbour.Id, node.self.Id, 1,
 		suite.priv)
-	node.view.AddTestAccusation(acc)
+	testutil.AddTestAccusation(suite.T(), node.view, acc)
 
 	rebuttalPeer := testPeers[2]
-	acc2 := discovery.NewAccusation(1, rebuttalPeer.Id, node.self.Id, 1, suite.priv)
-	node.view.AddTestAccusation(acc2)
+	acc2 := testutil.NewAccusation(1, rebuttalPeer.Id, node.self.Id, 1, suite.priv)
+	testutil.AddTestAccusation(suite.T(), node.view, acc2)
 
 	accusedNote, _ := node.view.ActiveNote(accusedNonNeighbour.Id)
 
@@ -167,7 +168,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			err:       false,
 			isAccused: false,
 			args: &proto.State{
-				OwnNote: discovery.NewNote(rebuttalPeer.Id, 2, math.MaxUint32,
+				OwnNote: testutil.NewNote(rebuttalPeer.Id, 2, math.MaxUint32,
 					suite.privMap[rebuttalPeer.Id]),
 			},
 			exists: true,
@@ -255,7 +256,7 @@ func (suite *HandlerTestSuite) TestSpread_InvalidNoteSignatureRejectedFromStore(
 	notNeighbour := testPeers[0]
 	ctx := peerContext(notNeighbour)
 
-	badSigPb := discovery.NewNote(notNeighbour.Id, 50, math.MaxUint32, suite.privMap[notNeighbour.Id])
+	badSigPb := testutil.NewNote(notNeighbour.Id, 50, math.MaxUint32, suite.privMap[notNeighbour.Id])
 	badSigPb.Signature = &proto.Signature{R: []byte("bogus_r"), S: []byte("bogus_s")}
 
 	args := &proto.State{
@@ -386,7 +387,7 @@ func addPeer(node *Node) (*discovery.Peer, *ecdsa.PrivateKey, error) {
 
 	node.view.AddLive(p)
 
-	node.view.AddTestNote(p, privKey, 1)
+	testutil.AddTestNote(node.view, p, privKey, 1)
 
 	return p, privKey, nil
 }
@@ -547,7 +548,7 @@ func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	currentEpoch := currentNote.Epoch()
 
 	// Create valid accusation against self from legitimate predecessor
-	acc := discovery.NewAccusation(currentEpoch, node.self.Id, prev.Id, ringNum, suite.privMap[prev.Id])
+	acc := testutil.NewAccusation(currentEpoch, node.self.Id, prev.Id, ringNum, suite.privMap[prev.Id])
 
 	// Process accusation against self
 	rawAcc := discovery.AccusationFromPb(acc)

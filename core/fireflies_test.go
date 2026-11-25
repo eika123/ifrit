@@ -11,6 +11,7 @@ import (
 
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
@@ -182,7 +183,7 @@ func TestNode_AdversarySuppressesAccusation(t *testing.T) {
 	n.view.AddLive(p)
 
 	// Register peer's active note
-	note := discovery.NewNote(p.Id, 1, 0xFFFFFFFF, peerCs.priv)
+	note := testutil.NewNote(p.Id, 1, 0xFFFFFFFF, peerCs.priv)
 	require.NoError(t, n.evalNote(note))
 
 	// Verify predecessor/successor ring relationship

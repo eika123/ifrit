@@ -1,14 +1,11 @@
 package discovery
 
 import (
-	"crypto/ecdsa"
-	"crypto/rand"
 	"errors"
 	"fmt"
 
-	"github.com/eika123/ifrit/crypto"
 	pb "github.com/eika123/ifrit/protobuf"
-	"github.com/golang/protobuf/proto"
+	gpb "github.com/golang/protobuf/proto"
 )
 
 var (
@@ -27,6 +24,17 @@ type Accusation struct {
 // this accusation across all rings and epochs.
 func (a Accusation) CryptographicIdentity() []byte {
 	return fmt.Appendf(nil, "%s:%s:%d:%d", a.accused, a.accuser, a.ringNum, a.epoch)
+}
+
+// UnsignedBytes returns the canonical unsigned protobuf serialization of a
+// used for ECDSA signing and verification.
+func (a *Accusation) UnsignedBytes() ([]byte, error) {
+	return gpb.Marshal(&pb.Accusation{
+		Epoch:   a.epoch,
+		Accuser: []byte(a.accuser),
+		Accused: []byte(a.accused),
+		RingNum: a.ringNum,
+	})
 }
 
 // Checks that for this accusation a:
@@ -70,6 +78,10 @@ func (a Accusation) Signature() (r, s []byte) {
 	return a.r, a.s
 }
 
+func (a *Accusation) HasSignature() bool {
+	return a != nil && a.signature != nil
+}
+
 // Converts the internal Accusation struct to a protobuf Accusation message.
 func (a Accusation) ToPbMsg() *pb.Accusation {
 	msg := &pb.Accusation{
@@ -106,73 +118,4 @@ func AccusationFromPb(pbAcc *pb.Accusation) *Accusation {
 		}
 	}
 	return a
-}
-
-/*
-
-########## METHODS ONLY USED FOR TESTING BELOW THIS LINE ##########
-
-*/
-
-// ONLY for testing
-func NewAccusation(epoch uint64, accused, accuser string, ringNum uint32, priv *ecdsa.PrivateKey) *pb.Accusation {
-	a := &Accusation{
-		accused: accused,
-		accuser: accuser,
-		epoch:   epoch,
-		ringNum: ringNum,
-	}
-
-	err := signAcc(a, priv)
-	if err != nil {
-		panic(err)
-	}
-
-	return a.ToPbMsg()
-}
-
-// ONLY for testing
-func NewUnsignedAccusation(epoch uint64, accused, accuser string, ringNum uint32) *pb.Accusation {
-	a := &Accusation{
-		accused:   accused,
-		accuser:   accuser,
-		epoch:     epoch,
-		ringNum:   ringNum,
-		signature: &signature{},
-	}
-
-	return a.ToPbMsg()
-}
-
-// ONLY for testing
-func signAcc(a *Accusation, privKey *ecdsa.PrivateKey) error {
-	if privKey == nil {
-		return errNoPrivKey
-	}
-
-	accMsg := &pb.Accusation{
-		Epoch:   a.epoch,
-		Accuser: []byte(a.accuser),
-		Accused: []byte(a.accused),
-		RingNum: a.ringNum,
-	}
-
-	b, err := proto.Marshal(accMsg)
-	if err != nil {
-		return err
-	}
-
-	hash := crypto.HashContent(b)
-
-	r, s, err := ecdsa.Sign(rand.Reader, privKey, hash)
-	if err != nil {
-		return err
-	}
-
-	a.signature = &signature{
-		r: r.Bytes(),
-		s: s.Bytes(),
-	}
-
-	return nil
 }

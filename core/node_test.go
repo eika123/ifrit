@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit/comm"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	"github.com/eika123/ifrit/crypto"
 	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
@@ -90,7 +91,7 @@ func (suite *NodeTestSuite) TestGossip() {
 
 	for _, n := range nodes {
 		for _, n2 := range nodes {
-			require.NoError(suite.T(), n.view.Compare(n2.view), "Views are not equal.")
+			require.NoError(suite.T(), testutil.CompareViews(n.view, n2.view), "Views are not equal.")
 		}
 	}
 }

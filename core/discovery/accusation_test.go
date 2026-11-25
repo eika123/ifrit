@@ -1,9 +1,6 @@
 package discovery
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"testing"
 
 	pb "github.com/eika123/ifrit/protobuf"
@@ -94,30 +91,6 @@ func (suite *AccTestSuite) TestToPbMsg() {
 	assert.Equal(suite.T(), acc.signature.r, gossipAcc.Signature.GetR(), "Protobuf message has different signature r field.")
 
 	assert.Equal(suite.T(), acc.signature.s, gossipAcc.Signature.GetS(), "Protobuf message has different signature s field.")
-}
-
-func (suite *AccTestSuite) TestSign() {
-	acc := &Accusation{
-		accused: "testid1",
-		accuser: "testid2",
-		ringNum: 5,
-		epoch:   3,
-	}
-
-	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
-	require.NoError(suite.T(), err, "Failed to generate private key")
-
-	assert.Error(suite.T(), signAcc(acc, nil), "Returns no error with no private key")
-
-	assert.Nil(suite.T(), acc.signature, "Signature is not nil before signing")
-
-	assert.NoError(suite.T(), signAcc(acc, privKey), "Returns error with non-nil private key")
-
-	assert.NotNil(suite.T(), acc.signature, "Signature is still nil after signing accusation")
-
-	assert.NotNil(suite.T(), acc.signature.r, "Signature r component is still nil after signing accusation")
-
-	assert.NotNil(suite.T(), acc.signature.s, "Signature s component is still nil after signing accusation")
 }
 
 func (suite *AccTestSuite) TestCryptographicIdentity() {

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"math/big"
 	"os"
 	"testing"
 	"time"
@@ -25,7 +26,8 @@ import (
 type ViewTestSuite struct {
 	suite.Suite
 
-	v *View
+	v    *View
+	priv *ecdsa.PrivateKey
 }
 
 func TestViewTestSuite(t *testing.T) {
@@ -64,10 +66,11 @@ func (suite *ViewTestSuite) SetupTest() {
 
 	cert := validCert("selfId", privKey.Public())
 
-	v, err := NewView(10, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
+	v, err := NewView(10, cert, &cmStub{}, &mockSigner{priv: privKey}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 
 	suite.v = v
+	suite.priv = privKey
 }
 
 func (suite *ViewTestSuite) TestNewView() {
@@ -713,6 +716,22 @@ func (suite *ViewTestSuite) TestSelfNote() {
 	assert.Equal(suite.T(), localNote.mask, note.GetMask(), "Not equal masks.")
 	assert.Equal(suite.T(), localNote.signature.r, note.GetSignature().GetR(), "Not equal signature component r.")
 	assert.Equal(suite.T(), localNote.signature.s, note.GetSignature().GetS(), "Not equal signature component s.")
+
+	require.NotEmpty(suite.T(), note.GetSignature().GetR(), "Signature r must not be empty.")
+	require.NotEmpty(suite.T(), note.GetSignature().GetS(), "Signature s must not be empty.")
+
+	unsignedBytes, err := localNote.UnsignedBytes()
+	require.NoError(suite.T(), err)
+	h := sha256.Sum256(unsignedBytes)
+	rInt := new(big.Int).SetBytes(note.GetSignature().GetR())
+	sInt := new(big.Int).SetBytes(note.GetSignature().GetS())
+	assert.True(suite.T(), ecdsa.Verify(&suite.priv.PublicKey, h[:], rInt, sInt), "Self note signature must verify against self public key.")
+
+	tampered := &Note{id: localNote.id, epoch: localNote.epoch + 1, mask: localNote.mask}
+	tamperedBytes, err := tampered.UnsignedBytes()
+	require.NoError(suite.T(), err)
+	tamperedHash := sha256.Sum256(tamperedBytes)
+	assert.False(suite.T(), ecdsa.Verify(&suite.priv.PublicKey, tamperedHash[:], rInt, sInt), "Tampered note must fail signature verification.")
 }
 
 func (suite *ViewTestSuite) TestValidMask() {
@@ -995,7 +1014,7 @@ func (m *mockSigner) Sign(data []byte) ([]byte, []byte, error) {
 }
 
 func (suite *ViewTestSuite) TestViewCreateAccusation() {
-	signer := &mockSigner{}
+	signer := &mockSigner{priv: suite.priv}
 	peerId := "accusedPeer"
 	peer := &Peer{Id: peerId, Addr: "127.0.0.1:1000"}
 	note := &Note{id: peerId, epoch: 5}
@@ -1004,7 +1023,29 @@ func (suite *ViewTestSuite) TestViewCreateAccusation() {
 	err := suite.v.CreateAccusation(peer, note, 1, signer)
 	require.NoError(suite.T(), err)
 	assert.True(suite.T(), suite.v.HasAccusation(peerId, suite.v.self.Id, 1, 5))
-	assert.NotNil(suite.T(), suite.v.Accusation(peerId, suite.v.self.Id, 1, 5))
+	acc := suite.v.Accusation(peerId, suite.v.self.Id, 1, 5)
+	require.NotNil(suite.T(), acc)
+	require.NotNil(suite.T(), acc.signature)
+	require.NotEmpty(suite.T(), acc.r, "Accusation signature r must not be empty.")
+	require.NotEmpty(suite.T(), acc.s, "Accusation signature s must not be empty.")
+
+	unsignedBytes, err := acc.UnsignedBytes()
+	require.NoError(suite.T(), err)
+	h := sha256.Sum256(unsignedBytes)
+	rInt := new(big.Int).SetBytes(acc.r)
+	sInt := new(big.Int).SetBytes(acc.s)
+	assert.True(suite.T(), ecdsa.Verify(&suite.priv.PublicKey, h[:], rInt, sInt), "Accusation signature must verify against accuser public key.")
+
+	tampered := &Accusation{
+		accused: acc.Accused(),
+		accuser: acc.Accuser(),
+		epoch:   acc.Epoch() + 1,
+		ringNum: acc.RingNum(),
+	}
+	tamperedBytes, err := tampered.UnsignedBytes()
+	require.NoError(suite.T(), err)
+	tamperedHash := sha256.Sum256(tamperedBytes)
+	assert.False(suite.T(), ecdsa.Verify(&suite.priv.PublicKey, tamperedHash[:], rInt, sInt), "Tampered accusation must fail signature verification.")
 
 	// Duplicate creation returns ErrAccAlreadyExists
 	err = suite.v.CreateAccusation(peer, note, 1, signer)
@@ -1289,4 +1330,15 @@ func (suite *ViewTestSuite) TestViewCertificatesFingerprintAndStore() {
 
 	restoredCertFP := v.CertFingerprint()
 	assert.Equal(suite.T(), certFP, restoredCertFP, "Removing peer must restore initial cert fingerprint")
+}
+
+func (v *View) AddTestPeer(p *Peer) {
+	v.viewStore.Insert(p)
+	if v.certStore != nil && p.cert != nil && len(p.cert.Raw) > 0 {
+		v.certStore.Insert(pki.CertificateFromX509(p.cert))
+	}
+}
+
+func (v *View) AddTestLivePeer(p *Peer) {
+	v.liveStore.Insert(p)
 }

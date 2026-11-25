@@ -17,6 +17,7 @@ import (
 
 	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/core/discovery"
+	"github.com/eika123/ifrit/core/internal/testutil"
 	"github.com/eika123/ifrit/digestmaps"
 	"github.com/eika123/ifrit/experiments/telemetry"
 	pb "github.com/eika123/ifrit/protobuf"
@@ -134,7 +135,7 @@ func pairNodes(
 	p2 := n1.view.Peer(id2)
 	p2.Addr = comm2.Addr()
 	n1.view.AddLive(p2)
-	n1.view.AddTestNote(p2, priv2, 1)
+	testutil.AddTestNote(n1.view, p2, priv2, 1)
 
 	// Add n1 into n2's view
 	err = n2.view.AddFull(id1, cert1)
@@ -142,7 +143,7 @@ func pairNodes(
 	p1 := n2.view.Peer(id1)
 	p1.Addr = comm1.Addr()
 	n2.view.AddLive(p1)
-	n2.view.AddTestNote(p1, priv1, 1)
+	testutil.AddTestNote(n2.view, p1, priv1, 1)
 
 	return p1, p2
 }
@@ -340,7 +341,7 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	// Ensure Node A has initialized its self note in view
 	selfNoteA := nodeA.view.SelfNote()
 	if selfNoteA == nil {
-		nodeA.view.AddTestNote(nodeA.self, privA, 1)
+		testutil.AddTestNote(nodeA.view, nodeA.self, privA, 1)
 	}
 
 	// Node B is a fresh new peer with only its certificate and self note (no contact list / empty view)
@@ -350,7 +351,7 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 
 	selfNoteB := nodeB.view.SelfNote()
 	if selfNoteB == nil {
-		nodeB.view.AddTestNote(nodeB.self, privB, 1)
+		testutil.AddTestNote(nodeB.view, nodeB.self, privB, 1)
 		selfNoteB = nodeB.view.SelfNote()
 	}
 

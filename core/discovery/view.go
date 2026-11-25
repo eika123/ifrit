@@ -1,22 +1,18 @@
 package discovery
 
 import (
-	"crypto/ecdsa"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"math"
 	"math/bits"
 	"sync"
 	"time"
 
 	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/eika123/ifrit/digestmaps"
-	pb "github.com/eika123/ifrit/protobuf"
 	proto "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
-	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 )
 
@@ -1033,13 +1029,7 @@ func (v *View) deactivateRing(ringNumber uint32) (uint32, error) {
 }
 
 func (v *View) signLocalNote(n *Note) error {
-	pbNote := &pb.Note{
-		Epoch: n.epoch,
-		Mask:  n.mask,
-		Id:    []byte(n.id),
-	}
-
-	bytes, err := gpb.Marshal(pbNote)
+	bytes, err := n.UnsignedBytes()
 	if err != nil {
 		return err
 	}
@@ -1253,14 +1243,7 @@ func (v *View) CreateAccusation(accused *Peer, accusedNote *Note, ringNum uint32
 		ringNum: ringNum,
 	}
 
-	pbAcc := &pb.Accusation{
-		Epoch:   acc.epoch,
-		Accuser: []byte(acc.accuser),
-		Accused: []byte(acc.accused),
-		RingNum: acc.ringNum,
-	}
-
-	b, err := gpb.Marshal(pbAcc)
+	b, err := acc.UnsignedBytes()
 	if err != nil {
 		return err
 	}
@@ -1342,46 +1325,6 @@ func (v *View) RemoveTestFull(id string) error {
 }
 
 // ONLY for testing
-func (v *View) AddTestPeer(p *Peer) {
-	v.viewStore.Insert(p)
-	if v.certStore != nil && p.cert != nil && len(p.cert.Raw) > 0 {
-		v.certStore.Insert(pki.CertificateFromX509(p.cert))
-	}
-}
-
-// ONLY for testing
-func (v *View) AddTestLivePeer(p *Peer) {
-	v.liveStore.Insert(p)
-}
-
-// ONLY for testing
-func (v *View) AddTestAccusation(a *pb.Accusation) {
-	acc := &Accusation{
-		epoch:   a.GetEpoch(),
-		accuser: string(a.GetAccuser()),
-		accused: string(a.GetAccused()),
-		ringNum: a.GetRingNum(),
-		signature: &signature{
-			r: a.GetSignature().GetR(),
-			s: a.GetSignature().GetS(),
-		},
-	}
-	v.accusationStore.Insert(acc)
-	v.PromoteAccusation(acc)
-}
-
-// ONLY for testing
-func (v *View) AddTestNote(p *Peer, priv *ecdsa.PrivateKey, epoch uint64) {
-	n := &Note{
-		id:    p.Id,
-		mask:  math.MaxUint32,
-		epoch: epoch,
-	}
-	signNote(n, priv)
-	v.AddNote(p, n.mask, n.epoch, n.r, n.s)
-}
-
-// ONLY for testing
 func (v *View) ClearTestNote(p *Peer) {
 	if p == nil {
 		return
@@ -1405,56 +1348,4 @@ func mustMutableStore[T any, S digestmaps.Symbol[S]](name string, store digestma
 		panic(fmt.Sprintf("%s does not implement MutableReverseIndexStore", name))
 	}
 	return m
-}
-
-// ONLY for testing
-func (v *View) Compare(other *View) error {
-	for _, p := range v.viewStore.Elements() {
-		id := p.Id
-		var p2 *Peer
-		if id == other.self.Id {
-			p2 = other.self
-		} else {
-			var ok bool
-			p2, ok = other.viewStore.Contains(p)
-			if !ok || p2.Id != id {
-				return errors.New("Peer not present in both views.")
-			}
-		}
-
-		note1, has1 := v.ActiveNote(id)
-		note2, has2 := other.ActiveNote(id)
-
-		if !has1 && !has2 {
-			continue
-		}
-		if !has1 || !has2 {
-			return errors.New("Did not have note for peer in both views.")
-		}
-		if !note1.Equal(note2.epoch) {
-			return errors.New("Did not have same note for peer in both views.")
-		}
-	}
-
-	for _, p := range v.liveStore.Elements() {
-		if p.Id == other.self.Id {
-			continue
-		}
-		if !other.IsAlive(p) {
-			return errors.New("Did not have peer in both live views.")
-		}
-	}
-
-	if len(v.accusationStore.Elements()) != len(other.accusationStore.Elements()) {
-		return errors.New("Accusation counts mismatch in views.")
-	}
-
-	for _, a := range v.accusationStore.Elements() {
-		a2, ok := other.accusationStore.Contains(a)
-		if !ok || !a.Equal(a2.accused, a2.accuser, a2.ringNum, a2.epoch) {
-			return errors.New("Accusation not equal in both views.")
-		}
-	}
-
-	return nil
 }

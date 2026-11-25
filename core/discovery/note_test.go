@@ -1,9 +1,6 @@
 package discovery
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"testing"
 
 	pb "github.com/eika123/ifrit/protobuf"
@@ -71,29 +68,6 @@ func (suite *NoteTestSuite) TestToPbMsg() {
 	assert.Equal(suite.T(), n.signature.r, gossipNote.GetSignature().GetR(), "Protobuf signature r component is not equal")
 
 	assert.Equal(suite.T(), n.signature.s, gossipNote.GetSignature().GetS(), "Protobuf signature s component is not equal")
-}
-
-func (suite *NoteTestSuite) TestSign() {
-	n := &Note{
-		id:    "testid1",
-		mask:  1,
-		epoch: 3,
-	}
-
-	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
-	require.NoError(suite.T(), err, "Failed to generate private key")
-
-	assert.Error(suite.T(), signNote(n, nil), "Returns no error with no private key")
-
-	assert.Nil(suite.T(), n.signature, "Signature is not nil before signing")
-
-	assert.NoError(suite.T(), signNote(n, privKey), "Returns error with non-nil private key")
-
-	assert.NotNil(suite.T(), n.signature, "Signature is still nil after signing accusation")
-
-	assert.NotNil(suite.T(), n.signature.r, "Signature r component is still nil after signing accusation")
-
-	assert.NotNil(suite.T(), n.signature.s, "Signature s component is still nil after signing accusation")
 }
 
 func (suite *NoteTestSuite) TestCryptographicIdentity() {
