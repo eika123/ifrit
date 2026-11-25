@@ -85,7 +85,7 @@ func NewServiceDirectory(
 	}
 
 	noteHasher := digestmaps.MustDefaultHasher[*ServiceNote]()
-	activeServices := digestmaps.NewVersionVectorMutable[string, *ServiceNote, digestmaps.DigestSymbol](
+	activeServices := digestmaps.NewVersionVectorMutable(
 		func(a *ServiceNote) string { return a.Id() },
 		func(vi digestmaps.VersionedItem[*ServiceNote]) digestmaps.DigestSymbol {
 			return noteHasher(vi.Item)
@@ -93,7 +93,7 @@ func NewServiceDirectory(
 	)
 
 	accHasher := digestmaps.MustDefaultHasher[*ServiceAccusation]()
-	activeAccs := digestmaps.NewVersionVectorMutable[string, *ServiceAccusation, digestmaps.DigestSymbol](
+	activeAccs := digestmaps.NewVersionVectorMutable(
 		func(a *ServiceAccusation) string {
 			return serviceAccusationKey(a.Accused(), a.ServiceID(), a.RingNum())
 		},
