@@ -13,6 +13,7 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/services/messaging"
 
 	log "github.com/inconshreveable/log15"
 )
@@ -53,11 +54,14 @@ func main() {
 		panic(err)
 	}
 
-	svc, err := clientIfrit.Service("ifritclient")
+	msgSvc, err := messaging.Register(clientIfrit)
 	if err != nil {
 		panic(err)
 	}
-	if err := svc.RegisterMsgHandler(msgHandler); err != nil {
+	if _, err := clientIfrit.Service("ifritclient"); err != nil {
+		panic(err)
+	}
+	if err := msgSvc.Handle("ifritclient", msgHandler); err != nil {
 		panic(err)
 	}
 	go clientIfrit.Start()
@@ -70,7 +74,7 @@ func main() {
 			}
 
 			addr := clientIfrit.Members()[0]
-			ch := svc.SendTo(addr, []byte("HellO!"))
+			ch := msgSvc.SendAsync("ifritclient", addr, []byte("HellO!"))
 
 			time.Sleep(3 * time.Second)
 			msg := <-ch

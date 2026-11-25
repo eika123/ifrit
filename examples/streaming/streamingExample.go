@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -8,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/services/messaging"
 	log "github.com/inconshreveable/log15"
 )
 
@@ -18,6 +20,8 @@ type App struct {
 	client    *ifrit.Client
 	masterSvc *ifrit.ServiceEndpoint
 	clientSvc *ifrit.ServiceEndpoint
+	masterMsg *messaging.Service
+	clientMsg *messaging.Service
 }
 
 func main() {
@@ -62,11 +66,15 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
+	clientMsg, err := messaging.Register(client)
+	if err != nil {
+		return nil, err
+	}
 	clientSvc, err := client.Service("streaming-example")
 	if err != nil {
 		return nil, err
 	}
-	if err := clientSvc.RegisterStreamHandler(streamHandler); err != nil {
+	if err := clientMsg.HandleStream("streaming-example", streamHandler); err != nil {
 		return nil, err
 	}
 	go client.Start()
@@ -79,6 +87,10 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
+	masterMsg, err := messaging.Register(master)
+	if err != nil {
+		return nil, err
+	}
 	masterSvc, err := master.Service("streaming-example")
 	if err != nil {
 		return nil, err
@@ -90,12 +102,14 @@ func NewApp() (*App, error) {
 		client:    client,
 		masterSvc: masterSvc,
 		clientSvc: clientSvc,
+		masterMsg: masterMsg,
+		clientMsg: clientMsg,
 	}, nil
 }
 
 func (app *App) Stream() error {
 	var wg sync.WaitGroup
-	inputStream, reply := app.masterSvc.OpenStream(app.client.Addr())
+	inputStream, reply := app.masterMsg.OpenStream(context.Background(), "streaming-example", app.client.Addr())
 
 	var receivedCount int
 	var receivedMu sync.Mutex

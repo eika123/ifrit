@@ -4,18 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/comm"
 	"github.com/eika123/ifrit/digestmaps"
+	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
-// what the hell is R5?
-func TestControlReconcilers_R5DataErrorDoesNotBlockControlOrServiceFingerprints(t *testing.T) {
+func TestControlReconcilers_DataErrorDoesNotBlockControlOrServiceFingerprints(t *testing.T) {
 	caCert, caPriv := genTestCA(t)
 
 	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
@@ -55,7 +58,7 @@ func TestControlReconcilers_R5DataErrorDoesNotBlockControlOrServiceFingerprints(
 	assert.Len(t, nodeA.ServiceMembers("dht"), 1, "nodeA must discover nodeB's dht service despite ifrit/data error")
 }
 
-func TestServiceMultiplexer_SparseStoreConvergenceAndMessagingIsolation(t *testing.T) {
+func TestServiceMultiplexer_SparseStoreConvergenceAndUnregistration(t *testing.T) {
 	caCert, caPriv := genTestCA(t)
 
 	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
@@ -134,49 +137,6 @@ func TestServiceMultiplexer_SparseStoreConvergenceAndMessagingIsolation(t *testi
 	assert.Equal(t, 1, pubsubStoreA.Size())
 	assert.Equal(t, 1, pubsubStoreB.Size())
 
-	// Verify multiplexed unary messaging and bidirectional streaming by service-id.
-	require.NoError(t, nodeA.SetServiceMsgHandler("dht", func(b []byte) ([]byte, error) {
-		return []byte("dht:" + string(b)), nil
-	}))
-	require.NoError(t, nodeA.SetServiceMsgHandler("pubsub", func(b []byte) ([]byte, error) {
-		return []byte("pubsub:" + string(b)), nil
-	}))
-	require.NoError(t, nodeA.SetServiceStreamHandler("dht", func(in, out chan []byte) {
-		defer close(out)
-		for m := range in {
-			out <- []byte("dht-stream:" + string(m))
-		}
-	}))
-	require.NoError(t, nodeA.SetServiceStreamHandler("pubsub", func(in, out chan []byte) {
-		defer close(out)
-		for m := range in {
-			out <- []byte("pubsub-stream:" + string(m))
-		}
-	}))
-
-	chDHT := make(chan *Message, 1)
-	nodeC.SendServiceMessage("dht", nodeA.Addr(), chDHT, []byte("ping"))
-	respDHT := <-chDHT
-	require.NotNil(t, respDHT)
-	require.NoError(t, respDHT.Error)
-	assert.Equal(t, "dht:ping", string(respDHT.Data))
-
-	chPubsub := make(chan *Message, 1)
-	nodeB.SendServiceMessage("pubsub", nodeA.Addr(), chPubsub, []byte("ping"))
-	respPubsub := <-chPubsub
-	require.NotNil(t, respPubsub)
-	require.NoError(t, respPubsub.Error)
-	assert.Equal(t, "pubsub:ping", string(respPubsub.Data))
-
-	// Bidirectional stream routed to "dht" must hit "dht" handler, not "pubsub".
-	inCh := make(chan []byte, 1)
-	outCh := make(chan []byte, 1)
-	nodeC.OpenServiceStream("dht", nodeA.Addr(), inCh, outCh)
-	inCh <- []byte("hello")
-	close(inCh)
-	got := <-outCh
-	assert.Equal(t, "dht-stream:hello", string(got))
-
 	// Unregister "dht" on C -> reconcile -> A drops C from ServiceMembers("dht") while C stays live!
 	require.NoError(t, nodeC.UnregisterService("dht"))
 	peerCOnA.SetFingerprintServices(nil) // simulate Pong detecting new serviceFP
@@ -198,61 +158,72 @@ func TestServiceMultiplexer_SparseStoreConvergenceAndMessagingIsolation(t *testi
 	require.Error(t, err, fmt.Sprintf("reconciling unregistered service store on C should fail (got %v)", err))
 }
 
-func TestServiceMultiplexer_MessagingOnlyServiceWithoutStore(t *testing.T) {
+func TestServiceMultiplexer_CustomGRPCServiceAndPreStartGuard(t *testing.T) {
 	caCert, caPriv := genTestCA(t)
 
-	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	nodeA, commA, _, _ := createTestNodeWithComm(t, caCert, caPriv)
 	defer nodeA.Stop()
 	defer commA.Stop()
 
-	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
-	defer nodeB.Stop()
-	defer commB.Stop()
-
-	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
-	require.NotNil(t, peerBOnA)
-
-	// Announce a messaging-only "chat" service on both nodes without attaching any store.
-	_, err := nodeA.RegisterService("chat", 1, nil)
+	privC, err := genTLSKeys()
 	require.NoError(t, err)
-	_, err = nodeB.RegisterService("chat", 1, nil)
+	certC := genNodeCertSignedByCA(t, privC, caCert, caPriv)
+	lisC, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	commC, err := comm.NewComm(certC, caCert, privC, lisC)
+	require.NoError(t, err)
+	defer commC.Stop()
 
-	require.NoError(t, nodeB.SetServiceMsgHandler("chat", func(b []byte) ([]byte, error) {
-		return append([]byte("chat-reply:"), b...), nil
-	}))
-	require.NoError(t, nodeB.SetServiceStreamHandler("chat", func(in, out chan []byte) {
-		defer close(out)
-		for m := range in {
-			out <- append([]byte("chat-stream:"), m...)
+	nodeC, err := NewNode(commC, &pingStub{}, &cmStub{cert: certC, caCert: caCert}, &cryptoStub{priv: privC})
+	require.NoError(t, err)
+	defer nodeC.Stop()
+
+	type customEchoServer interface {
+		Echo(context.Context, *pb.Ping) (*pb.Ping, error)
+	}
+	echoImpl := customEchoFunc(func(ctx context.Context, req *pb.Ping) (*pb.Ping, error) {
+		cert, err := nodeC.ValidatePeerCtx(ctx)
+		if err != nil {
+			return nil, err
 		}
-	}))
+		return &pb.Ping{Nonce: append(append([]byte("echo:"), req.GetNonce()...), []byte(":"+string(cert.SubjectKeyId))...)}, nil
+	})
+	echoDesc := &grpc.ServiceDesc{
+		ServiceName: "custom.Echo",
+		HandlerType: (*customEchoServer)(nil),
+		Methods: []grpc.MethodDesc{
+			{
+				MethodName: "Echo",
+				Handler: func(srv any, ctx context.Context, dec func(any) error, interceptor grpc.UnaryServerInterceptor) (any, error) {
+					in := new(pb.Ping)
+					if err := dec(in); err != nil {
+						return nil, err
+					}
+					return srv.(customEchoServer).Echo(ctx, in)
+				},
+			},
+		},
+	}
 
-	// Confirm no store entry is attached for "chat" on either node.
-	assert.Nil(t, nodeA.services.storeEntry("chat"))
-	assert.Nil(t, nodeB.services.storeEntry("chat"))
+	require.NoError(t, nodeC.RegisterGRPCService(echoDesc, echoImpl))
+	go nodeC.Start()
+	<-nodeC.startedChan
 
-	// Reconcile service discovery so A discovers B hosts "chat".
+	// Post-Start() registration must fail cleanly with ErrAlreadyStarted rather than panicking in gRPC-Go.
+	assert.ErrorIs(t, nodeC.RegisterGRPCService(echoDesc, echoImpl), ErrAlreadyStarted)
+
+	// Dial custom.Echo from nodeA using nodeA.ConnProvider() over mTLS.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
-	require.Len(t, nodeA.ServiceMembers("chat"), 1)
-	assert.Equal(t, nodeB.Id(), nodeA.ServiceMembers("chat")[0].ID)
+	ccC, err := nodeA.ConnProvider()(ctx, commC.Addr())
+	require.NoError(t, err)
+	out := new(pb.Ping)
+	require.NoError(t, ccC.Invoke(ctx, "/custom.Echo/Echo", &pb.Ping{Nonce: []byte("ping")}, out))
+	assert.Equal(t, "echo:ping:"+nodeA.Id(), string(out.GetNonce()))
+}
 
-	// Unary Messaging.Send routed to "chat" works with zero stores attached.
-	ch := make(chan *Message, 1)
-	nodeA.SendServiceMessage("chat", nodeB.Addr(), ch, []byte("hi"))
-	resp := <-ch
-	require.NotNil(t, resp)
-	require.NoError(t, resp.Error)
-	assert.Equal(t, "chat-reply:hi", string(resp.Data))
+type customEchoFunc func(context.Context, *pb.Ping) (*pb.Ping, error)
 
-	// Bidirectional Messaging.Stream routed to "chat" works with zero stores attached.
-	inCh := make(chan []byte, 1)
-	outCh := make(chan []byte, 1)
-	nodeA.OpenServiceStream("chat", nodeB.Addr(), inCh, outCh)
-	inCh <- []byte("stream-hi")
-	close(inCh)
-	got := <-outCh
-	assert.Equal(t, "chat-stream:stream-hi", string(got))
+func (f customEchoFunc) Echo(ctx context.Context, req *pb.Ping) (*pb.Ping, error) {
+	return f(ctx, req)
 }

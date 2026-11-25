@@ -19,7 +19,7 @@ import (
 )
 
 type stub struct {
-	gossip.UnimplementedMessagingServer
+	gossip.UnimplementedFirefliesServer
 }
 
 func TestTLSconnection(t *testing.T) {
@@ -120,7 +120,7 @@ func (s *stub) startServing(c, caCert *x509.Certificate, priv *rsa.PrivateKey, a
 	srv := grpc.NewServer(grpc.Creds(creds))
 
 	// Register the handler object
-	gossip.RegisterMessagingServer(srv, s)
+	gossip.RegisterFirefliesServer(srv, s)
 
 	// Serve and Listen
 	if err := srv.Serve(lis); err != nil {
@@ -130,12 +130,8 @@ func (s *stub) startServing(c, caCert *x509.Certificate, priv *rsa.PrivateKey, a
 
 }
 
-func (s *stub) Send(ctx context.Context, msg *gossip.Msg) (*gossip.MsgResponse, error) {
-	return &gossip.MsgResponse{Content: []byte("this is a test message")}, nil
-}
-
-func (s *stub) Stream(stream gossip.Messaging_StreamServer) error {
-	return nil
+func (s *stub) Announce(ctx context.Context, req *gossip.AnnounceRequest) (*gossip.AnnounceResponse, error) {
+	return &gossip.AnnounceResponse{}, nil
 }
 
 func (s *stub) startPinging(c, caCert *x509.Certificate, priv *rsa.PrivateKey, addr string) {
@@ -162,8 +158,8 @@ func (s *stub) startPinging(c, caCert *x509.Certificate, priv *rsa.PrivateKey, a
 	}
 
 	// Initialize the client and make the request
-	client := gossip.NewMessagingClient(conn)
-	_, err = client.Send(context.Background(), &gossip.Msg{Content: []byte("YOYO")})
+	client := gossip.NewFirefliesClient(conn)
+	_, err = client.Announce(context.Background(), &gossip.AnnounceRequest{})
 	if err != nil {
 		fmt.Println(err)
 		return

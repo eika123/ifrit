@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit"
-	"github.com/eika123/ifrit/core"
+	"github.com/eika123/ifrit/services/messaging"
 )
 
 // Mockup application
 type application struct {
 	ifritClient *ifrit.Client
 	service     *ifrit.ServiceEndpoint
+	msgSvc      *messaging.Service
 
 	exitChan chan bool
 	data     *appData
@@ -40,6 +41,11 @@ func newApp(config *ifrit.Config) (*application, error) {
 		return nil, err
 	}
 
+	msgSvc, err := messaging.Register(c)
+	if err != nil {
+		return nil, err
+	}
+
 	svc, err := c.Service("messages-example")
 	if err != nil {
 		return nil, err
@@ -48,6 +54,7 @@ func newApp(config *ifrit.Config) (*application, error) {
 	return &application{
 		ifritClient: c,
 		service:     svc,
+		msgSvc:      msgSvc,
 		exitChan:    make(chan bool),
 		data: &appData{
 			Users: make(map[int]*user),
@@ -57,7 +64,7 @@ func newApp(config *ifrit.Config) (*application, error) {
 
 // Start the mockup application
 func (a *application) Start() {
-	if err := a.service.RegisterMsgHandler(a.handleMessages); err != nil {
+	if err := a.msgSvc.Handle("messages-example", a.handleMessages); err != nil {
 		panic(err)
 	}
 
@@ -71,7 +78,7 @@ func (a *application) Start() {
 			members := a.ifritClient.Members()
 
 			for _, addr := range members {
-				ch := a.service.SendTo(addr, a.State())
+				ch := a.msgSvc.SendAsync("messages-example", addr, a.State())
 				select {
 				case resp := <-ch:
 					a.handleResponse(resp)
@@ -95,7 +102,7 @@ func (a *application) addRandomUser() {
 	}
 }
 
-func (a *application) handleResponse(msg *core.Message) {
+func (a *application) handleResponse(msg *messaging.Message) {
 	if msg == nil || msg.Error != nil {
 		return
 	}

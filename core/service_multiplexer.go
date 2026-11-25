@@ -9,7 +9,6 @@ import (
 
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/digestmaps"
-	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
 	log "github.com/inconshreveable/log15"
 )
@@ -22,9 +21,7 @@ type serviceRegistry struct {
 }
 
 type localService struct {
-	msgHandler    processMsg
-	streamHandler streamMsg
-	store         *serviceStoreEntry
+	store *serviceStoreEntry
 }
 
 func newServiceRegistry() *serviceRegistry {
@@ -40,48 +37,6 @@ func (r *serviceRegistry) getOrCreateLocked(serviceID string) *localService {
 		r.services[serviceID] = svc
 	}
 	return svc
-}
-
-func (r *serviceRegistry) setMsgHandler(serviceID string, handler processMsg) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if handler == nil {
-		if svc, ok := r.services[serviceID]; ok {
-			svc.msgHandler = nil
-		}
-		return
-	}
-	r.getOrCreateLocked(serviceID).msgHandler = handler
-}
-
-func (r *serviceRegistry) msgHandler(serviceID string) processMsg {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if svc, ok := r.services[serviceID]; ok {
-		return svc.msgHandler
-	}
-	return nil
-}
-
-func (r *serviceRegistry) setStreamHandler(serviceID string, handler streamMsg) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if handler == nil {
-		if svc, ok := r.services[serviceID]; ok {
-			svc.streamHandler = nil
-		}
-		return
-	}
-	r.getOrCreateLocked(serviceID).streamHandler = handler
-}
-
-func (r *serviceRegistry) streamHandler(serviceID string) streamMsg {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if svc, ok := r.services[serviceID]; ok {
-		return svc.streamHandler
-	}
-	return nil
 }
 
 func (r *serviceRegistry) setStore(serviceID string, entry *serviceStoreEntry) {
@@ -191,60 +146,6 @@ func (n *Node) AccuseServicePeer(serviceID, peerID string, ringNum uint32) error
 	}
 	_, err := n.view.ServiceDirectory().CreateServiceAccusation(n.cs, peer, serviceID, ringNum, n.livePeerLookup)
 	return err
-}
-
-// SetServiceMsgHandler registers the unary message handler for serviceID.
-func (n *Node) SetServiceMsgHandler(serviceID string, handler processMsg) error {
-	if err := discovery.ValidateServiceID(serviceID); err != nil {
-		return err
-	}
-	n.services.setMsgHandler(serviceID, handler)
-	return nil
-}
-
-func (n *Node) getServiceMsgHandler(serviceID string) processMsg {
-	return n.services.msgHandler(serviceID)
-}
-
-// SetServiceStreamHandler registers the bidirectional stream handler for serviceID.
-func (n *Node) SetServiceStreamHandler(serviceID string, handler streamMsg) error {
-	if err := discovery.ValidateServiceID(serviceID); err != nil {
-		return err
-	}
-	n.services.setStreamHandler(serviceID, handler)
-	return nil
-}
-
-func (n *Node) getServiceStreamHandler(serviceID string) streamMsg {
-	return n.services.streamHandler(serviceID)
-}
-
-// SendServiceMessage dispatches a point-to-point unary message routed to serviceID on dest.
-func (n *Node) SendServiceMessage(serviceID, dest string, ch chan *Message, data []byte) {
-	msg := &pb.Msg{
-		Content: data,
-	}
-	go func() {
-		if n.msgSem != nil {
-			if n.syncCtx != nil {
-				select {
-				case n.msgSem <- struct{}{}:
-				case <-n.syncCtx.Done():
-					close(ch)
-					return
-				}
-			} else {
-				n.msgSem <- struct{}{}
-			}
-			defer func() { <-n.msgSem }()
-		}
-		n.sendServiceMsg(serviceID, dest, ch, msg)
-	}()
-}
-
-// OpenServiceStream opens a bidirectional byte stream routed to serviceID on dest.
-func (n *Node) OpenServiceStream(serviceID, dest string, input, reply chan []byte) {
-	go n.openServiceStream(serviceID, dest, input, reply)
 }
 
 // RegisterServiceStoreReconciler mounts rec on the node's reconcile.Mux under "service/<serviceID>"

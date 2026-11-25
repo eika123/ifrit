@@ -14,7 +14,6 @@ type Options struct {
 	RemovalTimeout         time.Duration
 	PingLimit              uint32
 	PingsPerInterval       int
-	MaxConcurrentMessages  uint32
 	ReconciliationStrategy string
 	EntryAddrs             []string
 	SyncConfig             SyncConfig
@@ -32,7 +31,6 @@ func DefaultOptions() Options {
 		RemovalTimeout:         60 * time.Second,
 		PingLimit:              3,
 		PingsPerInterval:       3,
-		MaxConcurrentMessages:  5,
 		ReconciliationStrategy: "riblt",
 		SyncConfig:             DefaultSyncConfig(),
 		VizUpdateInterval:      10 * time.Second,
@@ -58,9 +56,6 @@ func (o Options) withDefaults() Options {
 	}
 	if o.PingsPerInterval <= 0 {
 		o.PingsPerInterval = def.PingsPerInterval
-	}
-	if o.MaxConcurrentMessages == 0 {
-		o.MaxConcurrentMessages = def.MaxConcurrentMessages
 	}
 	o.ReconciliationStrategy = strings.ToLower(strings.TrimSpace(o.ReconciliationStrategy))
 	if o.ReconciliationStrategy == "" {

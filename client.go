@@ -1,6 +1,8 @@
 package ifrit
 
 import (
+	"context"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"github.com/eika123/ifrit/reconcile/ratelessIBLT"
 	log "github.com/inconshreveable/log15"
 	"github.com/spf13/viper"
+	"google.golang.org/grpc"
 )
 
 type Client struct {
@@ -57,7 +60,6 @@ type Config struct {
 	PingLimit              uint32
 	PingsPerInterval       int
 	RemovalTimeout         time.Duration
-	MaxConcurrentMessages  uint32
 	UseCompression         *bool
 	ReconciliationStrategy string
 	SyncConfig             *SyncConfig
@@ -264,6 +266,18 @@ func (c *Client) ServiceMembers(serviceID string) []PeerInfo {
 	return c.node.ServiceMembers(serviceID)
 }
 
+// RegisterGRPCService mounts a custom gRPC service on the client's shared mTLS
+// gRPC server. Must be called before Start() (returns core.ErrAlreadyStarted after).
+func (c *Client) RegisterGRPCService(desc *grpc.ServiceDesc, impl any) error {
+	return c.node.RegisterGRPCService(desc, impl)
+}
+
+// ValidatePeerCtx extracts and verifies the mTLS client certificate from an
+// incoming gRPC context against this client's CA or self-signed trust settings.
+func (c *Client) ValidatePeerCtx(ctx context.Context) (*x509.Certificate, error) {
+	return c.node.ValidatePeerCtx(ctx)
+}
+
 type serviceConfig struct {
 	version     uint64
 	healthCheck func() bool
@@ -358,42 +372,6 @@ func (s *ServiceEndpoint) NeighbourAddrs() []string {
 // service's RingSuperOverlay when peerID's service instance crashes or behaves malignantly.
 func (s *ServiceEndpoint) AccusePeer(peerID string, ringNum uint32) error {
 	return s.client.node.AccuseServicePeer(s.serviceID, peerID, ringNum)
-}
-
-// SendTo sends data to dest routed to this service's message handler.
-func (s *ServiceEndpoint) SendTo(dest string, data []byte) chan *core.Message {
-	ch := make(chan *core.Message, 1)
-	go s.client.node.SendServiceMessage(s.serviceID, dest, ch, data)
-	return ch
-}
-
-// SendToId sends data to the peer identified by destId, routed to this service's message handler.
-func (s *ServiceEndpoint) SendToId(destId []byte, data []byte) (chan *core.Message, error) {
-	addr, err := s.client.node.IdToAddr(destId)
-	if err != nil {
-		return nil, err
-	}
-	ch := make(chan *core.Message, 1)
-	go s.client.node.SendServiceMessage(s.serviceID, addr, ch, data)
-	return ch, nil
-}
-
-// OpenStream opens a bidirectional byte stream to dest routed to this service's stream handler.
-func (s *ServiceEndpoint) OpenStream(dest string) (inputCh chan<- []byte, replyCh <-chan []byte) {
-	input := make(chan []byte)
-	reply := make(chan []byte)
-	go s.client.node.OpenServiceStream(s.serviceID, dest, input, reply)
-	return input, reply
-}
-
-// RegisterStreamHandler binds streamHandler to inbound streams targeting this service.
-func (s *ServiceEndpoint) RegisterStreamHandler(streamHandler func(chan []byte, chan []byte)) error {
-	return s.client.node.SetServiceStreamHandler(s.serviceID, streamHandler)
-}
-
-// RegisterMsgHandler binds msgHandler to inbound unary messages targeting this service.
-func (s *ServiceEndpoint) RegisterMsgHandler(msgHandler func([]byte) ([]byte, error)) error {
-	return s.client.node.SetServiceMsgHandler(s.serviceID, msgHandler)
 }
 
 // RegisterStoreReconciler mounts a custom reconcile.StoreReconciler for this service under
@@ -594,7 +572,6 @@ func resolveConfig(cfg *Config) (resolvedClientConfig, error) {
 			RemovalTimeout:         time.Second * time.Duration(v.GetFloat64("removal_timeout")),
 			PingLimit:              uint32(v.GetInt32("ping_limit")),
 			PingsPerInterval:       v.GetInt("pings_per_interval"),
-			MaxConcurrentMessages:  uint32(v.GetInt32("max_concurrent_messages")),
 			ReconciliationStrategy: v.GetString("reconciliation_strategy"),
 			EntryAddrs:             v.GetStringSlice("entry_addrs"),
 			SyncConfig:             core.DefaultSyncConfig(),
@@ -630,9 +607,6 @@ func resolveConfig(cfg *Config) (resolvedClientConfig, error) {
 	}
 	if cfg.PingsPerInterval > 0 {
 		out.nodeOpts.PingsPerInterval = cfg.PingsPerInterval
-	}
-	if cfg.MaxConcurrentMessages > 0 {
-		out.nodeOpts.MaxConcurrentMessages = cfg.MaxConcurrentMessages
 	}
 	if cfg.ReconciliationStrategy != "" {
 		out.nodeOpts.ReconciliationStrategy = cfg.ReconciliationStrategy

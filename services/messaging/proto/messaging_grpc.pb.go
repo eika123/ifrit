@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: messaging.proto
 
-package proto
+package messagingpb
 
 import (
 	context "context"
@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Messaging_Send_FullMethodName   = "/proto.Messaging/Send"
-	Messaging_Stream_FullMethodName = "/proto.Messaging/Stream"
+	Messaging_Send_FullMethodName   = "/messagingpb.Messaging/Send"
+	Messaging_Stream_FullMethodName = "/messagingpb.Messaging/Stream"
 )
 
 // MessagingClient is the client API for Messaging service.
@@ -134,7 +134,7 @@ type Messaging_StreamServer = grpc.BidiStreamingServer[Msg, MsgResponse]
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var Messaging_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "proto.Messaging",
+	ServiceName: "messagingpb.Messaging",
 	HandlerType: (*MessagingServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

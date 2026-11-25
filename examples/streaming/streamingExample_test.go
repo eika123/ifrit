@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit"
+	"github.com/eika123/ifrit/services/messaging"
 	"github.com/eika123/ifrit/crypto/cauth"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
@@ -98,11 +99,15 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	if err != nil {
 		return nil, err
 	}
+	clientMsg, err := messaging.Register(client)
+	if err != nil {
+		return nil, err
+	}
 	clientSvc, err := client.Service("streaming-example")
 	if err != nil {
 		return nil, err
 	}
-	if err := clientSvc.RegisterStreamHandler(streamHandler); err != nil {
+	if err := clientMsg.HandleStream("streaming-example", streamHandler); err != nil {
 		return nil, err
 	}
 	// Pass client by value as argument to avoid closure capture races on local variables.
@@ -118,6 +123,12 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	})
 	if err != nil {
 		client.Stop()
+		return nil, err
+	}
+	masterMsg, err := messaging.Register(master)
+	if err != nil {
+		client.Stop()
+		master.Stop()
 		return nil, err
 	}
 	masterSvc, err := master.Service("streaming-example")
@@ -137,5 +148,7 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 		client:    client,
 		masterSvc: masterSvc,
 		clientSvc: clientSvc,
+		masterMsg: masterMsg,
+		clientMsg: clientMsg,
 	}, nil
 }

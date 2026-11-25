@@ -23,13 +23,9 @@ var (
 	errNoEntryAddrs = errors.New("No entry_addrs set in config with use_ca disabled")
 )
 
-type Message struct {
-	Data  []byte
-	Error error
-}
-
-type processMsg func([]byte) ([]byte, error)
-type streamMsg func(chan []byte, chan []byte)
+// ErrAlreadyStarted is returned when attempting to register a gRPC service
+// on a Node after Start() has been called (gRPC-Go forbids RegisterService after Serve).
+var ErrAlreadyStarted = errors.New("cannot register gRPC service after Node.Start")
 
 type Node struct {
 	view *discovery.View
@@ -80,8 +76,6 @@ type Node struct {
 	syncConfig SyncConfig
 	syncCtx    context.Context
 	syncCancel context.CancelFunc
-
-	msgSem chan struct{}
 
 	entryAddrs []string
 
@@ -144,18 +138,12 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	}
 	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
-	var msgSem chan struct{}
-	if cfg.MaxConcurrentMessages > 0 {
-		msgSem = make(chan struct{}, cfg.MaxConcurrentMessages)
-	}
-
 	n := &Node{
 		exitChan:               make(chan bool, 1),
 		startedChan:            make(chan struct{}),
 		wg:                     &sync.WaitGroup{},
 		gossipTimeout:          cfg.GossipInterval,
 		monitorTimeout:         cfg.MonitorInterval,
-		msgSem:                 msgSem,
 		entryAddrs:             append([]string(nil), cfg.EntryAddrs...),
 		ringsPingedPerInterval: perInterval,
 
@@ -190,7 +178,6 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	}
 
 	pb.RegisterFirefliesServer(n.comm, &firefliesRPCServer{node: n})
-	pb.RegisterMessagingServer(n.comm, &messagingRPCServer{node: n})
 	if err := n.initControlReconcilers(n.defaultControlReconcilerHooks()); err != nil {
 		return nil, err
 	}
@@ -282,6 +269,24 @@ func (n *Node) Stop() {
 	if n.comm != nil {
 		n.comm.Stop()
 	}
+}
+
+// RegisterGRPCService mounts a custom gRPC service on the node's shared mTLS
+// gRPC server. Must be called before Start() (returns ErrAlreadyStarted after).
+func (n *Node) RegisterGRPCService(desc *grpc.ServiceDesc, impl any) error {
+	n.startMutex.Lock()
+	defer n.startMutex.Unlock()
+	if n.startCalled {
+		return ErrAlreadyStarted
+	}
+	n.comm.RegisterService(desc, impl)
+	return nil
+}
+
+// ValidatePeerCtx extracts and verifies the mTLS client certificate from an
+// incoming gRPC context against the node's identity catalog (CA or self-signed).
+func (n *Node) ValidatePeerCtx(ctx context.Context) (*x509.Certificate, error) {
+	return n.validateCtx(ctx)
 }
 
 func (n *Node) Start() {
