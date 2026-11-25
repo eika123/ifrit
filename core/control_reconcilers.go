@@ -755,6 +755,8 @@ func (n *Node) admitViaThinSpread(addr string, target ...*discovery.Peer) error 
 		}
 		adv.OnGossipOut(p, msg)
 	}
+
+	// calls Spread
 	reply, err := n.comm.Gossip(addr, msg)
 	if err != nil {
 		return err
