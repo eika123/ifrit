@@ -158,23 +158,23 @@ func isNaiveStrategy(strategy string) bool {
 
 func newControlViewStores(strategy string) (*discovery.ViewStores, error) {
 	if isNaiveStrategy(strategy) {
-		certs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
+		certs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*pki.Certificate]())
 		if err != nil {
 			return nil, err
 		}
-		notes, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.Note]())
+		notes, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.Note]())
 		if err != nil {
 			return nil, err
 		}
-		accs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.Accusation]())
+		accs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.Accusation]())
 		if err != nil {
 			return nil, err
 		}
-		services, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.ServiceNote]())
+		services, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.ServiceNote]())
 		if err != nil {
 			return nil, err
 		}
-		serviceAccs, err := digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*discovery.ServiceAccusation]())
+		serviceAccs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*discovery.ServiceAccusation]())
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +294,7 @@ func (n *Node) reconcilerPeerAuth() reconcile.PeerAuthenticator {
 
 func buildControlReconciler[T any](
 	n *Node,
-	store digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol],
+	store reconcile.Store[T],
 	storeID string,
 	codec reconcile.ItemCodec[T],
 	detector reconcile.TamperDetector[T],

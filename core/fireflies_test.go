@@ -551,7 +551,11 @@ func createTestPeer() (*discovery.Peer, *cryptoStub, error) {
 	}
 	cert := genCert(priv, 1)
 	cs := &cryptoStub{priv: priv}
-	v, err := discovery.NewView(1, cert, nil, cs)
+	vs, err := newControlViewStores("naive")
+	if err != nil {
+		return nil, nil, err
+	}
+	v, err := discovery.NewView(1, cert, nil, cs, vs)
 	if err != nil {
 		return nil, nil, err
 	}

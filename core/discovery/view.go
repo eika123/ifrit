@@ -15,6 +15,7 @@ import (
 	"github.com/eika123/ifrit/digestmaps"
 	pb "github.com/eika123/ifrit/protobuf"
 	proto "github.com/eika123/ifrit/protobuf"
+	"github.com/eika123/ifrit/reconcile"
 	gpb "github.com/golang/protobuf/proto"
 	log "github.com/inconshreveable/log15"
 )
@@ -35,18 +36,21 @@ func accusationRingKey(accused string, ringNum uint32) string {
 }
 
 type View struct {
-	viewStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
 	viewMutex sync.RWMutex
 
+	/// Keeps the historical view state -- this stores are never reoconciled //////////////////
+	viewStore digestmaps.ReverseIndexStore[*Peer, digestmaps.DigestSymbol]
+	/// Keeps the live view state -- this store is never reconciled.
 	liveStore digestmaps.MutableReverseIndexStore[*Peer, digestmaps.DigestSymbol]
+	//////////////////////////////////////////////////////////////////////////////////
 
-	accusationStore   digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
+	accusationStore reconcile.Store[*Accusation]
+	noteStore       reconcile.Store[*Note]
+	certStore       reconcile.Store[*pki.Certificate]
+
 	activeAccusations digestmaps.VersionVectorMutable[string, *Accusation, digestmaps.DigestSymbol]
 
-	noteStore   digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
 	activeNotes digestmaps.VersionVectorMutable[string, *Note, digestmaps.DigestSymbol]
-
-	certStore digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
 
 	serviceDir *ServiceDirectory
 
@@ -93,14 +97,14 @@ type signer interface {
 	Sign([]byte) ([]byte, []byte, error)
 }
 
-// ViewStores supplies optional pre-built reconcilable control stores and timeout settings for a View.
-// Any nil store field falls back to a default in-memory DigestSet.
+// ViewStores supplies required pre-built reconcilable control stores and timeout settings for a View.
+// All five store fields (Certs, Notes, Accusations, Services, ServiceAccs) must be non-nil.
 type ViewStores struct {
-	Certs          digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
-	Notes          digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
-	Accusations    digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
-	Services       digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol]
-	ServiceAccs    digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol]
+	Certs          reconcile.Store[*pki.Certificate]
+	Notes          reconcile.Store[*Note]
+	Accusations    reconcile.Store[*Accusation]
+	Services       reconcile.Store[*ServiceNote]
+	ServiceAccs    reconcile.Store[*ServiceAccusation]
 	RemovalTimeout time.Duration // defaults to 60s when <= 0
 	UpdateInterval time.Duration // defaults to 10s when <= 0
 }
@@ -112,13 +116,22 @@ type ViewStores struct {
 //   - Requires initialized and valid certificate manager / certificates (cert).
 //   - Requires a cryptoService / signer capable of signing protobuf Notes.
 //   - Requires a connectionManager / commService to manage connection lifecycles.
-func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer, stores ...*ViewStores) (*View, error) {
-	var vs *ViewStores
-	if len(stores) > 0 {
-		vs = stores[0]
-	}
+//   - Requires non-nil ViewStores with all five control stores populated.
+func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s signer, vs *ViewStores) (*View, error) {
 	if numRings == 0 || numRings > 32 {
 		return nil, errInvalidRingNum
+	}
+	if vs == nil {
+		return nil, errors.New("view stores are required")
+	}
+	if vs.Certs == nil {
+		return nil, errors.New("cert store is required")
+	}
+	if vs.Notes == nil {
+		return nil, errors.New("note store is required")
+	}
+	if vs.Accusations == nil {
+		return nil, errors.New("accusation store is required")
 	}
 
 	var i, mask uint32
@@ -155,71 +168,41 @@ func NewView(numRings uint32, cert *x509.Certificate, cm connectionManager, s si
 		return digestmaps.DigestSymbol(h.Sum64())
 	}
 
+	// historical peer records on this node -- this store is never reconciled
 	viewStore, err := digestmaps.NewDigestSet(peerHasher)
 	if err != nil {
 		return nil, err
 	}
 
+	// never reconciled
 	liveStore, err := digestmaps.NewMutableDigestSet(peerHasher)
 	if err != nil {
 		return nil, err
 	}
 
-	var accusationStore digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol]
-	if vs != nil && vs.Accusations != nil {
-		accusationStore = vs.Accusations
-	} else {
-		accusationStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Accusation]())
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	var noteStore digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol]
-	if vs != nil && vs.Notes != nil {
-		noteStore = vs.Notes
-	} else {
-		noteStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*Note]())
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	var certStore digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol]
-	if vs != nil && vs.Certs != nil {
-		certStore = vs.Certs
-	} else {
-		certStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*pki.Certificate]())
-		if err != nil {
-			return nil, err
-		}
-	}
+	accusationStore := vs.Accusations
+	noteStore := vs.Notes
+	certStore := vs.Certs
 
 	if cert != nil && len(cert.Raw) > 0 {
 		certStore.Insert(pki.CertificateFromX509(cert))
 	}
 
-	activeNotes := digestmaps.NewVersionVectorMutable[string, *Note, digestmaps.DigestSymbol](
+	activeNotes := digestmaps.NewVersionVectorMutable(
 		func(n *Note) string { return n.id },
 		func(item digestmaps.VersionedItem[*Note]) digestmaps.DigestSymbol {
 			return digestmaps.MustDefaultHasher[*Note]()(item.Item)
 		},
 	)
 
-	activeAccusations := digestmaps.NewVersionVectorMutable[string, *Accusation, digestmaps.DigestSymbol](
+	activeAccusations := digestmaps.NewVersionVectorMutable(
 		func(a *Accusation) string { return accusationRingKey(a.accused, a.ringNum) },
 		func(item digestmaps.VersionedItem[*Accusation]) digestmaps.DigestSymbol {
 			return digestmaps.MustDefaultHasher[*Accusation]()(item.Item)
 		},
 	)
 
-	var svcStore digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol]
-	var svcAccStore digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol]
-	if vs != nil {
-		svcStore = vs.Services
-		svcAccStore = vs.ServiceAccs
-	}
-	serviceDir, err := NewServiceDirectory(self, numRings, svcStore, svcAccStore)
+	serviceDir, err := NewServiceDirectory(self, numRings, vs.Services, vs.ServiceAccs)
 	if err != nil {
 		return nil, err
 	}
@@ -383,16 +366,16 @@ func (v *View) ServiceDirectory() *ServiceDirectory {
 	return v.serviceDir
 }
 
-// ServiceStore returns the Tier 1 grow-only store for ServiceNotes.
-func (v *View) ServiceStore() digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol] {
+// ServiceStore returns the Tier 1 reconcilable store for ServiceNotes.
+func (v *View) ServiceStore() reconcile.Store[*ServiceNote] {
 	if v.serviceDir == nil {
 		return nil
 	}
 	return v.serviceDir.ServiceStore()
 }
 
-// ServiceAccusationStore returns the Tier 1 grow-only store for ServiceAccusations.
-func (v *View) ServiceAccusationStore() digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol] {
+// ServiceAccusationStore returns the Tier 1 reconcilable store for ServiceAccusations.
+func (v *View) ServiceAccusationStore() reconcile.Store[*ServiceAccusation] {
 	if v.serviceDir == nil {
 		return nil
 	}
@@ -413,8 +396,8 @@ func (v *View) NoteFingerprint() digestmaps.DigestSymbol {
 	return v.noteStore.Fingerprint()
 }
 
-// CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (v *View) CertStore() digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol] {
+// CertStore returns the underlying reconcilable store backing peer certificates.
+func (v *View) CertStore() reconcile.Store[*pki.Certificate] {
 	return v.certStore
 }
 
@@ -442,8 +425,8 @@ func (v *View) CertsByDigests(digests []digestmaps.DigestSymbol) ([]*pki.Certifi
 	return v.certStore.GetByDigests(digests)
 }
 
-// NoteStore returns the underlying ReverseIndexStore backing peer notes.
-func (v *View) NoteStore() digestmaps.ReverseIndexStore[*Note, digestmaps.DigestSymbol] {
+// NoteStore returns the underlying reconcilable store backing peer notes.
+func (v *View) NoteStore() reconcile.Store[*Note] {
 	return v.noteStore
 }
 
@@ -1108,7 +1091,7 @@ func hasBit(n uint32, pos uint32) bool {
 }
 
 // AccusationStore returns the underlying ReverseIndexStore for accusations.
-func (v *View) AccusationStore() digestmaps.ReverseIndexStore[*Accusation, digestmaps.DigestSymbol] {
+func (v *View) AccusationStore() reconcile.Store[*Accusation] {
 	return v.accusationStore
 }
 

@@ -109,7 +109,9 @@ func TestAdversarialPolicy_EndToEndRebuttalDispatch(t *testing.T) {
 	cs := &cryptoStub{priv: priv}
 	comm := &mockTrackingComm{commStub: &commStub{}}
 
-	v, err := discovery.NewView(1, selfCert, comm, cs)
+	vs, err := newControlViewStores("naive")
+	require.NoError(t, err)
+	v, err := discovery.NewView(1, selfCert, comm, cs, vs)
 	require.NoError(t, err)
 
 	node := &Node{
@@ -149,7 +151,9 @@ func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
 	comm := &mockTrackingComm{commStub: &commStub{}}
 
 	// Cluster configured with numRings = 3 (maxByz = 1)
-	v, err := discovery.NewView(3, selfCert, comm, cs)
+	vs, err := newControlViewStores("naive")
+	require.NoError(t, err)
+	v, err := discovery.NewView(3, selfCert, comm, cs, vs)
 	require.NoError(t, err)
 
 	node := &Node{

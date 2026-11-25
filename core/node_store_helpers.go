@@ -89,8 +89,8 @@ func (n *Node) NoteDigests() []digestmaps.DigestSymbol {
 	return n.view.NoteDigests()
 }
 
-// CertStore returns the underlying ReverseIndexStore backing peer certificates.
-func (n *Node) CertStore() digestmaps.ReverseIndexStore[*pki.Certificate, digestmaps.DigestSymbol] {
+// CertStore returns the underlying reconcilable store backing peer certificates.
+func (n *Node) CertStore() reconcile.Store[*pki.Certificate] {
 	return n.view.CertStore()
 }
 

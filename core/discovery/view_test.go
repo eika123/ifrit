@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eika123/ifrit/crypto/pki"
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile/naive"
 	log "github.com/inconshreveable/log15"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,13 +37,34 @@ func TestViewTestSuite(t *testing.T) {
 	suite.Run(t, new(ViewTestSuite))
 }
 
+func newTestViewStores(t *testing.T) *ViewStores {
+	t.Helper()
+	certs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*pki.Certificate]())
+	require.NoError(t, err)
+	notes, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*Note]())
+	require.NoError(t, err)
+	accs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*Accusation]())
+	require.NoError(t, err)
+	services, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceNote]())
+	require.NoError(t, err)
+	serviceAccs, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceAccusation]())
+	require.NoError(t, err)
+	return &ViewStores{
+		Certs:       certs,
+		Notes:       notes,
+		Accusations: accs,
+		Services:    services,
+		ServiceAccs: serviceAccs,
+	}
+}
+
 func (suite *ViewTestSuite) SetupTest() {
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
 	require.NoError(suite.T(), err, "Failed to generate private key.")
 
 	cert := validCert("selfId", privKey.Public())
 
-	v, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	v, err := NewView(10, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 
 	suite.v = v
@@ -57,27 +80,30 @@ func (suite *ViewTestSuite) TestNewView() {
 
 	expectedByz := (numRings - 1) / 2
 
-	v, err := NewView(numRings, cert, &cmStub{}, &signerStub{})
+	v, err := NewView(numRings, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 	require.Equal(suite.T(), expectedByz, v.maxByz, "Max byzantine not set correctly.")
 
-	v2, err := NewView(2, cert, &cmStub{}, &signerStub{})
+	v2, err := NewView(2, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 	require.Equal(suite.T(), uint32(0), v2.maxByz, "Max byzantine should be zero with 2 rings.")
 
-	v3, err := NewView(1, cert, &cmStub{}, &signerStub{})
+	v3, err := NewView(1, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 	require.Equal(suite.T(), uint32(0), v3.maxByz, "Max byzantine should be zero with 1 ring.")
 
-	v4, err := NewView(3, cert, &cmStub{}, &signerStub{})
+	v4, err := NewView(3, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err, "Failed to create view.")
 	require.Equal(suite.T(), uint32(1), v4.maxByz, "Max byzantine should be 1 with 3 rings (k=2t+1).")
 
-	_, err = NewView(0, cert, &cmStub{}, &signerStub{})
+	_, err = NewView(0, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.Error(suite.T(), err, "Should return error with 0 rings.")
 
-	_, err = NewView(numRings, nil, &cmStub{}, &signerStub{})
+	_, err = NewView(numRings, nil, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.Error(suite.T(), err, "Should return error with no certificate.")
+
+	_, err = NewView(numRings, cert, &cmStub{}, &signerStub{}, nil)
+	require.Error(suite.T(), err, "Should fail closed when ViewStores is nil.")
 
 }
 
@@ -846,16 +872,16 @@ func (suite *ViewTestSuite) TestRemovalTimeoutConfiguration() {
 	cert := validCert("timeoutPeer", privKey.Public())
 
 	// 1. Default when unset should be 60.0 and 10s interval
-	vDefault, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	vDefault, err := NewView(10, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 60.0, vDefault.removalTimeout)
 	assert.Equal(suite.T(), 10*time.Second, vDefault.updateTimeout)
 
 	// 2. Configured removal_timeout and update_interval via ViewStores
-	vRemoval, err := NewView(10, cert, &cmStub{}, &signerStub{}, &ViewStores{
-		RemovalTimeout: 45 * time.Second,
-		UpdateInterval: 15 * time.Second,
-	})
+	vs := newTestViewStores(suite.T())
+	vs.RemovalTimeout = 45 * time.Second
+	vs.UpdateInterval = 15 * time.Second
+	vRemoval, err := NewView(10, cert, &cmStub{}, &signerStub{}, vs)
 	require.NoError(suite.T(), err)
 	assert.Equal(suite.T(), 45.0, vRemoval.removalTimeout)
 	assert.Equal(suite.T(), 15*time.Second, vRemoval.updateTimeout)
@@ -1124,7 +1150,7 @@ func (suite *ViewTestSuite) TestViewAccusationFingerprintAndCompare() {
 	privKey, err := ecdsa.GenerateKey(elliptic.P224(), rand.Reader)
 	require.NoError(suite.T(), err)
 	cert := validCert("otherSelf", privKey.Public())
-	v2, err := NewView(10, cert, &cmStub{}, &signerStub{})
+	v2, err := NewView(10, cert, &cmStub{}, &signerStub{}, newTestViewStores(suite.T()))
 	require.NoError(suite.T(), err)
 
 	// Both start with empty accusation stores -> fingerprint 0

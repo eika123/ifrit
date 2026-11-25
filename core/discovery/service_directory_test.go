@@ -14,6 +14,7 @@ import (
 
 	"github.com/eika123/ifrit/crypto"
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile/naive"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,11 +119,35 @@ func TestServiceAccusation_BinaryRoundTrip(t *testing.T) {
 	assert.Equal(t, hasher(acc), hasher(decoded))
 }
 
+func newTestServiceDirectory(t *testing.T, self *Peer, numRings uint32) *ServiceDirectory {
+	t.Helper()
+	svcStore, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceNote]())
+	require.NoError(t, err)
+	accStore, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceAccusation]())
+	require.NoError(t, err)
+	sd, err := NewServiceDirectory(self, numRings, svcStore, accStore)
+	require.NoError(t, err)
+	return sd
+}
+
+func TestNewServiceDirectory_FailsClosedOnNilStores(t *testing.T) {
+	self, _ := genTestServicePeer(t, 0)
+	svcStore, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceNote]())
+	require.NoError(t, err)
+	accStore, err := naive.NewReconcilableStore(digestmaps.MustDefaultHasher[*ServiceAccusation]())
+	require.NoError(t, err)
+
+	_, err = NewServiceDirectory(self, 3, nil, accStore)
+	require.Error(t, err)
+
+	_, err = NewServiceDirectory(self, 3, svcStore, nil)
+	require.Error(t, err)
+}
+
 func TestServiceDirectory_SparseRingSuperOverlayAndPredecessorVerification(t *testing.T) {
 	const numRings = 5
 	self, selfSig := genTestServicePeer(t, 0)
-	sd, err := NewServiceDirectory(self, numRings, nil, nil)
-	require.NoError(t, err)
+	sd := newTestServiceDirectory(t, self, numRings)
 
 	// Create 49 other live peers; only 3 of them (indices 7, 23, 41) plus self host "dht".
 	liveMap := map[string]*Peer{self.Id: self}
@@ -193,8 +218,7 @@ func TestServiceDirectory_PerServiceRebuttalIsolationAndEviction(t *testing.T) {
 	self, selfSig := genTestServicePeer(t, 0)
 	peerB, sigB := genTestServicePeer(t, 1)
 
-	sd, err := NewServiceDirectory(self, numRings, nil, nil)
-	require.NoError(t, err)
+	sd := newTestServiceDirectory(t, self, numRings)
 
 	liveMap := map[string]*Peer{self.Id: self, peerB.Id: peerB}
 	isLive := func(id string) (*Peer, bool) {
@@ -203,7 +227,7 @@ func TestServiceDirectory_PerServiceRebuttalIsolationAndEviction(t *testing.T) {
 	}
 
 	// Both self and peerB host "dht" v1 and "pubsub" v1.
-	_, _, err = sd.RegisterLocalService(selfSig, "dht", 1, nil)
+	_, _, err := sd.RegisterLocalService(selfSig, "dht", 1, nil)
 	require.NoError(t, err)
 	_, _, err = sd.RegisterLocalService(selfSig, "pubsub", 1, nil)
 	require.NoError(t, err)

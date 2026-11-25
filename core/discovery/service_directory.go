@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit/digestmaps"
+	"github.com/eika123/ifrit/reconcile"
 )
 
 type serviceTimeout struct {
@@ -34,9 +35,11 @@ type ServiceDirectory struct {
 	self     *Peer
 	numRings uint32
 
-	serviceStore    digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol]
-	serviceAccStore digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol]
+	/// Reconciliable stores to discover services. Should be constructed using a reconcile.Store
+	serviceStore    reconcile.Store[*ServiceNote]
+	serviceAccStore reconcile.Store[*ServiceAccusation]
 
+	// local state -- not reconciled
 	activeServices    digestmaps.VersionVectorMutable[string, *ServiceNote, digestmaps.DigestSymbol]
 	activeAccusations digestmaps.VersionVectorMutable[string, *ServiceAccusation, digestmaps.DigestSymbol]
 
@@ -56,12 +59,13 @@ type ServiceDirectory struct {
 	healthChecks map[string]func() bool
 }
 
-// NewServiceDirectory initializes a ServiceDirectory backed by optional pre-built Tier 1 stores.
+// NewServiceDirectory initializes a ServiceDirectory backed by required Tier 1 stores.
+// Fails closed if self, numRings, serviceStore, or serviceAccStore is missing/invalid.
 func NewServiceDirectory(
 	self *Peer,
 	numRings uint32,
-	serviceStore digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol],
-	serviceAccStore digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol],
+	serviceStore reconcile.Store[*ServiceNote],
+	serviceAccStore reconcile.Store[*ServiceAccusation],
 ) (*ServiceDirectory, error) {
 	if self == nil || self.Id == "" {
 		return nil, errNoSelf
@@ -69,19 +73,11 @@ func NewServiceDirectory(
 	if numRings == 0 {
 		return nil, errNoRings
 	}
-
-	var err error
 	if serviceStore == nil {
-		serviceStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*ServiceNote]())
-		if err != nil {
-			return nil, err
-		}
+		return nil, errors.New("service store is required")
 	}
 	if serviceAccStore == nil {
-		serviceAccStore, err = digestmaps.NewDigestSet(digestmaps.MustDefaultHasher[*ServiceAccusation]())
-		if err != nil {
-			return nil, err
-		}
+		return nil, errors.New("service accusation store is required")
 	}
 
 	noteHasher := digestmaps.MustDefaultHasher[*ServiceNote]()
@@ -117,11 +113,11 @@ func NewServiceDirectory(
 	}, nil
 }
 
-func (sd *ServiceDirectory) ServiceStore() digestmaps.ReverseIndexStore[*ServiceNote, digestmaps.DigestSymbol] {
+func (sd *ServiceDirectory) ServiceStore() reconcile.Store[*ServiceNote] {
 	return sd.serviceStore
 }
 
-func (sd *ServiceDirectory) ServiceAccusationStore() digestmaps.ReverseIndexStore[*ServiceAccusation, digestmaps.DigestSymbol] {
+func (sd *ServiceDirectory) ServiceAccusationStore() reconcile.Store[*ServiceAccusation] {
 	return sd.serviceAccStore
 }
 
