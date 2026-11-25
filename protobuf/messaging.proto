@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package proto;
+option go_package = "github.com/eika123/ifrit/protobuf;proto";
+
+service Messaging {
+    rpc Send (Msg) returns (MsgResponse) {}
+    rpc Stream (stream Msg) returns (stream MsgResponse) {}
+}
+
+// Application message
+message Msg {
+    bytes content = 1;
+}
+
+// Application response
+message MsgResponse {
+    bytes content = 1;
+    string error = 2;
+}

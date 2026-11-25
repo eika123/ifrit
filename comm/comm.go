@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net"
 
-	pb "github.com/eika123/ifrit/protobuf"
 	log "github.com/inconshreveable/log15"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -138,10 +137,6 @@ func NewComm(cert, caCert *x509.Certificate, priv *ecdsa.PrivateKey, l net.Liste
 		gRPCClient: client,
 		closeHooks: cfg.closeHooks,
 	}, nil
-}
-
-func (c *Comm) Register(p pb.GossipServer) {
-	pb.RegisterGossipServer(c.s.rpcServer, p)
 }
 
 // RegisterService registers an arbitrary gRPC service implementation on the node's mTLS server,

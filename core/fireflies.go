@@ -27,7 +27,7 @@ func (n *Node) rebuttal() {
 	}
 	noteMsg := selfNote.ToPbMsg()
 
-	baseMsg := &pb.State{
+	baseMsg := &pb.AnnounceRequest{
 		OwnNote:    noteMsg,
 		IsRebuttal: true,
 	}
@@ -41,7 +41,7 @@ func (n *Node) rebuttal() {
 			continue
 		}
 
-		_, err := n.comm.Gossip(peer.Addr, msg)
+		_, err := n.announce(n.syncCtx, peer.Addr, msg)
 		if err != nil {
 			log.Error(err.Error(), "addr", peer.Addr)
 			continue

@@ -224,16 +224,27 @@ func (n *Node) SendServiceMessage(serviceID, dest string, ch chan *Message, data
 	msg := &pb.Msg{
 		Content: data,
 	}
-	n.dispatcher.Submit(func() {
+	go func() {
+		if n.msgSem != nil {
+			if n.syncCtx != nil {
+				select {
+				case n.msgSem <- struct{}{}:
+				case <-n.syncCtx.Done():
+					close(ch)
+					return
+				}
+			} else {
+				n.msgSem <- struct{}{}
+			}
+			defer func() { <-n.msgSem }()
+		}
 		n.sendServiceMsg(serviceID, dest, ch, msg)
-	})
+	}()
 }
 
 // OpenServiceStream opens a bidirectional byte stream routed to serviceID on dest.
 func (n *Node) OpenServiceStream(serviceID, dest string, input, reply chan []byte) {
-	n.dispatcher.Submit(func() {
-		n.openServiceStream(serviceID, dest, input, reply)
-	})
+	go n.openServiceStream(serviceID, dest, input, reply)
 }
 
 // RegisterServiceStoreReconciler mounts rec on the node's reconcile.Mux under "service/<serviceID>"

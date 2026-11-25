@@ -122,6 +122,7 @@ func TestNode_AdversarySuppressesRebuttal(t *testing.T) {
 
 	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, cs)
 	require.NoError(t, err)
+	n.announceFn = comm.Announce
 
 	// Add a live neighbor
 	p, _, err := createTestPeer()
@@ -147,7 +148,7 @@ func TestNode_AdversarySuppressesRebuttal(t *testing.T) {
 
 	// Adversary: OnRebuttal hook returning nil suppresses
 	n.SetAdversarialPolicy(&AdversarialPolicy{
-		OnRebuttal: func(target *discovery.Peer, msg *pb.State) *pb.State {
+		OnRebuttal: func(target *discovery.Peer, msg *pb.AnnounceRequest) *pb.AnnounceRequest {
 			return nil
 		},
 	})
@@ -255,6 +256,7 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 
 	n, err := NewNode(comm, &pingStub{}, &cmStub{cert: cert}, cs)
 	require.NoError(t, err)
+	n.announceFn = comm.Announce
 	defer n.Stop()
 
 	p, _, err := createTestPeer()
@@ -286,7 +288,7 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 	)
 
 	n.SetAdversarialPolicy(&AdversarialPolicy{
-		OnGossipOut: func(target *discovery.Peer, msg *pb.State) {
+		OnAnnounceOut: func(target *discovery.Peer, msg *pb.AnnounceRequest) {
 			msg.IsRebuttal = true
 		},
 	})
@@ -295,8 +297,8 @@ func TestNode_AdversaryMutatesOutboundGossip(t *testing.T) {
 
 	comm.mu.Lock()
 	defer comm.mu.Unlock()
-	require.NotEmpty(t, comm.sentStates, "gossip fallback must send a thin Spread State message")
-	assert.True(t, comm.sentStates[0].GetIsRebuttal(), "outbound State should carry OnGossipOut mutation")
+	require.NotEmpty(t, comm.sentStates, "gossip fallback must send an AnnounceRequest message")
+	assert.True(t, comm.sentStates[0].GetIsRebuttal(), "outbound AnnounceRequest should carry OnAnnounceOut mutation")
 }
 
 func TestNode_CanonicalFingerprintDataQuiescence(t *testing.T) {
@@ -321,12 +323,12 @@ type recordingComm struct {
 	commStub
 	mu            sync.Mutex
 	gossipedAddrs []string
-	sentStates    []*pb.State
-	response      *pb.StateResponse
+	sentStates    []*pb.AnnounceRequest
+	response      *pb.AnnounceResponse
 	err           error
 }
 
-func (c *recordingComm) Gossip(addr string, msg *pb.State) (*pb.StateResponse, error) {
+func (c *recordingComm) Announce(_ context.Context, addr string, msg *pb.AnnounceRequest) (*pb.AnnounceResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.gossipedAddrs = append(c.gossipedAddrs, addr)
@@ -337,7 +339,7 @@ func (c *recordingComm) Gossip(addr string, msg *pb.State) (*pb.StateResponse, e
 	if c.response != nil {
 		return c.response, nil
 	}
-	return &pb.StateResponse{}, nil
+	return &pb.AnnounceResponse{}, nil
 }
 
 func TestNode_GossipStateDivergenceCheck(t *testing.T) {

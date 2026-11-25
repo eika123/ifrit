@@ -111,7 +111,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 
 	tests := []struct {
 		ctx  context.Context
-		args *proto.State
+		args *proto.AnnounceRequest
 
 		peer *discovery.Peer
 
@@ -155,7 +155,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			err:       false,
 			isAccused: true,
 			accs:      []string{accusedNonNeighbour.Id},
-			args: &proto.State{
+			args: &proto.AnnounceRequest{
 				OwnNote: accusedNote.ToPbMsg(),
 			},
 			exists: true,
@@ -167,7 +167,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			ctx:       peerContext(rebuttalPeer),
 			err:       false,
 			isAccused: false,
-			args: &proto.State{
+			args: &proto.AnnounceRequest{
 				OwnNote: testutil.NewNote(rebuttalPeer.Id, 2, math.MaxUint32,
 					suite.privMap[rebuttalPeer.Id]),
 			},
@@ -199,7 +199,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 			exists: true,
 			live:   true,
 			peer:   nonExistingPeer,
-			args: &proto.State{
+			args: &proto.AnnounceRequest{
 				OwnNote: nonExistingNote.ToPbMsg(),
 			},
 			findNeighbours: true,
@@ -207,7 +207,7 @@ func (suite *HandlerTestSuite) TestSpread() {
 	}
 
 	for i, t := range tests {
-		reply, err := node.Spread(t.ctx, t.args)
+		reply, err := node.handleAnnounce(t.ctx, t.args)
 
 		if !t.err {
 			if t.specificErr != nil {
@@ -259,11 +259,11 @@ func (suite *HandlerTestSuite) TestSpread_InvalidNoteSignatureRejectedFromStore(
 	badSigPb := testutil.NewNote(notNeighbour.Id, 50, math.MaxUint32, suite.privMap[notNeighbour.Id])
 	badSigPb.Signature = &proto.Signature{R: []byte("bogus_r"), S: []byte("bogus_s")}
 
-	args := &proto.State{
+	args := &proto.AnnounceRequest{
 		OwnNote: badSigPb,
 	}
 
-	_, err := node.Spread(ctx, args)
+	_, err := node.handleAnnounce(ctx, args)
 	require.Error(suite.T(), err)
 
 	rawNote := discovery.NoteFromPb(badSigPb)
@@ -518,16 +518,6 @@ func genSerialNumber() (*big.Int, error) {
 	return s, nil
 }
 
-type rebuttalTrackingComm struct {
-	commStub
-	gossipedStates []*proto.State
-}
-
-func (r *rebuttalTrackingComm) Gossip(addr string, m *proto.State) (*proto.StateResponse, error) {
-	r.gossipedStates = append(r.gossipedStates, m)
-	return &proto.StateResponse{}, nil
-}
-
 func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	node := suite.n
 	var ringNum uint32 = 1
@@ -535,13 +525,16 @@ func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	_, prev := node.view.MyRingNeighbours(ringNum)
 	require.NotNil(suite.T(), prev, "predecessor must exist on ring")
 
-	originalComm := node.comm
+	originalAnnounceFn := node.announceFn
 	defer func() {
-		node.comm = originalComm
+		node.announceFn = originalAnnounceFn
 	}()
 
-	trackingComm := &rebuttalTrackingComm{}
-	node.comm = trackingComm
+	var gossipedStates []*proto.AnnounceRequest
+	node.announceFn = func(_ context.Context, _ string, m *proto.AnnounceRequest) (*proto.AnnounceResponse, error) {
+		gossipedStates = append(gossipedStates, m)
+		return &proto.AnnounceResponse{}, nil
+	}
 
 	currentNote := node.view.SelfNote()
 	require.NotNil(suite.T(), currentNote)
@@ -557,8 +550,8 @@ func (suite *HandlerTestSuite) TestSelfAccusationRebuttalTelemetryFlow() {
 	require.NoError(suite.T(), node.applyVerifiedAccusation(rawAcc, accuser))
 
 	// Verify that rebuttal was dispatched
-	require.NotEmpty(suite.T(), trackingComm.gossipedStates, "Rebuttal should have sent at least one gossip message")
-	rebuttalMsg := trackingComm.gossipedStates[0]
+	require.NotEmpty(suite.T(), gossipedStates, "Rebuttal should have sent at least one Announce message")
+	rebuttalMsg := gossipedStates[0]
 
 	// Verify message matches the telemetry rebuttal rule:
 	isRebuttal := rebuttalMsg.GetIsRebuttal() && rebuttalMsg.GetOwnNote() != nil

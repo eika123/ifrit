@@ -14,18 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type mockTrackingComm struct {
-	*commStub
-	sentMsgs []*pb.State
-	addrs    []string
-}
-
-func (m *mockTrackingComm) Gossip(addr string, msg *pb.State) (*pb.StateResponse, error) {
-	m.sentMsgs = append(m.sentMsgs, msg)
-	m.addrs = append(m.addrs, addr)
-	return &pb.StateResponse{}, nil
-}
-
 func TestAdversarialPolicy_SuppressRebuttalBps(t *testing.T) {
 	node := &Node{
 		view: &discovery.View{},
@@ -40,7 +28,7 @@ func TestAdversarialPolicy_SuppressRebuttalBps(t *testing.T) {
 	require.NotNil(t, adv)
 
 	p := &discovery.Peer{Addr: "127.0.0.1:1001"}
-	msg := &pb.State{OwnNote: &pb.Note{Epoch: 1}}
+	msg := &pb.AnnounceRequest{OwnNote: &pb.Note{Epoch: 1}}
 
 	_, suppress := adv.shouldSuppressRebuttal(p, msg)
 	assert.True(t, suppress, "10000 bps must suppress rebuttal")
@@ -60,7 +48,7 @@ func TestAdversarialPolicy_SelectiveRebuttalHook(t *testing.T) {
 
 	// Selective rebuttal: only respond to trusted peer
 	policy := &AdversarialPolicy{
-		OnRebuttal: func(target *discovery.Peer, msg *pb.State) *pb.State {
+		OnRebuttal: func(target *discovery.Peer, msg *pb.AnnounceRequest) *pb.AnnounceRequest {
 			if target.Addr == untrustedPeerAddr {
 				return nil // Suppress
 			}
@@ -70,7 +58,7 @@ func TestAdversarialPolicy_SelectiveRebuttalHook(t *testing.T) {
 
 	trustedPeer := &discovery.Peer{Addr: trustedPeerAddr}
 	untrustedPeer := &discovery.Peer{Addr: untrustedPeerAddr}
-	msg := &pb.State{OwnNote: &pb.Note{Epoch: 2}}
+	msg := &pb.AnnounceRequest{OwnNote: &pb.Note{Epoch: 2}}
 
 	resTrusted, suppressTrusted := policy.shouldSuppressRebuttal(trustedPeer, msg)
 	assert.False(t, suppressTrusted)
@@ -112,16 +100,25 @@ func TestAdversarialPolicy_EndToEndRebuttalDispatch(t *testing.T) {
 	require.NoError(t, err)
 	selfCert := genCert(priv, 1)
 	cs := &cryptoStub{priv: priv}
-	comm := &mockTrackingComm{commStub: &commStub{}}
+	comm := &commStub{}
 
 	vs, err := newControlViewStores("naive")
 	require.NoError(t, err)
 	v, err := discovery.NewView(1, selfCert, comm, cs, vs)
 	require.NoError(t, err)
 
+	var (
+		sentMsgs []*pb.AnnounceRequest
+		addrs    []string
+	)
 	node := &Node{
 		view: v,
 		comm: comm,
+		announceFn: func(_ context.Context, addr string, msg *pb.AnnounceRequest) (*pb.AnnounceResponse, error) {
+			sentMsgs = append(sentMsgs, msg)
+			addrs = append(addrs, addr)
+			return &pb.AnnounceResponse{}, nil
+		},
 	}
 
 	p1 := &discovery.Peer{Id: "peer-1", Addr: "127.0.0.1:5001"}
@@ -131,7 +128,7 @@ func TestAdversarialPolicy_EndToEndRebuttalDispatch(t *testing.T) {
 
 	// Configure adversarial policy that withholds rebuttal specifically from peer-2
 	node.SetAdversarialPolicy(&AdversarialPolicy{
-		OnRebuttal: func(target *discovery.Peer, msg *pb.State) *pb.State {
+		OnRebuttal: func(target *discovery.Peer, msg *pb.AnnounceRequest) *pb.AnnounceRequest {
 			if target.Addr == p2.Addr {
 				return nil
 			}
@@ -142,10 +139,10 @@ func TestAdversarialPolicy_EndToEndRebuttalDispatch(t *testing.T) {
 	node.rebuttal()
 
 	// Only p1 should have received the rebuttal RPC
-	assert.Contains(t, comm.addrs, p1.Addr)
-	assert.NotContains(t, comm.addrs, p2.Addr)
-	assert.Len(t, comm.sentMsgs, 1)
-	assert.NotNil(t, comm.sentMsgs[0].GetOwnNote())
+	assert.Contains(t, addrs, p1.Addr)
+	assert.NotContains(t, addrs, p2.Addr)
+	assert.Len(t, sentMsgs, 1)
+	assert.NotNil(t, sentMsgs[0].GetOwnNote())
 }
 
 func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
@@ -153,7 +150,7 @@ func TestByzantine_MaskUpperBitImmunityBypass(t *testing.T) {
 	require.NoError(t, err)
 	selfCert := genCert(priv, 3)
 	cs := &cryptoStub{priv: priv}
-	comm := &mockTrackingComm{commStub: &commStub{}}
+	comm := &commStub{}
 
 	// Cluster configured with numRings = 3 (maxByz = 1)
 	vs, err := newControlViewStores("naive")
@@ -224,9 +221,9 @@ func TestAdversarialPolicy_DropIncomingRebuttal_TriggersExtraReconciliationRound
 	defer nodeB.Stop()
 	defer commB.Stop()
 
-	// Admit both nodes via production Spread and converge baseline views cleanly.
-	require.NoError(t, nodeA.admitViaThinSpread(commB.Addr()))
-	require.NoError(t, nodeB.admitViaThinSpread(commA.Addr()))
+	// Admit both nodes via production Announce and converge baseline views cleanly.
+	require.NoError(t, nodeA.announceToPeer(commB.Addr()))
+	require.NoError(t, nodeB.announceToPeer(commA.Addr()))
 
 	peerAOnB := nodeB.view.Peer(nodeA.self.Id)
 	peerBOnA := nodeA.view.Peer(nodeB.self.Id)

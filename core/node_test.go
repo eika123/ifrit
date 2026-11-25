@@ -3,7 +3,6 @@ package core
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"math/big"
 	"os"
@@ -74,7 +73,7 @@ func (suite *NodeTestSuite) TestGossip() {
 			if n == n2 {
 				continue
 			}
-			require.NoError(suite.T(), n.admitViaThinSpread(n2.comm.Addr()))
+			require.NoError(suite.T(), n.announceToPeer(n2.comm.Addr()))
 			require.NoError(suite.T(), n.reconcileBootstrapControl(n2.comm.Addr()))
 		}
 	}
@@ -110,41 +109,6 @@ func (suite *NodeTestSuite) TestStopStopsComm() {
 	require.True(suite.T(), cs.isStopped(), "Node.Stop() must call comm.Stop()")
 }
 
-type clientStub struct {
-}
-
-func (cs *clientStub) Init(config *tls.Config) {
-}
-
-func (cs *clientStub) Gossip(addr string, args *pb.State) (*pb.StateResponse, error) {
-	return nil, nil
-}
-
-func (cs *clientStub) SendMsg(addr string, args *pb.Msg) (*pb.MsgResponse, error) {
-	return nil, nil
-}
-
-func (cs *clientStub) CloseConn(addr string) {
-}
-
-type serverStub struct {
-}
-
-func (ss *serverStub) Init(config *tls.Config, n interface{}, maxConcurrent uint32) error {
-	return nil
-}
-
-func (ss *serverStub) Addr() string {
-	return "127.0.0.1:8000"
-}
-
-func (ss *serverStub) Start() error {
-	return nil
-}
-
-func (ss *serverStub) ShutDown() {
-}
-
 type commStub struct {
 	mu      sync.Mutex
 	started bool
@@ -161,13 +125,6 @@ func (cs *commStub) isStopped() bool {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return cs.stopped
-}
-
-func (cs *commStub) StreamMessenger(string, string, chan []byte, chan []byte) error {
-	return nil
-}
-
-func (cs *commStub) Register(p pb.GossipServer) {
 }
 
 func (cs *commStub) RegisterService(*grpc.ServiceDesc, any) {
@@ -194,14 +151,6 @@ func (cs *commStub) Stop() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.stopped = true
-}
-
-func (cs *commStub) Gossip(addr string, m *pb.State) (*pb.StateResponse, error) {
-	return &pb.StateResponse{}, nil
-}
-
-func (cs *commStub) Send(serviceID, addr string, m *pb.Msg) (*pb.MsgResponse, error) {
-	return &pb.MsgResponse{}, nil
 }
 
 type pingStub struct {

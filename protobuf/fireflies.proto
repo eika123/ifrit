@@ -3,29 +3,16 @@ syntax = "proto3";
 package proto;
 option go_package = "github.com/eika123/ifrit/protobuf;proto";
 
-service gossip {
-    rpc Spread (State) returns (StateResponse) {}
-    rpc Messenger (Msg) returns (MsgResponse) {}
-    rpc Stream (stream Msg) returns (stream MsgResponse) {}
+service Fireflies {
+    rpc Announce (AnnounceRequest) returns (AnnounceResponse) {}
 }
 
-message State {
-    Note ownNote = 1;
+message AnnounceRequest {
+    Note own_note = 1;
     bool is_rebuttal = 2;
 }
 
-// Application message
-message Msg {
-    bytes content = 1;
-} 
-
-// Application response
-message MsgResponse {
-    bytes content = 1;
-    string error = 2;
-}
-
-message StateResponse {
+message AnnounceResponse {
     repeated Accusation accusations = 1;
 }
 

@@ -175,7 +175,7 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	interceptor := gossipClientInterceptorFactory(rec)
 
 	// 1. Rebuttal message (IsRebuttal: true, OwnNote != nil)
-	rebuttalReq := &pb.State{
+	rebuttalReq := &pb.AnnounceRequest{
 		IsRebuttal: true,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
@@ -183,13 +183,13 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 			Mask:  3,
 		},
 	}
-	resp := &pb.StateResponse{}
+	resp := &pb.AnnounceResponse{}
 
 	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
 		return nil
 	}
 
-	err := interceptor(context.Background(), "/proto.gossip/Spread", rebuttalReq, resp, nil, invoker)
+	err := interceptor(context.Background(), "/proto.Fireflies/Announce", rebuttalReq, resp, nil, invoker)
 	require.NoError(t, err)
 
 	assert.Len(t, rec.rebuttalEvents, 1)
@@ -198,7 +198,7 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 	assert.Equal(t, uint32(3), rec.rebuttalEvents[0].Mask)
 
 	// 2. Thin Spread admission message (OwnNote != nil, IsRebuttal: false; must NOT be classified as rebuttal)
-	gossipReq := &pb.State{
+	gossipReq := &pb.AnnounceRequest{
 		IsRebuttal: false,
 		OwnNote: &pb.Note{
 			Id:    []byte("my-node-id"),
@@ -206,7 +206,7 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 			Mask:  3,
 		},
 	}
-	respWithAcc := &pb.StateResponse{
+	respWithAcc := &pb.AnnounceResponse{
 		Accusations: []*pb.Accusation{
 			{
 				Accuser: []byte("acc1"),
@@ -217,7 +217,7 @@ func TestGossipClientInterceptorRebuttalVsGossip(t *testing.T) {
 		},
 	}
 
-	err = interceptor(context.Background(), "/proto.gossip/Spread", gossipReq, respWithAcc, nil, invoker)
+	err = interceptor(context.Background(), "/proto.Fireflies/Announce", gossipReq, respWithAcc, nil, invoker)
 	require.NoError(t, err)
 
 	// Rebuttal events must still be 1 (regular gossip must NOT create a rebuttal event)
@@ -233,7 +233,7 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 	interceptor := gossipServerInterceptorFactory(rec)
 
 	// 1. Incoming Rebuttal message (IsRebuttal: true, OwnNote != nil)
-	rebuttalReq := &pb.State{
+	rebuttalReq := &pb.AnnounceRequest{
 		IsRebuttal: true,
 		OwnNote: &pb.Note{
 			Id:    []byte("rebutting-peer"),
@@ -241,14 +241,14 @@ func TestGossipServerInterceptorRebuttalVsGossip(t *testing.T) {
 			Mask:  1,
 		},
 	}
-	resp := &pb.StateResponse{}
+	resp := &pb.AnnounceResponse{}
 
 	handler := func(ctx context.Context, req any) (any, error) {
 		return resp, nil
 	}
 
 	info := &grpc.UnaryServerInfo{
-		FullMethod: "/proto.gossip/Spread",
+		FullMethod: "/proto.Fireflies/Announce",
 	}
 
 	_, err := interceptor(context.Background(), rebuttalReq, info, handler)
@@ -265,8 +265,8 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	clientRec := &recordingLogger{}
 	clientInterceptor := gossipClientInterceptorFactory(clientRec)
 
-	req := &pb.State{}
-	resp := &pb.StateResponse{}
+	req := &pb.AnnounceRequest{}
+	resp := &pb.AnnounceResponse{}
 
 	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
 		return nil
@@ -274,7 +274,7 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 
 	// call to clientInterceptor mimics a network exchange -- the interceptor placed in middleware by the
 	// comm.newClient(...) method and is called for each network call.
-	err := clientInterceptor(context.Background(), "/proto.gossip/Spread", req, resp, nil, invoker)
+	err := clientInterceptor(context.Background(), "/proto.Fireflies/Announce", req, resp, nil, invoker)
 	require.NoError(t, err)
 
 	require.Len(t, clientRec.gossipEvents, 1)
@@ -290,7 +290,7 @@ func TestGossipInterceptorsResponseGossipLogging(t *testing.T) {
 	}
 
 	info := &grpc.UnaryServerInfo{
-		FullMethod: "/proto.gossip/Spread",
+		FullMethod: "/proto.Fireflies/Announce",
 	}
 
 	_, err = serverInterceptor(context.Background(), req, info, handler)

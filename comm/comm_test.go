@@ -52,13 +52,13 @@ func genTestKeyAndCert(t *testing.T, caCert *x509.Certificate, caPriv *ecdsa.Pri
 	return priv, cert
 }
 
-type testGossipService struct {
-	pb.UnimplementedGossipServer
-	onSpread func(ctx context.Context, req *pb.State) (*pb.StateResponse, error)
+type testFirefliesService struct {
+	pb.UnimplementedFirefliesServer
+	onAnnounce func(ctx context.Context, req *pb.AnnounceRequest) (*pb.AnnounceResponse, error)
 }
 
-func (s *testGossipService) Spread(ctx context.Context, req *pb.State) (*pb.StateResponse, error) {
-	return s.onSpread(ctx, req)
+func (s *testFirefliesService) Announce(ctx context.Context, req *pb.AnnounceRequest) (*pb.AnnounceResponse, error) {
+	return s.onAnnounce(ctx, req)
 }
 
 func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
@@ -96,17 +96,17 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 	defer commB.Stop()
 
 	var seenCert *x509.Certificate
-	svc := &testGossipService{
-		onSpread: func(ctx context.Context, req *pb.State) (*pb.StateResponse, error) {
+	svc := &testFirefliesService{
+		onAnnounce: func(ctx context.Context, req *pb.AnnounceRequest) (*pb.AnnounceResponse, error) {
 			cert, err := PeerCertFromContext(ctx)
 			require.NoError(t, err)
 			seenCert = cert
-			return &pb.StateResponse{}, nil
+			return &pb.AnnounceResponse{}, nil
 		},
 	}
 
-	// Verify Comm registers the gossip service onto its mTLS server.
-	commB.Register(svc)
+	// Verify Comm registers a gRPC service onto its mTLS server via grpc.ServiceRegistrar.
+	pb.RegisterFirefliesServer(commB, svc)
 
 	go commB.Start()
 
@@ -119,11 +119,11 @@ func TestComm_RegisterServiceClientConnAndPeerCert(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, cc1, cc2)
 
-	client := pb.NewGossipClient(cc1)
+	client := pb.NewFirefliesClient(cc1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = client.Spread(ctx, &pb.State{})
+	_, err = client.Announce(ctx, &pb.AnnounceRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, seenCert)
 	assert.Equal(t, []byte("peer-a-id"), seenCert.SubjectKeyId)
@@ -161,30 +161,15 @@ func TestComm_RegisterServiceAndUntrustedCARejection(t *testing.T) {
 	defer commRogue.Stop()
 
 	var handlerCalled atomic.Bool
-	svc := &testGossipService{
-		onSpread: func(ctx context.Context, req *pb.State) (*pb.StateResponse, error) {
+	svc := &testFirefliesService{
+		onAnnounce: func(ctx context.Context, req *pb.AnnounceRequest) (*pb.AnnounceResponse, error) {
 			handlerCalled.Store(true)
-			return &pb.StateResponse{}, nil
+			return &pb.AnnounceResponse{}, nil
 		},
 	}
 
-	// Register directly via RegisterService (not RegisterGRPC).
-	commB.RegisterService(&grpc.ServiceDesc{
-		ServiceName: "proto.gossip",
-		HandlerType: (*pb.GossipServer)(nil),
-		Methods: []grpc.MethodDesc{
-			{
-				MethodName: "Spread",
-				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-					in := new(pb.State)
-					if err := dec(in); err != nil {
-						return nil, err
-					}
-					return srv.(pb.GossipServer).Spread(ctx, in)
-				},
-			},
-		},
-	}, svc)
+	// Register directly via RegisterService.
+	pb.RegisterFirefliesServer(commB, svc)
 	go commB.Start()
 
 	cc, err := commRogue.ClientConn(addrB)
@@ -193,7 +178,7 @@ func TestComm_RegisterServiceAndUntrustedCARejection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err = pb.NewGossipClient(cc).Spread(ctx, &pb.State{})
+	_, err = pb.NewFirefliesClient(cc).Announce(ctx, &pb.AnnounceRequest{})
 	require.Error(t, err)
 	assert.False(t, handlerCalled.Load(), "untrusted CA client must be rejected by mTLS before reaching RPC handler")
 }

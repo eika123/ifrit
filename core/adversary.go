@@ -23,7 +23,7 @@ type AdversarialPolicy struct {
 	// Contextual hooks:
 	// OnRebuttal can inspect the target peer and either return nil (suppress),
 	// the original msg (honest), or a modified msg (tampered).
-	OnRebuttal func(target *discovery.Peer, msg *pb.State) *pb.State
+	OnRebuttal func(target *discovery.Peer, msg *pb.AnnounceRequest) *pb.AnnounceRequest
 
 	// OnProbeFailure is called when a successor ping fails.
 	// Returning false suppresses emitting an accusation.
@@ -32,8 +32,8 @@ type AdversarialPolicy struct {
 	// OnMonitorProbe allows forging an accusation against a peer during monitoring.
 	OnMonitorProbe func(ringNum uint32) (target *discovery.Peer, forgedAcc *pb.Accusation)
 
-	// OnGossipOut can mutate the outbound State message (e.g. poison digests or fingerprints).
-	OnGossipOut func(target *discovery.Peer, msg *pb.State)
+	// OnAnnounceOut can mutate the outbound AnnounceRequest message.
+	OnAnnounceOut func(target *discovery.Peer, msg *pb.AnnounceRequest)
 
 	// OnIncomingRebuttal is called when an incoming rebuttal note arrives (via
 	// Spread with IsRebuttal=true, or via ifrit/notes reconciliation for a peer
@@ -57,7 +57,7 @@ func (n *Node) AdversarialPolicy() *AdversarialPolicy {
 	return n.adversary
 }
 
-func (a *AdversarialPolicy) shouldSuppressRebuttal(target *discovery.Peer, msg *pb.State) (*pb.State, bool) {
+func (a *AdversarialPolicy) shouldSuppressRebuttal(target *discovery.Peer, msg *pb.AnnounceRequest) (*pb.AnnounceRequest, bool) {
 	if a == nil {
 		return msg, false
 	}

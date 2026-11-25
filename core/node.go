@@ -13,7 +13,6 @@ import (
 	pb "github.com/eika123/ifrit/protobuf"
 	"github.com/eika123/ifrit/reconcile"
 	log "github.com/inconshreveable/log15"
-	"github.com/joonnna/workerpool"
 	"google.golang.org/grpc"
 )
 
@@ -82,32 +81,28 @@ type Node struct {
 	syncCtx    context.Context
 	syncCancel context.CancelFunc
 
-	dispatcher *workerpool.Dispatcher
+	msgSem chan struct{}
 
 	entryAddrs []string
 
 	fd *failureDetector
 
-	comm      commService
-	cs        cryptoService
-	idCatalog NodeIdentityCatalog
+	comm       commService
+	announceFn func(context.Context, string, *pb.AnnounceRequest) (*pb.AnnounceResponse, error)
+	cs         cryptoService
+	idCatalog  NodeIdentityCatalog
 
 	useViz bool
 	viz    *viz
 }
 
 type commService interface {
-	Register(pb.GossipServer)
-	RegisterService(*grpc.ServiceDesc, any)
+	grpc.ServiceRegistrar
 	ClientConn(string) (grpc.ClientConnInterface, error)
 	CloseConn(string)
 	Addr() string
 	Start()
 	Stop()
-
-	Gossip(string, *pb.State) (*pb.StateResponse, error)
-	Send(string, string, *pb.Msg) (*pb.MsgResponse, error)
-	StreamMessenger(string, string, chan []byte, chan []byte) error
 }
 
 type NodeIdentityCatalog interface {
@@ -149,13 +144,18 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 	}
 	log.Info(fmt.Sprintf("running with %d pings per interval", perInterval))
 
+	var msgSem chan struct{}
+	if cfg.MaxConcurrentMessages > 0 {
+		msgSem = make(chan struct{}, cfg.MaxConcurrentMessages)
+	}
+
 	n := &Node{
 		exitChan:               make(chan bool, 1),
 		startedChan:            make(chan struct{}),
 		wg:                     &sync.WaitGroup{},
 		gossipTimeout:          cfg.GossipInterval,
 		monitorTimeout:         cfg.MonitorInterval,
-		dispatcher:             workerpool.NewDispatcher(cfg.MaxConcurrentMessages),
+		msgSem:                 msgSem,
 		entryAddrs:             append([]string(nil), cfg.EntryAddrs...),
 		ringsPingedPerInterval: perInterval,
 
@@ -189,7 +189,8 @@ func NewNode(comm commService, ps pingService, idCatalog NodeIdentityCatalog, cs
 		n.viz = viz
 	}
 
-	n.comm.Register(n)
+	pb.RegisterFirefliesServer(n.comm, &firefliesRPCServer{node: n})
+	pb.RegisterMessagingServer(n.comm, &messagingRPCServer{node: n})
 	if err := n.initControlReconcilers(n.defaultControlReconcilerHooks()); err != nil {
 		return nil, err
 	}
@@ -274,9 +275,6 @@ func (n *Node) Stop() {
 		n.fd.stop()
 	}
 
-	if n.dispatcher != nil {
-		n.dispatcher.Stop()
-	}
 	if n.wg != nil {
 		n.wg.Wait()
 	}
@@ -306,8 +304,6 @@ func (n *Node) Start() {
 	go n.gossipLoop()
 	go n.monitorLoop()
 
-	n.dispatcher.Start()
-
 	if n.useViz {
 		n.viz.start()
 	}
@@ -318,11 +314,6 @@ func (n *Node) Start() {
 	// With no ca we need to contact existing hosts.
 	// TODO retry if we fail to contact them?
 	if n.idCatalog.CaCertificate() == nil {
-		msg := &pb.State{}
-		if selfNote := n.view.SelfNote(); selfNote != nil {
-			msg.OwnNote = selfNote.ToPbMsg()
-		}
-
 		for _, addr := range n.entryAddrs {
 			// Fast exit check so we don't attempt network dials if Stop() was requested.
 			select {
@@ -331,14 +322,9 @@ func (n *Node) Start() {
 				return
 			default:
 			}
-			reply, err := n.comm.Gossip(addr, msg)
-			if err != nil {
+			if err := n.announceToPeer(addr); err != nil {
 				log.Error(err.Error(), "addr", addr)
 				continue
-			}
-
-			if accs := reply.GetAccusations(); len(accs) > 0 {
-				n.mergeAccusations(accs)
 			}
 			if err := n.reconcileBootstrapControl(addr); err != nil {
 				log.Error("Bootstrap control reconciliation failed", "addr", addr, "err", err)
@@ -361,30 +347,6 @@ func (n *Node) IdToAddr(id []byte) (string, error) {
 	}
 
 	return peer.Addr, nil
-}
-
-func (n *Node) sendServiceMsg(serviceID, dest string, ch chan *Message, msg *pb.Msg) {
-	defer close(ch)
-	reply, err := n.comm.Send(serviceID, dest, msg)
-	if err != nil {
-		log.Error(err.Error())
-		ch <- nil
-		return
-	}
-
-	if reply.GetError() == "" {
-		err = nil
-	} else {
-		err = errors.New(reply.GetError())
-	}
-
-	ch <- &Message{Data: reply.GetContent(), Error: err}
-}
-
-func (n *Node) openServiceStream(serviceID, dest string, input, reply chan []byte) {
-	if err := n.comm.StreamMessenger(serviceID, dest, input, reply); err != nil {
-		log.Error(err.Error())
-	}
 }
 
 /////////////////////////////////////////////////////////

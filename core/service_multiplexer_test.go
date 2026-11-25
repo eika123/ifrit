@@ -154,9 +154,6 @@ func TestServiceMultiplexer_SparseStoreConvergenceAndMessagingIsolation(t *testi
 		}
 	}))
 
-	nodeC.dispatcher.Start()
-	nodeB.dispatcher.Start()
-
 	chDHT := make(chan *Message, 1)
 	nodeC.SendServiceMessage("dht", nodeA.Addr(), chDHT, []byte("ping"))
 	respDHT := <-chDHT
@@ -199,4 +196,63 @@ func TestServiceMultiplexer_SparseStoreConvergenceAndMessagingIsolation(t *testi
 	// Verify reconcile.Mux rejected unknown service store after UnregisterService.
 	_, err = nodeA.services.storeEntry("dht").rec.ReconcileWithPeer(ctx, nodeC.Addr())
 	require.Error(t, err, fmt.Sprintf("reconciling unregistered service store on C should fail (got %v)", err))
+}
+
+func TestServiceMultiplexer_MessagingOnlyServiceWithoutStore(t *testing.T) {
+	caCert, caPriv := genTestCA(t)
+
+	nodeA, commA, certA, privA := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeA.Stop()
+	defer commA.Stop()
+
+	nodeB, commB, certB, privB := createTestNodeWithComm(t, caCert, caPriv)
+	defer nodeB.Stop()
+	defer commB.Stop()
+
+	_, peerBOnA := pairNodes(t, nodeA, certA, privA, commA, nodeB, certB, privB, commB)
+	require.NotNil(t, peerBOnA)
+
+	// Announce a messaging-only "chat" service on both nodes without attaching any store.
+	_, err := nodeA.RegisterService("chat", 1, nil)
+	require.NoError(t, err)
+	_, err = nodeB.RegisterService("chat", 1, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, nodeB.SetServiceMsgHandler("chat", func(b []byte) ([]byte, error) {
+		return append([]byte("chat-reply:"), b...), nil
+	}))
+	require.NoError(t, nodeB.SetServiceStreamHandler("chat", func(in, out chan []byte) {
+		defer close(out)
+		for m := range in {
+			out <- append([]byte("chat-stream:"), m...)
+		}
+	}))
+
+	// Confirm no store entry is attached for "chat" on either node.
+	assert.Nil(t, nodeA.services.storeEntry("chat"))
+	assert.Nil(t, nodeB.services.storeEntry("chat"))
+
+	// Reconcile service discovery so A discovers B hosts "chat".
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, nodeA.reconcilePeerStores(ctx, peerBOnA))
+	require.Len(t, nodeA.ServiceMembers("chat"), 1)
+	assert.Equal(t, nodeB.Id(), nodeA.ServiceMembers("chat")[0].ID)
+
+	// Unary Messaging.Send routed to "chat" works with zero stores attached.
+	ch := make(chan *Message, 1)
+	nodeA.SendServiceMessage("chat", nodeB.Addr(), ch, []byte("hi"))
+	resp := <-ch
+	require.NotNil(t, resp)
+	require.NoError(t, resp.Error)
+	assert.Equal(t, "chat-reply:hi", string(resp.Data))
+
+	// Bidirectional Messaging.Stream routed to "chat" works with zero stores attached.
+	inCh := make(chan []byte, 1)
+	outCh := make(chan []byte, 1)
+	nodeA.OpenServiceStream("chat", nodeB.Addr(), inCh, outCh)
+	inCh <- []byte("stream-hi")
+	close(inCh)
+	got := <-outCh
+	assert.Equal(t, "chat-stream:stream-hi", string(got))
 }

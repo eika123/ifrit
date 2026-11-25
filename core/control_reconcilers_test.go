@@ -538,7 +538,7 @@ func TestControlReconcilers_ThinSpreadAndBootstrapJoin(t *testing.T) {
 	require.Nil(t, nodeA.view.Peer(string(certB.SubjectKeyId)), "B must not be in A's view before thin Spread")
 
 	// 1. Thin Spread admits B into A's view and returns no legacy cert/note slices.
-	err = nodeB.admitViaThinSpread(commA.Addr())
+	err = nodeB.announceToPeer(commA.Addr())
 	require.NoError(t, err)
 	require.NotNil(t, nodeA.view.Peer(string(certB.SubjectKeyId)), "thin Spread must admit B into A's view")
 
@@ -769,7 +769,7 @@ func TestControlReconcilers_NaiveStrategyEndToEnd(t *testing.T) {
 	require.NoError(t, n1.evalValidCertificate(certC))
 	require.NoError(t, n1.evalNote(signTestPbNote(t, privC, certC.SubjectKeyId, 2, validAllRingsMask(n1.view.NumRings()))))
 
-	require.NoError(t, n2.admitViaThinSpread(comm1.Addr()))
+	require.NoError(t, n2.announceToPeer(comm1.Addr()))
 	require.NoError(t, n2.reconcileBootstrapControl(comm1.Addr()))
 	assert.True(t, n2.view.Exists(string(certC.SubjectKeyId)))
 

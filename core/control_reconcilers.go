@@ -741,23 +741,22 @@ func (n *Node) reconcileBootstrapControl(addr string) error {
 	return err
 }
 
-func (n *Node) admitViaThinSpread(addr string, target ...*discovery.Peer) error {
-	msg := &pb.State{}
+func (n *Node) announceToPeer(addr string, target ...*discovery.Peer) error {
+	msg := &pb.AnnounceRequest{}
 	if n.view != nil {
 		if selfNote := n.view.SelfNote(); selfNote != nil {
 			msg.OwnNote = selfNote.ToPbMsg()
 		}
 	}
-	if adv := n.AdversarialPolicy(); adv != nil && adv.OnGossipOut != nil {
+	if adv := n.AdversarialPolicy(); adv != nil && adv.OnAnnounceOut != nil {
 		var p *discovery.Peer
 		if len(target) > 0 {
 			p = target[0]
 		}
-		adv.OnGossipOut(p, msg)
+		adv.OnAnnounceOut(p, msg)
 	}
 
-	// calls Spread
-	reply, err := n.comm.Gossip(addr, msg)
+	reply, err := n.announce(n.syncCtx, addr, msg)
 	if err != nil {
 		return err
 	}
@@ -813,7 +812,7 @@ func (n *Node) gossipWithStoreReconcilers() {
 
 			err := n.reconcilePeerStores(ctx, p)
 			if err != nil && isReconcilerAuthErr(err) {
-				if admitErr := n.admitViaThinSpread(p.Addr, p); admitErr != nil {
+				if admitErr := n.announceToPeer(p.Addr, p); admitErr != nil {
 					log.Debug("Thin Spread re-admission failed", "addr", p.Addr, "err", admitErr)
 					return
 				}

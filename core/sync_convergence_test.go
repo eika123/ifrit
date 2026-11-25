@@ -362,15 +362,15 @@ func TestSync_NewPeerNetworkIntegration(t *testing.T) {
 	require.False(t, nodeB.view.Exists(idA), "Node B must not have Node A in full view initially")
 	require.False(t, nodeA.view.Exists(idB), "Node A must not have Node B in full view initially")
 
-	// 1. Node B contacts Node A via Spread RPC (gossip bootstrap)
-	msg := &pb.State{}
+	// 1. Node B contacts Node A via Announce RPC (bootstrap)
+	msg := &pb.AnnounceRequest{}
 	if selfNoteB != nil {
 		msg.OwnNote = selfNoteB.ToPbMsg()
 	}
 
-	reply, err := nodeB.comm.Gossip(commA.Addr(), msg)
-	require.NoError(t, err, "Node B must successfully send Spread RPC to Node A")
-	require.NotNil(t, reply, "SpreadResponse must not be nil")
+	reply, err := nodeB.announce(nodeB.syncCtx, commA.Addr(), msg)
+	require.NoError(t, err, "Node B must successfully send Announce RPC to Node A")
+	require.NotNil(t, reply, "AnnounceResponse must not be nil")
 
 	// 2. Ingest fast-path accusations if present and run control store bootstrap reconciliation
 	if accs := reply.GetAccusations(); len(accs) > 0 {

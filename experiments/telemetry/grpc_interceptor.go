@@ -110,23 +110,23 @@ func splitHostAndPort(addr string) (string, string) {
 	return addr, ""
 }
 
-// Helper to log telemetry for Spread RPC exchanges (rebuttals, gossip payloads, accusations, notes)
-func logSpreadExchange(
+// Helper to log telemetry for Fireflies Announce RPC exchanges (rebuttals, admission, accusations)
+func logAnnounceExchange(
 	telemetryLogger TelemetryLogger,
-	stateReq *pb.State,
-	stateResp *pb.StateResponse,
+	req *pb.AnnounceRequest,
+	resp *pb.AnnounceResponse,
 	host, remoteHost, remotePort string,
 	requestDir, responseDir string,
 ) {
-	if telemetryLogger == nil || stateReq == nil || stateResp == nil {
+	if telemetryLogger == nil || req == nil || resp == nil {
 		return
 	}
 	now := time.Now()
 
 	// 1. Rebuttal logging: explicit IsRebuttal flag with OwnNote
-	isRebuttal := stateReq.GetIsRebuttal() && stateReq.GetOwnNote() != nil
+	isRebuttal := req.GetIsRebuttal() && req.GetOwnNote() != nil
 	if isRebuttal {
-		ownNote := stateReq.GetOwnNote()
+		ownNote := req.GetOwnNote()
 		telemetryLogger.OnRebuttal(RebuttalEvent{
 			Timestamp:  now,
 			Direction:  requestDir,
@@ -140,7 +140,7 @@ func logSpreadExchange(
 		})
 	}
 
-	// 2. Gossip exchange logging: log gossip exchange event
+	// 2. Gossip/admission exchange logging
 	if !isRebuttal {
 		telemetryLogger.OnGossipExchange(GossipEvent{
 			Timestamp:       now,
@@ -153,7 +153,7 @@ func logSpreadExchange(
 		})
 	}
 
-	for _, acc := range stateResp.GetAccusations() {
+	for _, acc := range resp.GetAccusations() {
 		telemetryLogger.OnAccusation(AccusationEvent{
 			Timestamp:  now,
 			Direction:  responseDir,
@@ -175,9 +175,9 @@ func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryC
 		callOpts := append(opts, grpc.Peer(&pr))
 		err := invoker(ctx, method, req, reply, cc, callOpts...)
 
-		if method == "/proto.gossip/Spread" && err == nil {
-			stateReq, okReq := req.(*pb.State)
-			stateResp, okResp := reply.(*pb.StateResponse)
+		if method == "/proto.Fireflies/Announce" && err == nil {
+			announceReq, okReq := req.(*pb.AnnounceRequest)
+			announceResp, okResp := reply.(*pb.AnnounceResponse)
 			if okReq && okResp {
 				remoteAddr := ""
 				if cc != nil {
@@ -187,10 +187,10 @@ func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryC
 					remoteAddr = pr.Addr.String()
 				}
 				remoteHost, remotePort := splitHostAndPort(remoteAddr)
-				logSpreadExchange(
+				logAnnounceExchange(
 					telemetryLogger,
-					stateReq,
-					stateResp,
+					announceReq,
+					announceResp,
 					getLocalHostIdentifier(),
 					remoteHost,
 					remotePort,
@@ -208,19 +208,19 @@ func gossipClientInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryC
 func gossipServerInterceptorFactory(telemetryLogger TelemetryLogger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		reply, err := handler(ctx, req)
-		if info.FullMethod == "/proto.gossip/Spread" && err == nil {
-			stateReq, okReq := req.(*pb.State)
-			stateResp, okResp := reply.(*pb.StateResponse)
+		if info.FullMethod == "/proto.Fireflies/Announce" && err == nil {
+			announceReq, okReq := req.(*pb.AnnounceRequest)
+			announceResp, okResp := reply.(*pb.AnnounceResponse)
 			if okReq && okResp {
 				remoteAddr := "unknown"
 				if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
 					remoteAddr = p.Addr.String()
 				}
 				remoteHost, remotePort := splitHostAndPort(remoteAddr)
-				logSpreadExchange(
+				logAnnounceExchange(
 					telemetryLogger,
-					stateReq,
-					stateResp,
+					announceReq,
+					announceResp,
 					getLocalHostIdentifier(),
 					remoteHost,
 					remotePort,
