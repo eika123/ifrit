@@ -152,6 +152,66 @@ func (s *ReconcilableStore[T]) Copy() digestmaps.ReverseIndexStore[T, digestmaps
 	}
 }
 
+// KeyedReconcilableStore implements both reconcile.Store[digestmaps.Item[K, T]] and
+// digestmaps.KeyedReverseIndexStore[K, T, digestmaps.DigestSymbol] over a ratelessIBLT-backed
+// KeyedReverseIndexStore.
+type KeyedReconcilableStore[K comparable, T any] struct {
+	*ReconcilableStore[digestmaps.Item[K, T]]
+	keyed digestmaps.KeyedReverseIndexStore[K, T, digestmaps.DigestSymbol]
+}
+
+// NewKeyedReconcilableStore creates a new in-memory ratelessIBLT-backed keyed reconcile store.
+// sketchSize is optional and defaults to DefaultSketchSize when omitted or <= 0.
+func NewKeyedReconcilableStore[K comparable, T any](
+	hasher digestmaps.Hasher[digestmaps.Item[K, T], digestmaps.DigestSymbol],
+	sketchSize ...int,
+) (*KeyedReconcilableStore[K, T], error) {
+	base, err := digestmaps.NewKeyedDigestSet[K, T, digestmaps.DigestSymbol](hasher)
+	if err != nil {
+		return nil, err
+	}
+	return WrapKeyedStore(base, sketchSize...), nil
+}
+
+// WrapKeyedStore wraps an existing KeyedReverseIndexStore in a KeyedReconcilableStore.
+// sketchSize is optional and defaults to DefaultSketchSize when omitted or <= 0.
+func WrapKeyedStore[K comparable, T any](
+	base digestmaps.KeyedReverseIndexStore[K, T, digestmaps.DigestSymbol],
+	sketchSize ...int,
+) *KeyedReconcilableStore[K, T] {
+	return &KeyedReconcilableStore[K, T]{
+		ReconcilableStore: WrapStore(base, sketchSize...),
+		keyed:             base,
+	}
+}
+
+// GetByKey retrieves all items currently stored under key.
+func (s *KeyedReconcilableStore[K, T]) GetByKey(key K) ([]digestmaps.Item[K, T], bool) {
+	return s.keyed.GetByKey(key)
+}
+
+// ContainsKey reports whether at least one item with key exists in the store.
+func (s *KeyedReconcilableStore[K, T]) ContainsKey(key K) bool {
+	return s.keyed.ContainsKey(key)
+}
+
+// Copy returns an independent deep clone wrapped in a KeyedReconcilableStore.
+func (s *KeyedReconcilableStore[K, T]) Copy() digestmaps.ReverseIndexStore[digestmaps.Item[K, T], digestmaps.DigestSymbol] {
+	s.Store.mu.RLock()
+	defer s.Store.mu.RUnlock()
+
+	baseCopy := s.keyed.Copy().(digestmaps.KeyedReverseIndexStore[K, T, digestmaps.DigestSymbol])
+	return &KeyedReconcilableStore[K, T]{
+		ReconcilableStore: &ReconcilableStore[digestmaps.Item[K, T]]{
+			Store: &Store[digestmaps.Item[K, T], digestmaps.DigestSymbol]{
+				ReverseIndexStore: baseCopy,
+				sketch:            slices.Clone(s.Store.sketch),
+			},
+		},
+		keyed: baseCopy,
+	}
+}
+
 //////// 	Needed for future implementation of					///////////////////
 //////// 	compaction/garbage collecting the grow-only stores  ///////////////////
 //////// 	Also used in core/discovery/view.go for testing 	///////////////////
