@@ -206,11 +206,13 @@ func TestServiceMultiplexer_CustomGRPCServiceAndPreStartGuard(t *testing.T) {
 	}
 
 	require.NoError(t, nodeC.RegisterGRPCService(echoDesc, echoImpl))
+	assert.ErrorIs(t, nodeC.RegisterGRPCService(echoDesc, echoImpl), ErrGRPCServiceAlreadyRegistered)
 	go nodeC.Start()
 	<-nodeC.startedChan
 
-	// Post-Start() registration must fail cleanly with ErrAlreadyStarted rather than panicking in gRPC-Go.
-	assert.ErrorIs(t, nodeC.RegisterGRPCService(echoDesc, echoImpl), ErrAlreadyStarted)
+	// Post-Start() registration of a new service must fail cleanly with ErrAlreadyStarted.
+	otherDesc := &grpc.ServiceDesc{ServiceName: "custom.Other", HandlerType: (*customEchoServer)(nil)}
+	assert.ErrorIs(t, nodeC.RegisterGRPCService(otherDesc, echoImpl), ErrAlreadyStarted)
 
 	// Dial custom.Echo from nodeA using nodeA.ConnProvider() over mTLS.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

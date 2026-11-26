@@ -267,9 +267,17 @@ func (c *Client) ServiceMembers(serviceID string) []PeerInfo {
 }
 
 // RegisterGRPCService mounts a custom gRPC service on the client's shared mTLS
-// gRPC server. Must be called before Start() (returns core.ErrAlreadyStarted after).
+// gRPC server. Must be called before Start() (returns core.ErrAlreadyStarted after,
+// or core.ErrGRPCServiceAlreadyRegistered on duplicate registration).
 func (c *Client) RegisterGRPCService(desc *grpc.ServiceDesc, impl any) error {
 	return c.node.RegisterGRPCService(desc, impl)
+}
+
+// EnsureGRPCService returns the already-registered implementation for
+// desc.ServiceName if present; otherwise it invokes factory() and mounts it on
+// the client's shared mTLS gRPC server before Start().
+func (c *Client) EnsureGRPCService(desc *grpc.ServiceDesc, factory func() (any, error)) (any, error) {
+	return c.node.EnsureGRPCService(desc, factory)
 }
 
 // ValidatePeerCtx extracts and verifies the mTLS client certificate from an
@@ -304,8 +312,8 @@ func WithHealthCheck(fn func() bool) ServiceOption {
 }
 
 // ServiceEndpoint is a scoped handle for a third-party service running atop Ifrit,
-// providing isolated P2P messaging, bidirectional streaming, super-overlay discovery,
-// service-level accusations, and transparent reconcilable store attachment.
+// providing super-overlay discovery, service-level accusations, and transparent
+// reconcilable store attachment.
 type ServiceEndpoint struct {
 	client    *Client
 	serviceID string
@@ -380,7 +388,7 @@ func (s *ServiceEndpoint) RegisterStoreReconciler(rec reconcile.StoreReconciler,
 	return s.client.node.RegisterServiceStoreReconciler(s.serviceID, rec, fpFn)
 }
 
-// Close detaches this service's handlers, store reconciler, and super-overlay, and publishes
+// Close detaches this service's store reconciler and super-overlay, and publishes
 // an updated ServiceNote epoch without this service.
 func (s *ServiceEndpoint) Close() error {
 	return s.client.node.UnregisterService(s.serviceID)

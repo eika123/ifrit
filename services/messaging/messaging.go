@@ -2,7 +2,6 @@ package messaging
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"io"
 	"sync"
@@ -10,9 +9,9 @@ import (
 
 	"github.com/eika123/ifrit/core/discovery"
 	"github.com/eika123/ifrit/reconcile"
+	"github.com/eika123/ifrit/services"
 	messagingpb "github.com/eika123/ifrit/services/messaging/proto"
 	log "github.com/inconshreveable/log15"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -35,14 +34,6 @@ type StreamHandler func(input, reply chan []byte)
 type Message struct {
 	Data  []byte
 	Error error
-}
-
-// Host is the minimal Ifrit transport surface required to mount the Messaging service.
-// Both *ifrit.Client and *core.Node implement Host.
-type Host interface {
-	RegisterGRPCService(desc *grpc.ServiceDesc, impl any) error
-	ConnProvider() reconcile.ConnProvider
-	ValidatePeerCtx(ctx context.Context) (*x509.Certificate, error)
 }
 
 type config struct {
@@ -105,48 +96,54 @@ type rpcServer struct {
 	svc *Service
 }
 
-// Register creates a Messaging Service and mounts it on host's shared mTLS gRPC server.
-// Must be called before host.Start() (returns core.ErrAlreadyStarted if called after).
-func Register(host Host, opts ...Option) (*Service, error) {
+// Register ensures a Messaging Service is mounted on host's shared mTLS gRPC server
+// and returns it. Safe to call multiple times on the same host (subsequent calls
+// return the existing shared *Service); the first call must happen before host.Start().
+func Register(host services.TransportHost, opts ...Option) (*Service, error) {
 	if host == nil {
 		return nil, errors.New("messaging: host cannot be nil")
 	}
 
-	cfg := config{
-		timeout: defaultTimeout,
-		auth: func(ctx context.Context) error {
-			_, err := host.ValidatePeerCtx(ctx)
-			return err
-		},
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
+	impl, err := host.EnsureGRPCService(&messagingpb.Messaging_ServiceDesc, func() (any, error) {
+		cfg := config{
+			timeout: defaultTimeout,
+			auth: func(ctx context.Context) error {
+				_, err := host.ValidatePeerCtx(ctx)
+				return err
+			},
 		}
-	}
+		for _, opt := range opts {
+			if opt != nil {
+				opt(&cfg)
+			}
+		}
 
-	var sem chan struct{}
-	if cfg.maxConcurrent > 0 {
-		sem = make(chan struct{}, cfg.maxConcurrent)
-	}
+		var sem chan struct{}
+		if cfg.maxConcurrent > 0 {
+			sem = make(chan struct{}, cfg.maxConcurrent)
+		}
 
-	baseCtx, baseCancel := context.WithCancel(context.Background())
-	svc := &Service{
-		connProvider:   host.ConnProvider(),
-		auth:           cfg.auth,
-		timeout:        cfg.timeout,
-		sem:            sem,
-		baseCtx:        baseCtx,
-		baseCancel:     baseCancel,
-		msgHandlers:    make(map[string]MsgHandler),
-		streamHandlers: make(map[string]StreamHandler),
-	}
-
-	if err := host.RegisterGRPCService(&messagingpb.Messaging_ServiceDesc, &rpcServer{svc: svc}); err != nil {
-		baseCancel()
+		baseCtx, baseCancel := context.WithCancel(context.Background())
+		svc := &Service{
+			connProvider:   host.ConnProvider(),
+			auth:           cfg.auth,
+			timeout:        cfg.timeout,
+			sem:            sem,
+			baseCtx:        baseCtx,
+			baseCancel:     baseCancel,
+			msgHandlers:    make(map[string]MsgHandler),
+			streamHandlers: make(map[string]StreamHandler),
+		}
+		return &rpcServer{svc: svc}, nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return svc, nil
+	srv, ok := impl.(*rpcServer)
+	if !ok || srv == nil || srv.svc == nil {
+		return nil, errors.New("messaging: unexpected gRPC service implementation registered")
+	}
+	return srv.svc, nil
 }
 
 // Close cancels the base context used for outbound async sends and streams.

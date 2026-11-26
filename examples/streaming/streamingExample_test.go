@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/eika123/ifrit"
-	"github.com/eika123/ifrit/services/messaging"
 	"github.com/eika123/ifrit/crypto/cauth"
+	"github.com/eika123/ifrit/services/messaging"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
@@ -99,15 +99,9 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	if err != nil {
 		return nil, err
 	}
-	clientMsg, err := messaging.Register(client)
+	// client receives streams --> needs a stream handler
+	clientEp, err := messaging.Open(client, "streaming-example", messaging.WithStreamHandler(streamHandler))
 	if err != nil {
-		return nil, err
-	}
-	clientSvc, err := client.Service("streaming-example")
-	if err != nil {
-		return nil, err
-	}
-	if err := clientMsg.HandleStream("streaming-example", streamHandler); err != nil {
 		return nil, err
 	}
 	// Pass client by value as argument to avoid closure capture races on local variables.
@@ -125,13 +119,9 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 		client.Stop()
 		return nil, err
 	}
-	masterMsg, err := messaging.Register(master)
-	if err != nil {
-		client.Stop()
-		master.Stop()
-		return nil, err
-	}
-	masterSvc, err := master.Service("streaming-example")
+
+	// master only initiates an outbound stream --> doesn't need a stream handler
+	masterEp, err := messaging.Open(master, "streaming-example")
 	if err != nil {
 		client.Stop()
 		master.Stop()
@@ -144,11 +134,9 @@ func newTestApp(clientCryptoPath, masterCryptoPath string, wg *sync.WaitGroup) (
 	}(master)
 
 	return &App{
-		master:    master,
-		client:    client,
-		masterSvc: masterSvc,
-		clientSvc: clientSvc,
-		masterMsg: masterMsg,
-		clientMsg: clientMsg,
+		master:   master,
+		client:   client,
+		masterEp: masterEp,
+		clientEp: clientEp,
 	}, nil
 }

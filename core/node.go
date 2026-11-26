@@ -27,6 +27,10 @@ var (
 // on a Node after Start() has been called (gRPC-Go forbids RegisterService after Serve).
 var ErrAlreadyStarted = errors.New("cannot register gRPC service after Node.Start")
 
+// ErrGRPCServiceAlreadyRegistered is returned by RegisterGRPCService when a
+// gRPC service with the same ServiceName is already mounted on the Node.
+var ErrGRPCServiceAlreadyRegistered = errors.New("gRPC service already registered on Node")
+
 type Node struct {
 	view *discovery.View
 	self *discovery.Peer
@@ -42,9 +46,10 @@ type Node struct {
 
 	// startedChan is closed once Start() has initialized all background workers (gossipLoop, monitorLoop, etc.).
 	// This prevents a data race where Stop() could call wg.Wait() concurrently with Start() calling wg.Add(2).
-	startedChan chan struct{}
-	startCalled bool
-	startMutex  sync.Mutex
+	startedChan            chan struct{}
+	startCalled            bool
+	registeredGRPCServices map[string]any
+	startMutex             sync.Mutex
 
 	viewUpdateTimeout time.Duration
 
@@ -272,15 +277,55 @@ func (n *Node) Stop() {
 }
 
 // RegisterGRPCService mounts a custom gRPC service on the node's shared mTLS
-// gRPC server. Must be called before Start() (returns ErrAlreadyStarted after).
+// gRPC server. Must be called before Start() (returns ErrAlreadyStarted after,
+// or ErrGRPCServiceAlreadyRegistered if desc.ServiceName is already mounted).
 func (n *Node) RegisterGRPCService(desc *grpc.ServiceDesc, impl any) error {
+	if desc == nil {
+		return errors.New("gRPC service descriptor cannot be nil")
+	}
 	n.startMutex.Lock()
 	defer n.startMutex.Unlock()
+	if _, exists := n.registeredGRPCServices[desc.ServiceName]; exists {
+		return ErrGRPCServiceAlreadyRegistered
+	}
 	if n.startCalled {
 		return ErrAlreadyStarted
 	}
+	if n.registeredGRPCServices == nil {
+		n.registeredGRPCServices = make(map[string]any)
+	}
 	n.comm.RegisterService(desc, impl)
+	n.registeredGRPCServices[desc.ServiceName] = impl
 	return nil
+}
+
+// EnsureGRPCService returns the previously registered implementation for
+// desc.ServiceName if present; otherwise it invokes factory(), mounts the
+// resulting implementation on the shared mTLS gRPC server (before Start()),
+// and caches it. Safe to call after Start() when the service is already mounted.
+func (n *Node) EnsureGRPCService(desc *grpc.ServiceDesc, factory func() (any, error)) (any, error) {
+	if desc == nil {
+		return nil, errors.New("gRPC service descriptor cannot be nil")
+	}
+	n.startMutex.Lock()
+	defer n.startMutex.Unlock()
+
+	if existing, ok := n.registeredGRPCServices[desc.ServiceName]; ok {
+		return existing, nil
+	}
+	if n.startCalled {
+		return nil, ErrAlreadyStarted
+	}
+	impl, err := factory()
+	if err != nil {
+		return nil, err
+	}
+	if n.registeredGRPCServices == nil {
+		n.registeredGRPCServices = make(map[string]any)
+	}
+	n.comm.RegisterService(desc, impl)
+	n.registeredGRPCServices[desc.ServiceName] = impl
+	return impl, nil
 }
 
 // ValidatePeerCtx extracts and verifies the mTLS client certificate from an

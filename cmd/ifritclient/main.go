@@ -54,14 +54,8 @@ func main() {
 		panic(err)
 	}
 
-	msgSvc, err := messaging.Register(clientIfrit)
+	ep, err := messaging.Open(clientIfrit, "ifritclient", messaging.WithMsgHandler(msgHandler))
 	if err != nil {
-		panic(err)
-	}
-	if _, err := clientIfrit.Service("ifritclient"); err != nil {
-		panic(err)
-	}
-	if err := msgSvc.Handle("ifritclient", msgHandler); err != nil {
 		panic(err)
 	}
 	go clientIfrit.Start()
@@ -74,7 +68,7 @@ func main() {
 			}
 
 			addr := clientIfrit.Members()[0]
-			ch := msgSvc.SendAsync("ifritclient", addr, []byte("HellO!"))
+			ch := ep.SendAsync(addr, []byte("HellO!"))
 
 			time.Sleep(3 * time.Second)
 			msg := <-ch

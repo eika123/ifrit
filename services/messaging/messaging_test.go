@@ -150,3 +150,99 @@ func TestMessaging_OptInIsolationAndDynamicRuntimeHandlers(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.Unimplemented, status.Code(err))
 }
+
+func TestMessaging_OpenAttachMultiServiceAndClose(t *testing.T) {
+	caAddr := startTestCA(t)
+
+	clientA := newTestClient(t, caAddr)
+	clientB := newTestClient(t, caAddr)
+	clientNoMsg := newTestClient(t, caAddr)
+
+	// Open two independent services ("chat" and "dht") on the same clients via
+	// one-line messaging.Open; both must share the single Messaging gRPC mount.
+	chatA, err := messaging.Open(clientA, "chat", messaging.WithTransportOptions(messaging.WithMaxConcurrent(4)))
+	require.NoError(t, err)
+	dhtA, err := messaging.Open(clientA, "dht")
+	require.NoError(t, err)
+
+	chatB, err := messaging.Open(clientB, "chat",
+		messaging.WithMsgHandler(func(b []byte) ([]byte, error) {
+			return append([]byte("chat:"), b...), nil
+		}),
+		messaging.WithStreamHandler(func(in, out chan []byte) {
+			defer close(out)
+			for m := range in {
+				out <- append([]byte("chat-stream:"), m...)
+			}
+		}),
+	)
+	require.NoError(t, err)
+
+	// Bottom-up layering: create a base ServiceEndpoint first, then Attach messaging.
+	baseDHTB, err := clientB.Service("dht")
+	require.NoError(t, err)
+	dhtB, err := messaging.Attach(clientB, baseDHTB, messaging.WithMsgHandler(func(b []byte) ([]byte, error) {
+		return append([]byte("dht:"), b...), nil
+	}))
+	require.NoError(t, err)
+
+	go clientA.Start()
+	go clientB.Start()
+	go clientNoMsg.Start()
+
+	for _, addr := range []string{clientA.Addr(), clientB.Addr(), clientNoMsg.Addr()} {
+		require.Eventually(t, func() bool {
+			conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+			if dialErr != nil {
+				return false
+			}
+			_ = conn.Close()
+			return true
+		}, 3*time.Second, 15*time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Scoped Send / OpenStream work without repeating service IDs.
+	gotChat, err := chatA.Send(ctx, clientB.Addr(), []byte("hi"))
+	require.NoError(t, err)
+	assert.Equal(t, "chat:hi", string(gotChat))
+
+	gotDHT, err := dhtA.Send(ctx, clientB.Addr(), []byte("get"))
+	require.NoError(t, err)
+	assert.Equal(t, "dht:get", string(gotDHT))
+
+	inCh, outCh := chatA.OpenStream(ctx, clientB.Addr())
+	inCh <- []byte("hello")
+	close(inCh)
+	assert.Equal(t, "chat-stream:hello", string(<-outCh))
+
+	// Opening a new messaging endpoint AFTER Start() succeeds when Messaging was
+	// already mounted on clientB before Start().
+	lateB, err := messaging.Open(clientB, "late-svc", messaging.WithMsgHandler(func(b []byte) ([]byte, error) {
+		return append([]byte("late:"), b...), nil
+	}))
+	require.NoError(t, err)
+	lateA, err := messaging.Open(clientA, "late-svc")
+	require.NoError(t, err)
+	gotLate, err := lateA.Send(ctx, clientB.Addr(), []byte("ok"))
+	require.NoError(t, err)
+	assert.Equal(t, "late:ok", string(gotLate))
+
+	// Opening messaging AFTER Start() on a client that never mounted Messaging fails cleanly.
+	_, err = messaging.Open(clientNoMsg, "too-late")
+	assert.ErrorIs(t, err, core.ErrAlreadyStarted)
+
+	// Closing chatB clears its messaging handlers (codes.NotFound) without affecting dhtB or lateB.
+	require.NoError(t, chatB.Close())
+	_, err = chatA.Send(ctx, clientB.Addr(), []byte("after-close"))
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	gotDHTAfter, err := dhtA.Send(ctx, clientB.Addr(), []byte("still-up"))
+	require.NoError(t, err)
+	assert.Equal(t, "dht:still-up", string(gotDHTAfter))
+	_ = dhtB.Close()
+	_ = lateB.Close()
+}

@@ -13,8 +13,7 @@ import (
 // Mockup application
 type application struct {
 	ifritClient *ifrit.Client
-	service     *ifrit.ServiceEndpoint
-	msgSvc      *messaging.Service
+	endpoint    *messaging.Endpoint
 
 	exitChan chan bool
 	data     *appData
@@ -41,20 +40,14 @@ func newApp(config *ifrit.Config) (*application, error) {
 		return nil, err
 	}
 
-	msgSvc, err := messaging.Register(c)
-	if err != nil {
-		return nil, err
-	}
-
-	svc, err := c.Service("messages-example")
+	ep, err := messaging.Open(c, "messages-example")
 	if err != nil {
 		return nil, err
 	}
 
 	return &application{
 		ifritClient: c,
-		service:     svc,
-		msgSvc:      msgSvc,
+		endpoint:    ep,
 		exitChan:    make(chan bool),
 		data: &appData{
 			Users: make(map[int]*user),
@@ -64,7 +57,7 @@ func newApp(config *ifrit.Config) (*application, error) {
 
 // Start the mockup application
 func (a *application) Start() {
-	if err := a.msgSvc.Handle("messages-example", a.handleMessages); err != nil {
+	if err := a.endpoint.Handle(a.handleMessages); err != nil {
 		panic(err)
 	}
 
@@ -78,7 +71,7 @@ func (a *application) Start() {
 			members := a.ifritClient.Members()
 
 			for _, addr := range members {
-				ch := a.msgSvc.SendAsync("messages-example", addr, a.State())
+				ch := a.endpoint.SendAsync(addr, a.State())
 				select {
 				case resp := <-ch:
 					a.handleResponse(resp)

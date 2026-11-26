@@ -16,12 +16,10 @@ import (
 /** Example of bi-directional streaming using Ifrit library*/
 
 type App struct {
-	master    *ifrit.Client
-	client    *ifrit.Client
-	masterSvc *ifrit.ServiceEndpoint
-	clientSvc *ifrit.ServiceEndpoint
-	masterMsg *messaging.Service
-	clientMsg *messaging.Service
+	master   *ifrit.Client
+	client   *ifrit.Client
+	masterEp *messaging.Endpoint
+	clientEp *messaging.Endpoint
 }
 
 func main() {
@@ -66,15 +64,8 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
-	clientMsg, err := messaging.Register(client)
+	clientEp, err := messaging.Open(client, "streaming-example", messaging.WithStreamHandler(streamHandler))
 	if err != nil {
-		return nil, err
-	}
-	clientSvc, err := client.Service("streaming-example")
-	if err != nil {
-		return nil, err
-	}
-	if err := clientMsg.HandleStream("streaming-example", streamHandler); err != nil {
 		return nil, err
 	}
 	go client.Start()
@@ -87,29 +78,23 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 
-	masterMsg, err := messaging.Register(master)
-	if err != nil {
-		return nil, err
-	}
-	masterSvc, err := master.Service("streaming-example")
+	masterEp, err := messaging.Open(master, "streaming-example")
 	if err != nil {
 		return nil, err
 	}
 
 	go master.Start()
 	return &App{
-		master:    master,
-		client:    client,
-		masterSvc: masterSvc,
-		clientSvc: clientSvc,
-		masterMsg: masterMsg,
-		clientMsg: clientMsg,
+		master:   master,
+		client:   client,
+		masterEp: masterEp,
+		clientEp: clientEp,
 	}, nil
 }
 
 func (app *App) Stream() error {
 	var wg sync.WaitGroup
-	inputStream, reply := app.masterMsg.OpenStream(context.Background(), "streaming-example", app.client.Addr())
+	inputStream, reply := app.masterEp.OpenStream(context.Background(), app.client.Addr())
 
 	var receivedCount int
 	var receivedMu sync.Mutex
