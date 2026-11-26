@@ -110,6 +110,25 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// Copy returns an independent, deep copy of the set at this point in time.
 	Copy() ReverseIndexStore[T, S]
 }
+// Item pairs a comparable lookup key K with an arbitrary value T for use in a KeyedReverseIndexStore.
+type Item[K comparable, T any] struct {
+	Key   K
+	Value T
+}
+
+// KeyedReverseIndexStore extends ReverseIndexStore with O(1) lookup by key K.
+// Because concurrent writes on different replicas may produce distinct items with the same key,
+// GetByKey returns all stored sibling items associated with key.
+type KeyedReverseIndexStore[K comparable, T any, S Symbol[S]] interface {
+	ReverseIndexStore[Item[K, T], S]
+
+	// GetByKey retrieves all items currently stored under key.
+	// Returns the matching items and true if at least one item exists for key, or nil and false otherwise.
+	GetByKey(key K) ([]Item[K, T], bool)
+
+	// ContainsKey reports whether at least one item with key exists in the store.
+	ContainsKey(key K) bool
+}
 
 // MutableReverseIndexStore extends ReverseIndexStore with element removal operations
 // for non-reconciled or locally mutable stores (such as live peer membership).
