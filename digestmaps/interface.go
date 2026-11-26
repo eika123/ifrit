@@ -110,6 +110,7 @@ type ReverseIndexStore[T any, S Symbol[S]] interface {
 	// Copy returns an independent, deep copy of the set at this point in time.
 	Copy() ReverseIndexStore[T, S]
 }
+
 // Item pairs a comparable lookup key K with an arbitrary value T for use in a KeyedReverseIndexStore.
 type Item[K comparable, T any] struct {
 	Key   K

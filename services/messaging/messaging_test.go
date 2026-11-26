@@ -11,6 +11,7 @@ import (
 	"github.com/eika123/ifrit"
 	"github.com/eika123/ifrit/core"
 	"github.com/eika123/ifrit/crypto/cauth"
+	"github.com/eika123/ifrit/services"
 	"github.com/eika123/ifrit/services/messaging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,9 +77,9 @@ func TestMessaging_OptInIsolationAndDynamicRuntimeHandlers(t *testing.T) {
 	defer msgB.Close()
 
 	// Announce a store-less "chat" service on both A and B.
-	_, err = clientA.Service("chat")
+	_, err = services.NewEndpoint(clientA, "chat")
 	require.NoError(t, err)
-	_, err = clientB.Service("chat")
+	_, err = services.NewEndpoint(clientB, "chat")
 	require.NoError(t, err)
 
 	// Start all three clients BEFORE registering handlers on msgB to verify
@@ -178,8 +179,8 @@ func TestMessaging_OpenAttachMultiServiceAndClose(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Bottom-up layering: create a base ServiceEndpoint first, then Attach messaging.
-	baseDHTB, err := clientB.Service("dht")
+	// Bottom-up layering: create a base services.Endpoint first, then Attach messaging.
+	baseDHTB, err := services.NewEndpoint(clientB, "dht")
 	require.NoError(t, err)
 	dhtB, err := messaging.Attach(clientB, baseDHTB, messaging.WithMsgHandler(func(b []byte) ([]byte, error) {
 		return append([]byte("dht:"), b...), nil

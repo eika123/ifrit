@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 
-	"github.com/eika123/ifrit"
 	"github.com/eika123/ifrit/services"
 )
 
 type endpointConfig struct {
 	msgHandler    MsgHandler
 	streamHandler StreamHandler
-	serviceOpts   []ifrit.ServiceOption
+	serviceOpts   []services.ServiceOption
 	transportOpts []Option
 }
 
@@ -33,26 +32,26 @@ func WithStreamHandler(fn StreamHandler) EndpointOption {
 }
 
 // WithServiceOptions forwards Fireflies service options (e.g. version, health check)
-// to client.Service when creating an Endpoint via Open.
-func WithServiceOptions(opts ...ifrit.ServiceOption) EndpointOption {
+// to services.Open when creating an Endpoint via Open.
+func WithServiceOptions(opts ...services.ServiceOption) EndpointOption {
 	return func(c *endpointConfig) {
 		c.serviceOpts = append(c.serviceOpts, opts...)
 	}
 }
 
 // WithTransportOptions forwards messaging transport options (e.g. WithMaxConcurrent,
-// WithTimeout, WithAuthenticator) if Messaging has not yet been mounted on client.
+// WithTimeout, WithAuthenticator) if Messaging has not yet been mounted on host.
 func WithTransportOptions(opts ...Option) EndpointOption {
 	return func(c *endpointConfig) {
 		c.transportOpts = append(c.transportOpts, opts...)
 	}
 }
 
-// Endpoint combines a Fireflies ServiceEndpoint (discovery, super-overlay,
-// service accusations) with scoped messaging over client's shared Messaging
+// Endpoint combines a Fireflies services.Endpoint (discovery, super-overlay,
+// service accusations) with scoped messaging over host's shared Messaging
 // transport, eliminating repeated serviceID arguments and coordinating Close().
 type Endpoint struct {
-	*ifrit.ServiceEndpoint
+	*services.Endpoint
 	svc *Service
 }
 
@@ -66,14 +65,14 @@ func Open(host services.Host, serviceID string, opts ...EndpointOption) (*Endpoi
 			opt(&cfg)
 		}
 	}
-	return services.Open(host, serviceID, func(h services.Host, baseEp *ifrit.ServiceEndpoint) (*Endpoint, error) {
+	return services.Open(host, serviceID, func(h services.Host, baseEp *services.Endpoint) (*Endpoint, error) {
 		return Attach(h, baseEp, opts...)
 	}, cfg.serviceOpts...)
 }
 
 // Attach ensures Messaging is mounted on host and layers scoped messaging onto
-// an existing *ifrit.ServiceEndpoint (e.g. one that already carries a replicated store).
-func Attach(host services.TransportHost, ep *ifrit.ServiceEndpoint, opts ...EndpointOption) (*Endpoint, error) {
+// an existing *services.Endpoint (e.g. one that already carries a replicated store).
+func Attach(host services.TransportHost, ep *services.Endpoint, opts ...EndpointOption) (*Endpoint, error) {
 	if host == nil {
 		return nil, errors.New("messaging: host cannot be nil")
 	}
@@ -94,10 +93,10 @@ func Attach(host services.TransportHost, ep *ifrit.ServiceEndpoint, opts ...Endp
 	return bindEndpoint(svc, ep, cfg)
 }
 
-func bindEndpoint(svc *Service, baseEp *ifrit.ServiceEndpoint, cfg endpointConfig) (*Endpoint, error) {
+func bindEndpoint(svc *Service, baseEp *services.Endpoint, cfg endpointConfig) (*Endpoint, error) {
 	ep := &Endpoint{
-		ServiceEndpoint: baseEp,
-		svc:             svc,
+		Endpoint: baseEp,
+		svc:      svc,
 	}
 	if cfg.msgHandler != nil {
 		if err := ep.Handle(cfg.msgHandler); err != nil {
@@ -142,5 +141,5 @@ func (e *Endpoint) OpenStream(ctx context.Context, addr string) (chan<- []byte, 
 func (e *Endpoint) Close() error {
 	_ = e.svc.Handle(e.ID(), nil)
 	_ = e.svc.HandleStream(e.ID(), nil)
-	return e.ServiceEndpoint.Close()
+	return e.Endpoint.Close()
 }

@@ -21,7 +21,7 @@ type serviceRegistry struct {
 }
 
 type localService struct {
-	store *serviceStoreEntry
+	stores map[string]*serviceStoreEntry // keyed by validated storeName within the service namespace
 }
 
 func newServiceRegistry() *serviceRegistry {
@@ -33,23 +33,25 @@ func newServiceRegistry() *serviceRegistry {
 func (r *serviceRegistry) getOrCreateLocked(serviceID string) *localService {
 	svc, ok := r.services[serviceID]
 	if !ok {
-		svc = &localService{}
+		svc = &localService{
+			stores: make(map[string]*serviceStoreEntry),
+		}
 		r.services[serviceID] = svc
 	}
 	return svc
 }
 
-func (r *serviceRegistry) setStore(serviceID string, entry *serviceStoreEntry) {
+func (r *serviceRegistry) setStore(serviceID, storeName string, entry *serviceStoreEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.getOrCreateLocked(serviceID).store = entry
+	r.getOrCreateLocked(serviceID).stores[storeName] = entry
 }
 
-func (r *serviceRegistry) storeEntry(serviceID string) *serviceStoreEntry {
+func (r *serviceRegistry) storeEntry(serviceID, storeName string) *serviceStoreEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if svc, ok := r.services[serviceID]; ok {
-		return svc.store
+		return svc.stores[storeName]
 	}
 	return nil
 }
@@ -59,29 +61,35 @@ func (r *serviceRegistry) storeEntries() []*serviceStoreEntry {
 	defer r.mu.RUnlock()
 	var entries []*serviceStoreEntry
 	for _, svc := range r.services {
-		if svc.store != nil {
-			entries = append(entries, svc.store)
+		for _, entry := range svc.stores {
+			if entry != nil {
+				entries = append(entries, entry)
+			}
 		}
 	}
 	return entries
 }
 
-// remove deletes all local bindings for serviceID and returns its former storeID if a store was bound.
-func (r *serviceRegistry) remove(serviceID string) (storeID string) {
+// remove deletes all local bindings for serviceID and returns all mounted mux store IDs.
+func (r *serviceRegistry) remove(serviceID string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var storeIDs []string
 	if svc, ok := r.services[serviceID]; ok {
-		if svc.store != nil {
-			storeID = svc.store.storeID
+		for _, entry := range svc.stores {
+			if entry != nil && entry.storeID != "" {
+				storeIDs = append(storeIDs, entry.storeID)
+			}
 		}
 		delete(r.services, serviceID)
 	}
-	return storeID
+	return storeIDs
 }
 
 type serviceStoreEntry struct {
 	serviceID string
-	storeID   string
+	storeName string
+	storeID   string // full reconcile.Mux key: "service/<serviceID>/<storeName>"
 	rec       reconcile.StoreReconciler
 	fpFn      func() []byte
 	peerFPMu  sync.RWMutex
@@ -123,8 +131,10 @@ func (n *Node) UnregisterService(serviceID string) error {
 		return err
 	}
 
-	if storeID := n.services.remove(serviceID); storeID != "" && n.reconcileMux != nil {
-		n.reconcileMux.UnregisterStore(storeID)
+	if storeIDs := n.services.remove(serviceID); len(storeIDs) > 0 && n.reconcileMux != nil {
+		for _, storeID := range storeIDs {
+			n.reconcileMux.UnregisterStore(storeID)
+		}
 	}
 
 	if n.view != nil && n.view.ServiceDirectory() != nil {
@@ -148,24 +158,29 @@ func (n *Node) AccuseServicePeer(serviceID, peerID string, ringNum uint32) error
 	return err
 }
 
-// RegisterServiceStoreReconciler mounts rec on the node's reconcile.Mux under "service/<serviceID>"
-// and enables automatic background anti-entropy across the service's RingSuperOverlay.
-func (n *Node) RegisterServiceStoreReconciler(serviceID string, rec reconcile.StoreReconciler, fpFn func() []byte) error {
+// RegisterServiceStoreReconciler mounts rec on the node's reconcile.Mux under
+// "service/<serviceID>/<storeName>" and enables automatic background anti-entropy
+// across the service's RingSuperOverlay.
+func (n *Node) RegisterServiceStoreReconciler(serviceID, storeName string, rec reconcile.StoreReconciler, fpFn func() []byte) error {
 	if err := discovery.ValidateServiceID(serviceID); err != nil {
 		return err
+	}
+	if err := discovery.ValidateServiceID(storeName); err != nil {
+		return fmt.Errorf("invalid store name %q: %w", storeName, err)
 	}
 	if rec == nil {
 		return errors.New("service store reconciler cannot be nil")
 	}
-	storeID := serviceStorePrefix + serviceID
+	muxStoreID := serviceStorePrefix + serviceID + "/" + storeName
 	if n.reconcileMux != nil {
-		if err := n.reconcileMux.ReplaceStore(storeID, rec); err != nil {
-			return fmt.Errorf("bind service store reconciler %q: %w", storeID, err)
+		if err := n.reconcileMux.ReplaceStore(muxStoreID, rec); err != nil {
+			return fmt.Errorf("bind service store reconciler %q: %w", muxStoreID, err)
 		}
 	}
-	n.services.setStore(serviceID, &serviceStoreEntry{
+	n.services.setStore(serviceID, storeName, &serviceStoreEntry{
 		serviceID: serviceID,
-		storeID:   storeID,
+		storeName: storeName,
+		storeID:   muxStoreID,
 		rec:       rec,
 		fpFn:      fpFn,
 		peerFP:    make(map[string][]byte),
@@ -174,11 +189,12 @@ func (n *Node) RegisterServiceStoreReconciler(serviceID string, rec reconcile.St
 }
 
 // RegisterServiceStore builds a reconcile.Engine[T] for store and attaches it to serviceID
-// under "service/<serviceID>", giving store.Insert() transparent eventual-consistency replication
-// across the service's RingSuperOverlay.
+// under "service/<serviceID>/<storeName>", giving store.Insert() transparent eventual-consistency
+// replication across the service's RingSuperOverlay.
 func RegisterServiceStore[T any](
 	n *Node,
 	serviceID string,
+	storeName string,
 	store digestmaps.ReverseIndexStore[T, digestmaps.DigestSymbol],
 	codec reconcile.ItemCodec[T],
 ) error {
@@ -191,6 +207,9 @@ func RegisterServiceStore[T any](
 	if err := discovery.ValidateServiceID(serviceID); err != nil {
 		return err
 	}
+	if err := discovery.ValidateServiceID(storeName); err != nil {
+		return fmt.Errorf("invalid store name %q: %w", storeName, err)
+	}
 	if codec == nil {
 		codec = reconcile.DefaultItemCodec[T]()
 	}
@@ -199,6 +218,7 @@ func RegisterServiceStore[T any](
 		neg = rs.Negotiator()
 	}
 	syncCfg := n.SyncConfig()
+	muxStoreID := serviceStorePrefix + serviceID + "/" + storeName
 	eng, err := reconcile.NewEngine(store, reconcile.Config[T]{
 		Negotiator:   neg,
 		Registry:     n.reconcileRegistry,
@@ -212,12 +232,12 @@ func RegisterServiceStore[T any](
 		},
 		MaxItemBytes: syncCfg.MaxItemBytes,
 		Timeout:      syncCfg.Timeout,
-		StoreID:      serviceStorePrefix + serviceID,
+		StoreID:      muxStoreID,
 	})
 	if err != nil {
 		return err
 	}
-	return n.RegisterServiceStoreReconciler(serviceID, eng, storeFingerprintFn(store))
+	return n.RegisterServiceStoreReconciler(serviceID, storeName, eng, storeFingerprintFn(store))
 }
 
 func (n *Node) reconcileServiceStores() {

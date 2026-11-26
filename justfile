@@ -134,10 +134,10 @@ clean-libpod:
 clean-ca-data:
     rm -rf ifrit-cad
 
-# Clean compiled binaries in repository root (ca, gossipContentExample, streamingExample, messagesExample)
+# Clean compiled binaries (ca, gossipContentExample, streamingExample, messagesExample, dht)
 [group('cleaning')]
 clean-bin:
-    rm -f ca gossipContentExample streamingExample messagesExample
+    rm -f ca gossipContentExample streamingExample messagesExample dht examples/dht/dht
 
 # Clean local log files (logfile)
 [group('cleaning')]

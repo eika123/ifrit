@@ -266,6 +266,47 @@ func (c *Client) ServiceMembers(serviceID string) []PeerInfo {
 	return c.node.ServiceMembers(serviceID)
 }
 
+// ServiceNeighbours returns the deterministic k-ring neighbors from serviceID's RingSuperOverlay.
+func (c *Client) ServiceNeighbours(serviceID string) []PeerInfo {
+	return c.node.ServiceNeighbours(serviceID)
+}
+
+// RegisterService announces serviceID on this node, creating its deterministic RingSuperOverlay
+// over S_svc and publishing a signed ServiceNote into ifrit/services.
+func (c *Client) RegisterService(serviceID string, version uint64, healthCheck func() bool) (*discovery.RingSuperOverlay, error) {
+	if c == nil || c.node == nil {
+		return nil, errors.New("ifrit client is nil")
+	}
+	return c.node.RegisterService(serviceID, version, healthCheck)
+}
+
+// UnregisterService detaches serviceID's store reconcilers and super-overlay, and publishes
+// a signed ServiceNote epoch without serviceID.
+func (c *Client) UnregisterService(serviceID string) error {
+	if c == nil || c.node == nil {
+		return errors.New("ifrit client is nil")
+	}
+	return c.node.UnregisterService(serviceID)
+}
+
+// AccuseServicePeer signs and records a ServiceAccusation against peerID for serviceID on ringNum.
+func (c *Client) AccuseServicePeer(serviceID, peerID string, ringNum uint32) error {
+	if c == nil || c.node == nil {
+		return errors.New("ifrit client is nil")
+	}
+	return c.node.AccuseServicePeer(serviceID, peerID, ringNum)
+}
+
+// RegisterServiceStoreReconciler mounts rec on the node's reconcile.Mux under
+// "service/<serviceID>/<storeName>" and enables automatic background anti-entropy
+// across serviceID's RingSuperOverlay.
+func (c *Client) RegisterServiceStoreReconciler(serviceID, storeName string, rec reconcile.StoreReconciler, fpFn func() []byte) error {
+	if c == nil || c.node == nil {
+		return errors.New("ifrit client is nil")
+	}
+	return c.node.RegisterServiceStoreReconciler(serviceID, storeName, rec, fpFn)
+}
+
 // RegisterGRPCService mounts a custom gRPC service on the client's shared mTLS
 // gRPC server. Must be called before Start() (returns core.ErrAlreadyStarted after,
 // or core.ErrGRPCServiceAlreadyRegistered on duplicate registration).
@@ -284,127 +325,6 @@ func (c *Client) EnsureGRPCService(desc *grpc.ServiceDesc, factory func() (any, 
 // incoming gRPC context against this client's CA or self-signed trust settings.
 func (c *Client) ValidatePeerCtx(ctx context.Context) (*x509.Certificate, error) {
 	return c.node.ValidatePeerCtx(ctx)
-}
-
-type serviceConfig struct {
-	version     uint64
-	healthCheck func() bool
-}
-
-// ServiceOption configures how a third-party service attaches to an Ifrit client.
-type ServiceOption func(*serviceConfig)
-
-// WithServiceVersion sets the initial service version published in this node's ServiceNote.
-func WithServiceVersion(version uint64) ServiceOption {
-	return func(cfg *serviceConfig) {
-		if version > 0 {
-			cfg.version = version
-		}
-	}
-}
-
-// WithHealthCheck registers a local health callback invoked before rebutting a ServiceAccusation
-// targeting this service. Returning false unregisters the service instead of rebutting.
-func WithHealthCheck(fn func() bool) ServiceOption {
-	return func(cfg *serviceConfig) {
-		cfg.healthCheck = fn
-	}
-}
-
-// ServiceEndpoint is a scoped handle for a third-party service running atop Ifrit,
-// providing super-overlay discovery, service-level accusations, and transparent
-// reconcilable store attachment.
-type ServiceEndpoint struct {
-	client    *Client
-	serviceID string
-}
-
-// Service attaches a third-party service identified by serviceID to this client,
-// initializing its deterministic RingSuperOverlay over S_svc and publishing a signed
-// ServiceNote across the cluster.
-func (c *Client) Service(serviceID string, opts ...ServiceOption) (*ServiceEndpoint, error) {
-	if c == nil || c.node == nil {
-		return nil, errors.New("ifrit client is nil")
-	}
-	cfg := serviceConfig{version: 1}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
-	if _, err := c.node.RegisterService(serviceID, cfg.version, cfg.healthCheck); err != nil {
-		return nil, err
-	}
-	return &ServiceEndpoint{
-		client:    c,
-		serviceID: serviceID,
-	}, nil
-}
-
-// ID returns the validated service identifier for this endpoint.
-func (s *ServiceEndpoint) ID() string {
-	return s.serviceID
-}
-
-// Members returns all live, non-evicted peers currently hosting this service (sorted by ID).
-func (s *ServiceEndpoint) Members() []PeerInfo {
-	return s.client.node.ServiceMembers(s.serviceID)
-}
-
-// MemberAddrs returns the RPC addresses of all live, non-evicted peers hosting this service.
-func (s *ServiceEndpoint) MemberAddrs() []string {
-	members := s.Members()
-	addrs := make([]string, 0, len(members))
-	for _, p := range members {
-		addrs = append(addrs, p.Addr)
-	}
-	return addrs
-}
-
-// Neighbours returns the deterministic k-ring neighbors from this service's RingSuperOverlay.
-func (s *ServiceEndpoint) Neighbours() []PeerInfo {
-	return s.client.node.ServiceNeighbours(s.serviceID)
-}
-
-// NeighbourAddrs returns the RPC addresses of this service's deterministic k-ring neighbors.
-func (s *ServiceEndpoint) NeighbourAddrs() []string {
-	neighbours := s.Neighbours()
-	addrs := make([]string, 0, len(neighbours))
-	for _, p := range neighbours {
-		addrs = append(addrs, p.Addr)
-	}
-	return addrs
-}
-
-// AccusePeer signs and publishes a ServiceAccusation against peerID on ringNum of this
-// service's RingSuperOverlay when peerID's service instance crashes or behaves malignantly.
-func (s *ServiceEndpoint) AccusePeer(peerID string, ringNum uint32) error {
-	return s.client.node.AccuseServicePeer(s.serviceID, peerID, ringNum)
-}
-
-// RegisterStoreReconciler mounts a custom reconcile.StoreReconciler for this service under
-// "service/<serviceID>" and enables automatic background anti-entropy across Neighbours().
-func (s *ServiceEndpoint) RegisterStoreReconciler(rec reconcile.StoreReconciler, fpFn func() []byte) error {
-	return s.client.node.RegisterServiceStoreReconciler(s.serviceID, rec, fpFn)
-}
-
-// Close detaches this service's store reconciler and super-overlay, and publishes
-// an updated ServiceNote epoch without this service.
-func (s *ServiceEndpoint) Close() error {
-	return s.client.node.UnregisterService(s.serviceID)
-}
-
-// RegisterServiceStore attaches a typed ReverseIndexStore[T] to svc under "service/<serviceID>",
-// providing transparent eventual-consistency replication via store.Insert() across svc's RingSuperOverlay.
-func RegisterServiceStore[T any](svc *ServiceEndpoint, store ReverseIndexStore[T], codec ...ItemCodec[T]) error {
-	if svc == nil || svc.client == nil || svc.client.node == nil {
-		return errors.New("service endpoint is nil")
-	}
-	var c ItemCodec[T]
-	if len(codec) > 0 {
-		c = codec[0]
-	}
-	return core.RegisterServiceStore(svc.client.node, svc.serviceID, store, c)
 }
 
 // ReverseIndexStore defines the standard contract that all data stores must comply to.
